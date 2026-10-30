@@ -11,14 +11,27 @@ use gitrust_core::{Oid, RefEntry, RefKind};
 
 use crate::theme;
 
-/// Devuelve el commit al que apunta la referencia pulsada.
+/// Lo que se ha pedido desde la barra lateral.
+pub enum Pick {
+    /// Enseñar en el grafo el commit al que apunta la referencia.
+    Show(Oid),
+    /// Cambiarse a esa rama.
+    Switch { name: String, remote: bool },
+}
+
+/// Devuelve lo que se haya pedido sobre una referencia.
+///
+/// Con `busy` en cierto hay una operación en marcha y las ramas dejan de
+/// poder pulsarse: cambiar de rama mientras se está trayendo del remoto es
+/// pedir dos cosas a la vez sobre los mismos ficheros.
 pub fn show(
     ui: &mut egui::Ui,
     refs: &[RefEntry],
     filter: &mut String,
     selected: Option<Oid>,
-) -> Option<Oid> {
-    let mut clicked = None;
+    busy: bool,
+) -> Option<Pick> {
+    let mut picked = None;
 
     ui.add_space(8.0);
     ui.add(
@@ -50,22 +63,28 @@ pub fn show(
         .id_salt("refs")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            section(ui, "Ramas", RefKind::LocalBranch, &matching, selected, &mut clicked);
-            section(ui, "Remotas", RefKind::RemoteBranch, &matching, selected, &mut clicked);
-            section(ui, "Etiquetas", RefKind::Tag, &matching, selected, &mut clicked);
+            for (title, kind) in [
+                ("Ramas", RefKind::LocalBranch),
+                ("Remotas", RefKind::RemoteBranch),
+                ("Etiquetas", RefKind::Tag),
+            ] {
+                section(ui, title, kind, &matching, selected, busy, &mut picked);
+            }
             ui.add_space(12.0);
         });
 
-    clicked
+    picked
 }
 
+#[allow(clippy::too_many_arguments)]
 fn section(
     ui: &mut egui::Ui,
     title: &str,
     kind: RefKind,
     refs: &[&RefEntry],
     selected: Option<Oid>,
-    clicked: &mut Option<Oid>,
+    busy: bool,
+    picked: &mut Option<Pick>,
 ) {
     let entries: Vec<&RefEntry> = refs.iter().copied().filter(|e| e.kind == kind).collect();
     if entries.is_empty() {
@@ -73,6 +92,20 @@ fn section(
     }
 
     theme::section(ui, title, entries.len());
+
+    // El gesto no se ve, así que se dice. Y solo donde sirve: con una sola
+    // rama local, la que tienes puesta, no hay adónde cambiar.
+    if kind == RefKind::LocalBranch && entries.len() > 1 {
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Doble clic para cambiar de rama")
+                    .font(theme::body(10.5))
+                    .color(theme::FAINT),
+            );
+        });
+    }
+
     ui.add_space(2.0);
 
     // Las que no tienen carpeta van arriba; el resto, en su grupo.
@@ -80,7 +113,7 @@ fn section(
     for entry in &entries {
         match entry.folder() {
             Some(folder) => folders.entry(folder).or_default().push(entry),
-            None => leaf(ui, entry, selected, clicked),
+            None => leaf(ui, entry, selected, busy, picked),
         }
     }
 
@@ -93,7 +126,7 @@ fn section(
             .default_open(group.len() <= 8)
             .show(ui, |ui| {
                 for entry in group {
-                    leaf(ui, entry, selected, clicked);
+                    leaf(ui, entry, selected, busy, picked);
                 }
             });
     }
@@ -101,7 +134,13 @@ fn section(
     ui.add_space(10.0);
 }
 
-fn leaf(ui: &mut egui::Ui, entry: &RefEntry, selected: Option<Oid>, clicked: &mut Option<Oid>) {
+fn leaf(
+    ui: &mut egui::Ui,
+    entry: &RefEntry,
+    selected: Option<Oid>,
+    busy: bool,
+    picked: &mut Option<Pick>,
+) {
     // El color dice qué clase de referencia es: las locales en el azur del
     // grafo, las remotas apagadas porque suelen duplicar a una local, y las
     // etiquetas en el violeta de su pastilla.
@@ -124,7 +163,40 @@ fn leaf(ui: &mut egui::Ui, entry: &RefEntry, selected: Option<Oid>, clicked: &mu
         RichText::new(entry.leaf()).font(font).color(color),
     );
 
-    if response.on_hover_text(&entry.name).clicked() {
-        *clicked = Some(entry.target);
+    // A una rama se puede ir. A la que ya tienes puesta no hay adónde ir, y a
+    // una etiqueta todavía no: eso deja HEAD desacoplado, que es un sitio del
+    // que hay que saber salir y aquí no se enseña cómo.
+    let branch = matches!(entry.kind, RefKind::LocalBranch | RefKind::RemoteBranch);
+    let switchable = branch && !entry.is_head && !busy;
+
+    let response = response.on_hover_text(if switchable {
+        format!("{}\nDoble clic para cambiar a esta rama", entry.name)
+    } else {
+        entry.name.clone()
+    });
+
+    if switchable {
+        let remote = entry.kind == RefKind::RemoteBranch;
+        response.context_menu(|ui| {
+            let button = ui.button("Cambiar a esta rama");
+            let button = if remote {
+                button.on_hover_text("crea aquí la rama local, si todavía no está")
+            } else {
+                button
+            };
+            if button.clicked() {
+                *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+                ui.close_menu();
+            }
+        });
+
+        if response.double_clicked() {
+            *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+            return;
+        }
+    }
+
+    if response.clicked() {
+        *picked = Some(Pick::Show(entry.target));
     }
 }

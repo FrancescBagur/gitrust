@@ -3,6 +3,7 @@
 //! Este crate no sabe nada de interfaz gráfica. Todo lo que expone son datos
 //! planos, de modo que la UI se pueda sustituir sin tocar la lógica Git.
 
+pub mod branch;
 pub mod detail;
 pub mod diff;
 pub mod graph;

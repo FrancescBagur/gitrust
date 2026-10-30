@@ -17,8 +17,8 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Los cambios sin confirmar, como una fila más arriba del grafo
 - [x] Barra de acciones: pull, push, rama nueva y stash
 - [x] Columna de ramas y etiquetas a la izquierda del grafo
+- [x] Cambiar de rama, también a una que solo existe en el remoto
 - [ ] Enmendar el último commit
-- [ ] Cambiar a una rama que ya existe
 - [ ] Merge con editor de conflictos, rebase interactivo, worktrees
 
 ## Arquitectura
@@ -27,6 +27,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 crates/
   gitrust-core/     lógica Git, sin dependencias de UI
     repo.rs         repositorio, commits, índice y diffs (libgit2)
+    branch.rs       crear ramas y cambiar de una a otra
     remote.rs       traer, llevar, y la distancia con la rama remota
     stash.rs        la pila de cambios apartados
     graph.rs        algoritmo de carriles, y la fila de cambios sin confirmar
@@ -86,8 +87,8 @@ cargo test -p gitrust-core
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
 operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: cuarenta y cuatro pruebas, veinticuatro
-de ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
+ficheros. Son las que llevan cobertura: cincuenta pruebas, treinta de
+ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
 
 Las del remoto hablan con un repositorio bare en otro directorio temporal. Por
 una ruta de disco se recorre el mismo camino que con un remoto de verdad —los

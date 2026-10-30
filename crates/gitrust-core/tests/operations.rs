@@ -66,6 +66,91 @@ fn dos_ramas_con_el_mismo_nombre_no_caben() {
     assert!(err.contains("dos"), "{err}");
 }
 
+#[test]
+fn cambiar_de_rama_trae_los_ficheros_de_la_otra() {
+    let temp = TempRepo::new("cambiar");
+    let vieja = primer_commit(&temp);
+
+    temp.open().branch_here("otra").unwrap();
+    temp.write("b.txt", "solo en otra\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+    assert!(temp.path().join("b.txt").exists());
+
+    let nota = temp.open().checkout_branch(&vieja).unwrap();
+    assert_eq!(nota, format!("ahora estás en {vieja}"));
+
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), vieja);
+    // El fichero que solo existía en la otra rama se ha ido del disco, y el
+    // árbol queda limpio: el índice también se enteró del cambio.
+    assert!(!temp.path().join("b.txt").exists());
+    assert!(repo.status().unwrap().is_clean());
+}
+
+#[test]
+fn lo_cambiado_que_no_estorba_viaja_contigo() {
+    let temp = TempRepo::new("cambiar-con-faena");
+    let vieja = primer_commit(&temp);
+
+    temp.open().branch_here("otra").unwrap();
+    temp.write("b.txt", "solo en otra\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+
+    // a.txt es igual en las dos ramas, así que lo que uno le haya hecho no
+    // choca con nada y tiene que sobrevivir al cambio.
+    temp.write("a.txt", "uno\na medias\n");
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), vieja);
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+        "uno\na medias\n"
+    );
+    let state = repo.status().unwrap();
+    assert_eq!(state.unstaged.len(), 1);
+    assert_eq!(state.unstaged[0].path, "a.txt");
+}
+
+#[test]
+fn con_cambios_que_chocan_no_se_cambia_ni_a_medias() {
+    let temp = TempRepo::new("cambiar-choque");
+    let vieja = primer_commit(&temp);
+
+    temp.open().branch_here("otra").unwrap();
+    temp.write("a.txt", "lo que dice otra\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a distinto").unwrap();
+
+    // Ahora a.txt difiere entre las dos ramas y además está a medias aquí.
+    temp.write("a.txt", "lo que estoy escribiendo\n");
+
+    let err = temp.open().checkout_branch(&vieja).unwrap_err().to_string();
+    assert!(err.contains("chocan") && err.contains("Stash"), "{err}");
+
+    // Y nada se ha movido: ni HEAD ni el fichero.
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), "otra");
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+        "lo que estoy escribiendo\n"
+    );
+}
+
+#[test]
+fn cambiar_a_una_rama_que_no_existe_lo_dice() {
+    let temp = TempRepo::new("cambiar-fantasma");
+    primer_commit(&temp);
+
+    let err = temp.open().checkout_branch("fantasma").unwrap_err().to_string();
+    assert!(err.contains("fantasma"), "{err}");
+}
+
 // ---------------------------------------------------------------- stash
 
 #[test]
@@ -228,4 +313,59 @@ fn sin_remoto_configurado_traer_lo_dice_claro() {
 
     let err = temp.open().pull().unwrap_err().to_string();
     assert!(err.contains("no sigue a ninguna rama remota"), "{err}");
+}
+
+#[test]
+fn cambiar_a_una_remota_crea_la_local_y_la_deja_siguiendo() {
+    let temp = TempRepo::new("remota");
+    let vieja = primer_commit(&temp);
+    let bare = con_remoto(&temp, "remota-bare");
+    temp.open().push().unwrap();
+
+    // Una rama que solo vive en el remoto para quien venga después.
+    temp.open().branch_here("entrega").unwrap();
+    temp.write("c.txt", "de la entrega\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+    repo.push().unwrap();
+
+    let copia = temp_dir("remota-copia");
+    git2::Repository::clone(&bare.display().to_string(), &copia).unwrap();
+    assert_eq!(Repo::open(&copia).unwrap().head_name(), vieja);
+
+    let nota = Repo::open(&copia).unwrap().checkout_remote("origin/entrega").unwrap();
+    assert_eq!(nota, "ahora estás en entrega");
+
+    let repo = Repo::open(&copia).unwrap();
+    assert_eq!(repo.head_name(), "entrega");
+    assert_eq!(repo.tracking().map(|t| t.remote), Some("origin/entrega".to_string()));
+    assert!(copia.join("c.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&copia);
+}
+
+#[test]
+fn si_la_local_ya_existe_se_va_a_ella_sin_tocarla() {
+    let temp = TempRepo::new("remota-existente");
+    let vieja = primer_commit(&temp);
+    let bare = con_remoto(&temp, "remota-existente-bare");
+    temp.open().push().unwrap();
+
+    temp.open().branch_here("entrega").unwrap();
+    temp.write("c.txt", "de la entrega\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    let suyo = repo.commit("feat: c").unwrap();
+    repo.push().unwrap();
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    // La local existe y apunta a donde apunta: ir a la remota es ir a ella.
+    temp.open().checkout_remote("origin/entrega").unwrap();
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), "entrega");
+    assert_eq!(repo.head_id(), Some(suyo));
+
+    let _ = std::fs::remove_dir_all(&bare);
 }

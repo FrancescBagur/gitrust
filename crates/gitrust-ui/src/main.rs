@@ -696,7 +696,7 @@ impl App {
 
     /// Las referencias acompañan siempre, se mire la historia o los cambios.
     fn refs_panel(&mut self, ctx: &egui::Context) {
-        let mut clicked = None;
+        let mut picked = None;
 
         egui::SidePanel::left("referencias")
             .resizable(true)
@@ -708,14 +708,49 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ctx, |ui| {
-                clicked =
-                    refs_view::show(ui, &self.refs, &mut self.ref_filter, self.selected_commit);
+                picked = refs_view::show(
+                    ui,
+                    &self.refs,
+                    &mut self.ref_filter,
+                    self.selected_commit,
+                    self.job.is_some(),
+                );
             });
 
-        if let Some(oid) = clicked {
-            self.select_commit(oid);
-            self.tab = Tab::History;
+        match picked {
+            Some(refs_view::Pick::Show(oid)) => {
+                self.select_commit(oid);
+                self.tab = Tab::History;
+            }
+            Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
+            None => {}
         }
+    }
+
+    /// Se cambia de rama en un hilo aparte.
+    ///
+    /// Es local, pero es la operación que más ficheros puede escribir de todas
+    /// las que hay aquí: entre dos ramas lejanas se reescribe medio árbol, y
+    /// eso con la ventana congelada se lee como que la aplicación ha muerto.
+    fn switch(&mut self, name: String, remote: bool) {
+        // La pestaña se queda donde esté: si uno estaba en los cambios es que
+        // estaba trabajando en ficheros, y cambiar de rama no es motivo para
+        // mandarlo a otra pantalla.
+        //
+        // El cursor sí se suelta antes de salir: al llegar a la rama nueva lo
+        // que uno quiere ver es su último commit, no el sitio de la rama
+        // vieja donde se había quedado mirando.
+        self.selected_commit = None;
+        self.detail_file = None;
+
+        let doing = format!("cambiando a {name}");
+        self.spawn(&doing, move |repo| {
+            if remote {
+                repo.checkout_remote(&name)
+            } else {
+                repo.checkout_branch(&name)
+            }
+        });
     }
 
     fn detail_panel(&mut self, ctx: &egui::Context) {
