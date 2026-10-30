@@ -10,17 +10,20 @@ mod detail_view;
 mod diff_view;
 mod graph_view;
 mod refs_view;
+mod theme;
 
 use anyhow::Result;
 use eframe::egui;
-use gitrust_core::{compose, layout, CommitDetail, FileDiff, Graph, Oid, RefEntry, Repo, WorkingState};
+use gitrust_core::{
+    compose, layout, CommitDetail, FileDiff, Graph, Oid, RefEntry, RefKind, Repo, WorkingState,
+};
 
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1360.0, 820.0])
+            .with_inner_size([1500.0, 900.0])
             .with_min_inner_size([900.0, 480.0])
             .with_title("gitrust"),
         ..Default::default()
@@ -42,7 +45,11 @@ enum Tab {
 struct App {
     path: String,
     head: String,
+    /// Lo que hay en el repositorio: se queda fijo en la barra de abajo.
+    summary: String,
+    /// Lo último que ha pasado. Se vacía al recargar.
     status: String,
+    status_failed: bool,
     tab: Tab,
 
     graph: Graph,
@@ -66,12 +73,14 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        theme::install(&cc.egui_ctx);
 
         let mut app = Self {
             path,
             head: String::new(),
+            summary: String::new(),
             status: String::new(),
+            status_failed: false,
             tab: Tab::History,
             graph: Graph::default(),
             limit: 5_000,
@@ -111,12 +120,29 @@ impl App {
         match repo.commits(self.limit) {
             Ok(commits) => {
                 let total = commits.len();
+                let refs = self.refs.len();
                 self.graph = layout(commits);
-                self.status = format!(
-                    "{total} commits · {} ramas · {} ms",
-                    self.refs.len(),
-                    started.elapsed().as_millis()
+                self.summary = format!(
+                    "{total} {} en {refs} {}",
+                    if total == 1 { "commit" } else { "commits" },
+                    if refs == 1 { "referencia" } else { "referencias" },
                 );
+
+                // Al abrir, el panel derecho enseña dónde está HEAD en vez de
+                // recibir con un hueco: lo primero que uno quiere saber de un
+                // repositorio es qué fue lo último que pasó en él.
+                if self.selected_commit.is_none() {
+                    self.selected_commit = self
+                        .graph
+                        .rows
+                        .iter()
+                        .find(|row| row.commit.refs.iter().any(|r| r.kind == RefKind::Head))
+                        .or_else(|| self.graph.rows.first())
+                        .map(|row| row.commit.id);
+                }
+
+                self.status = format!("leído en {} ms", started.elapsed().as_millis());
+                self.status_failed = false;
             }
             Err(err) => return self.fail(err),
         }
@@ -139,10 +165,7 @@ impl App {
     fn reload_work(&mut self, repo: &Repo) {
         match repo.status() {
             Ok(work) => self.work = work,
-            Err(err) => {
-                self.status = format!("error leyendo el estado: {err}");
-                return;
-            }
+            Err(err) => return self.note_error(format!("no se pudo leer el estado: {err}")),
         }
 
         // Si el fichero seleccionado ya no está en su lado, soltamos la selección.
@@ -165,8 +188,20 @@ impl App {
         };
 
         self.detail = repo.commit_detail(oid).ok();
-        self.detail_diff = match (&self.detail, &self.detail_file) {
-            (Some(_), Some(path)) => repo.commit_file_diff(oid, path).ok(),
+
+        // Si no hay fichero elegido, se abre el primero del commit. Un commit
+        // de un solo fichero no debería obligar a un clic más para ver lo
+        // único que trae.
+        if self.detail_file.is_none() {
+            self.detail_file = self
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.files.first())
+                .map(|file| file.path.clone());
+        }
+
+        self.detail_diff = match &self.detail_file {
+            Some(path) if self.detail.is_some() => repo.commit_file_diff(oid, path).ok(),
             _ => None,
         };
     }
@@ -201,10 +236,16 @@ impl App {
                 true
             }
             Err(err) => {
-                self.status = format!("error: {err}");
+                self.note_error(err.to_string());
                 false
             }
         }
+    }
+
+    /// Deja un aviso en la barra de abajo, marcado como fallo.
+    fn note_error(&mut self, message: String) {
+        self.status = message;
+        self.status_failed = true;
     }
 
     fn fail(&mut self, err: anyhow::Error) {
@@ -216,7 +257,8 @@ impl App {
         self.detail = None;
         self.detail_diff = None;
         self.head.clear();
-        self.status = format!("error: {err}");
+        self.summary.clear();
+        self.note_error(err.to_string());
     }
 
     fn handle(&mut self, action: changes_view::Action) {
@@ -255,6 +297,7 @@ impl App {
                     // El commit cambia la historia: hay que redibujar el grafo.
                     self.load();
                     self.status = format!("commit creado en {}", self.head);
+                    self.status_failed = false;
                 }
             }
         }
@@ -263,113 +306,207 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("barra").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let entry = ui.add(
-                    egui::TextEdit::singleline(&mut self.path)
-                        .desired_width(320.0)
-                        .hint_text("ruta a un repositorio Git"),
-                );
-                let reload = ui.button("Abrir").clicked();
-                let submitted =
-                    entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if reload || submitted {
-                    self.selected = None;
-                    self.diff = None;
-                    self.selected_commit = None;
-                    self.detail = None;
-                    self.load();
+        self.top_bar(ctx);
+        self.status_bar(ctx);
+        self.refs_panel(ctx);
+
+        if self.tab == Tab::History {
+            self.detail_panel(ctx);
+        }
+
+        let frame = match self.tab {
+            // El grafo se pinta sobre el fondo más hondo de la ventana para
+            // que los carriles sean lo que más luz tiene en pantalla.
+            Tab::History => egui::Frame::NONE.fill(theme::CANVAS),
+            Tab::Changes => egui::Frame::NONE.fill(theme::PANEL),
+        };
+
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show(ctx, |ui| match self.tab {
+                Tab::History => {
+                    if let Some(oid) = graph_view::show(ui, &self.graph, self.selected_commit) {
+                        self.select_commit(oid);
+                    }
                 }
+                Tab::Changes => {
+                    let selected = self
+                        .selected
+                        .as_ref()
+                        .map(|(path, staged)| (path.as_str(), *staged));
 
-                ui.separator();
-                ui.selectable_value(&mut self.tab, Tab::History, "Historia");
+                    let action = changes_view::show(
+                        ui,
+                        &self.work,
+                        selected,
+                        self.diff.as_ref(),
+                        &mut self.subject,
+                        &mut self.body,
+                    );
 
-                let pending = self.work.staged.len() + self.work.unstaged.len();
-                let label = if pending > 0 {
-                    format!("Cambios ({pending})")
-                } else {
-                    "Cambios".to_string()
-                };
-                ui.selectable_value(&mut self.tab, Tab::Changes, label);
-
-                if !self.head.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new(&self.head).strong());
+                    if let Some(action) = action {
+                        self.handle(action);
+                    }
                 }
+            });
+    }
+}
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("↻").on_hover_text("Recargar").clicked() {
+impl App {
+    fn top_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("barra")
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let entry = ui.add(
+                        egui::TextEdit::singleline(&mut self.path)
+                            .desired_width(300.0)
+                            .margin(egui::vec2(8.0, 5.0))
+                            .font(theme::mono(11.5))
+                            .hint_text(
+                                egui::RichText::new("ruta a un repositorio")
+                                    .color(theme::FAINT),
+                            ),
+                    );
+                    let reload = ui.button("Abrir").clicked();
+                    let submitted =
+                        entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if reload || submitted {
+                        self.selected = None;
+                        self.diff = None;
+                        self.selected_commit = None;
+                        self.detail = None;
                         self.load();
                     }
+
+                    ui.add_space(8.0);
+                    self.tabs(ui);
+
+                    // Dónde está HEAD, con el único ámbar de la ventana.
+                    if !self.head.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(&self.head)
+                                .font(theme::medium(12.0))
+                                .color(theme::HEAD)
+                                .background_color(theme::tint(theme::HEAD, 28)),
+                        );
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("↻").on_hover_text("Recargar").clicked() {
+                            self.load();
+                        }
+                    });
                 });
             });
-            ui.add_space(4.0);
-        });
+    }
 
-        egui::TopBottomPanel::bottom("estado").show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.label(egui::RichText::new(&self.status).weak());
-            ui.add_space(2.0);
-        });
+    /// Las dos vistas, pegadas como un mando de dos posiciones.
+    fn tabs(&mut self, ui: &mut egui::Ui) {
+        let pending = self.work.staged.len() + self.work.unstaged.len();
 
-        // Las referencias acompañan siempre, se mire la historia o los cambios.
-        let mut ref_clicked = None;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.selectable_value(&mut self.tab, Tab::History, "Historia");
+
+            let changes = ui.selectable_value(&mut self.tab, Tab::Changes, "Cambios");
+            if pending > 0 {
+                ui.label(
+                    egui::RichText::new(pending.to_string())
+                        .font(theme::mono(10.5))
+                        .color(theme::CHANGED)
+                        .background_color(theme::tint(theme::CHANGED, 32)),
+                )
+                .on_hover_text("cambios sin commitear");
+            }
+            let _ = changes;
+        });
+    }
+
+    fn status_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("estado")
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::symmetric(12, 5)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&self.summary)
+                            .font(theme::body(11.5))
+                            .color(theme::MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let color = if self.status_failed {
+                            theme::REMOVED
+                        } else {
+                            theme::FAINT
+                        };
+                        ui.label(
+                            egui::RichText::new(&self.status)
+                                .font(theme::body(11.5))
+                                .color(color),
+                        );
+                    });
+                });
+            });
+    }
+
+    /// Las referencias acompañan siempre, se mire la historia o los cambios.
+    fn refs_panel(&mut self, ctx: &egui::Context) {
+        let mut clicked = None;
+
         egui::SidePanel::left("referencias")
             .resizable(true)
-            .default_width(240.0)
+            .default_width(222.0)
+            .width_range(170.0..=360.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10, 0)),
+            )
             .show(ctx, |ui| {
-                ref_clicked =
+                clicked =
                     refs_view::show(ui, &self.refs, &mut self.ref_filter, self.selected_commit);
             });
-        if let Some(oid) = ref_clicked {
+
+        if let Some(oid) = clicked {
             self.select_commit(oid);
             self.tab = Tab::History;
         }
+    }
 
-        if self.tab == Tab::History {
-            let mut file_clicked = None;
-            egui::SidePanel::right("detalle")
-                .resizable(true)
-                .default_width(520.0)
-                .show(ctx, |ui| {
-                    file_clicked = detail_view::show(
-                        ui,
-                        self.detail.as_ref(),
-                        self.detail_file.as_deref(),
-                        self.detail_diff.as_ref(),
-                    );
-                });
-            if let Some(path) = file_clicked {
-                self.select_detail_file(path);
-            }
-        }
+    fn detail_panel(&mut self, ctx: &egui::Context) {
+        let mut clicked = None;
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::History => {
-                if let Some(oid) = graph_view::show(ui, &self.graph, self.selected_commit) {
-                    self.select_commit(oid);
-                }
-            }
-            Tab::Changes => {
-                let selected = self
-                    .selected
-                    .as_ref()
-                    .map(|(path, staged)| (path.as_str(), *staged));
-
-                let action = changes_view::show(
+        egui::SidePanel::right("detalle")
+            .resizable(true)
+            .default_width(420.0)
+            // Con tope: sin él, un commit de mensaje largo ensancha el panel
+            // hasta dejar la columna del grafo en nada.
+            .width_range(300.0..=520.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(14, 0)),
+            )
+            .show(ctx, |ui| {
+                clicked = detail_view::show(
                     ui,
-                    &self.work,
-                    selected,
-                    self.diff.as_ref(),
-                    &mut self.subject,
-                    &mut self.body,
+                    self.detail.as_ref(),
+                    self.detail_file.as_deref(),
+                    self.detail_diff.as_ref(),
                 );
+            });
 
-                if let Some(action) = action {
-                    self.handle(action);
-                }
-            }
-        });
+        if let Some(path) = clicked {
+            self.select_detail_file(path);
+        }
     }
 }

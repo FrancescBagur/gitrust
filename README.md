@@ -13,6 +13,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Diff por fichero, stage y unstage, y commit con título y descripción
 - [x] Stage y unstage por hunk suelto
 - [x] Tres paneles: ramas, grafo y detalle del commit
+- [x] Tema propio: una sola familia de color saturado, la de los carriles
 - [ ] Enmendar el último commit
 - [ ] Cambio de rama, push, pull
 - [ ] Merge con editor de conflictos, rebase interactivo, stash, worktrees
@@ -31,6 +32,7 @@ crates/
     model.rs        tipos compartidos
   gitrust-ui/       aplicación egui
     main.rs         ventana, estado y ejecución de acciones
+    theme.rs        color, tipografía y espaciado
     refs_view.rs    barra lateral de ramas y etiquetas
     graph_view.rs   pintado del grafo
     detail_view.rs  panel de detalle del commit

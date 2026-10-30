@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, RichText};
 use gitrust_core::{ChangeKind, FileChange, FileDiff, HunkId, WorkingState, SUBJECT_LIMIT};
 
-use crate::diff_view::{self, ADDED, REMOVED};
+use crate::{diff_view, theme};
 
 /// Lo que el usuario ha pedido en este fotograma. La vista no toca el
 /// repositorio: solo describe la intención y deja que `main` la ejecute.
@@ -20,13 +20,13 @@ pub enum Action {
 
 fn kind_color(kind: ChangeKind) -> Color32 {
     match kind {
-        ChangeKind::Added => Color32::from_rgb(0x6D, 0xC9, 0x51),
-        ChangeKind::Modified => Color32::from_rgb(0xF2, 0x9D, 0x38),
-        ChangeKind::Deleted => Color32::from_rgb(0xE5, 0x5F, 0x5F),
-        ChangeKind::Renamed => Color32::from_rgb(0x55, 0xA2, 0xF7),
-        ChangeKind::TypeChange => Color32::from_rgb(0xB0, 0x8E, 0xF5),
-        ChangeKind::Untracked => Color32::from_gray(150),
-        ChangeKind::Conflicted => Color32::from_rgb(0xFF, 0x6B, 0x6B),
+        ChangeKind::Added => theme::ADDED,
+        ChangeKind::Modified => theme::CHANGED,
+        ChangeKind::Deleted => theme::REMOVED,
+        ChangeKind::Renamed => theme::lane(0),
+        ChangeKind::TypeChange => theme::lane(6),
+        ChangeKind::Untracked => theme::MUTED,
+        ChangeKind::Conflicted => theme::REMOVED,
     }
 }
 
@@ -43,104 +43,136 @@ pub fn show(
     egui::SidePanel::left("cambios")
         .resizable(true)
         .default_width(330.0)
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::PANEL)
+                .inner_margin(egui::Margin::symmetric(10, 0)),
+        )
         .show_inside(ui, |ui| {
             // El cuadro de commit va abajo del todo, fijo.
             egui::TopBottomPanel::bottom("commit")
                 .resizable(false)
-                .show_inside(ui, |ui| {
-                    ui.add_space(6.0);
-
-                    // El asunto va aparte del cuerpo: Git espera una línea en
-                    // blanco entre ambos y así no hay que recordarlo.
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Título").small().weak());
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                let length = subject.chars().count();
-                                let color = if length > SUBJECT_LIMIT {
-                                    Color32::from_rgb(0xF2, 0x9D, 0x38)
-                                } else {
-                                    Color32::from_gray(110)
-                                };
-                                ui.label(
-                                    RichText::new(format!("{length}/{SUBJECT_LIMIT}"))
-                                        .small()
-                                        .monospace()
-                                        .color(color),
-                                );
-                            },
-                        );
-                    });
-                    ui.add(
-                        egui::TextEdit::singleline(subject)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("feat: resumen en una línea"),
-                    );
-
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("Descripción").small().weak());
-                    ui.add(
-                        egui::TextEdit::multiline(body)
-                            .desired_rows(4)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("Opcional: qué cambia y por qué"),
-                    );
-                    ui.add_space(6.0);
-
-                    let ready = !state.staged.is_empty() && !subject.trim().is_empty();
-                    let shortcut = ready
-                        && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
-
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(ready, egui::Button::new("Commit"))
-                            .on_hover_text("Ctrl+Enter")
-                            .clicked()
-                            || shortcut
-                        {
-                            action = Some(Action::Commit);
-                        }
-
-                        let note = if state.staged.is_empty() {
-                            "nada preparado".to_string()
-                        } else {
-                            format!("{} ficheros", state.staged.len())
-                        };
-                        ui.label(RichText::new(note).weak().small());
-                    });
-                    ui.add_space(6.0);
-                });
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(0, 10)),
+                )
+                .show_inside(ui, |ui| commit_box(ui, state, subject, body, &mut action));
 
             egui::ScrollArea::vertical()
                 .id_salt("listas")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    section(
-                        ui,
-                        "Preparado",
-                        &state.staged,
-                        selected,
-                        true,
-                        &mut action,
-                    );
                     ui.add_space(10.0);
-                    section(
-                        ui,
-                        "Sin preparar",
-                        &state.unstaged,
-                        selected,
-                        false,
-                        &mut action,
-                    );
+                    section(ui, "Preparado", &state.staged, selected, true, &mut action);
+                    ui.add_space(14.0);
+                    section(ui, "Sin preparar", &state.unstaged, selected, false, &mut action);
+                    ui.add_space(10.0);
                 });
         });
 
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        show_diff(ui, selected, diff, &mut action);
-    });
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::CANVAS)
+                .inner_margin(egui::Margin::symmetric(12, 8)),
+        )
+        .show_inside(ui, |ui| {
+            show_diff(ui, selected, diff, &mut action);
+        });
 
     action
+}
+
+/// El cuadro de commit: título y descripción por separado, como espera Git.
+fn commit_box(
+    ui: &mut egui::Ui,
+    state: &WorkingState,
+    subject: &mut String,
+    body: &mut String,
+    action: &mut Option<Action>,
+) {
+    // El asunto va aparte del cuerpo: Git espera una línea en blanco entre
+    // ambos y así no hay que recordarlo.
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Título")
+                .font(theme::medium(11.5))
+                .color(theme::MUTED),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let length = subject.chars().count();
+            let color = if length > SUBJECT_LIMIT {
+                theme::CHANGED
+            } else {
+                theme::FAINT
+            };
+            ui.label(
+                RichText::new(format!("{length}/{SUBJECT_LIMIT}"))
+                    .font(theme::mono(10.5))
+                    .color(color),
+            );
+        });
+    });
+    ui.add_space(3.0);
+    ui.add(
+        egui::TextEdit::singleline(subject)
+            .desired_width(f32::INFINITY)
+            .margin(egui::vec2(8.0, 6.0))
+            .font(theme::body(12.5))
+            .hint_text(RichText::new("feat: resumen en una línea").color(theme::FAINT)),
+    );
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new("Descripción")
+            .font(theme::medium(11.5))
+            .color(theme::MUTED),
+    );
+    ui.add_space(3.0);
+    ui.add(
+        egui::TextEdit::multiline(body)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY)
+            .margin(egui::vec2(8.0, 6.0))
+            .font(theme::mono(11.5))
+            .hint_text(RichText::new("Qué cambia y por qué").color(theme::FAINT)),
+    );
+    ui.add_space(8.0);
+
+    let ready = !state.staged.is_empty() && !subject.trim().is_empty();
+    let shortcut =
+        ready && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+
+    ui.horizontal(|ui| {
+        let button = egui::Button::new(RichText::new("Commit").font(theme::medium(13.0)))
+            .fill(if ready { theme::tint(theme::lane(0), 54) } else { theme::RAISED })
+            .min_size(egui::vec2(88.0, 28.0));
+
+        if ui
+            .add_enabled(ready, button)
+            .on_hover_text("Ctrl+Enter")
+            .clicked()
+            || shortcut
+        {
+            *action = Some(Action::Commit);
+        }
+
+        // Si no se puede commitear, el aviso dice qué falta en vez de
+        // limitarse a describir el estado.
+        let note = if state.staged.is_empty() {
+            "Prepara algún cambio primero".to_string()
+        } else if subject.trim().is_empty() {
+            "Falta el título".to_string()
+        } else {
+            theme::files_label(state.staged.len())
+        };
+        ui.label(
+            RichText::new(note)
+                .font(theme::body(11.5))
+                .color(theme::FAINT),
+        );
+    });
 }
 
 fn section(
@@ -152,29 +184,65 @@ fn section(
     action: &mut Option<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title).strong());
-        ui.label(RichText::new(files.len().to_string()).weak());
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(title)
+                .font(theme::medium(11.5))
+                .color(theme::MUTED),
+        );
+        ui.label(
+            RichText::new(files.len().to_string())
+                .font(theme::mono(10.5))
+                .color(theme::FAINT),
+        );
 
         if !files.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if staged { "Quitar todo" } else { "Preparar todo" };
-                if ui.small_button(label).clicked() {
+                if ui
+                    .add(egui::Button::new(
+                        RichText::new(label).font(theme::body(11.0)).color(theme::MUTED),
+                    ))
+                    .clicked()
+                {
                     *action = Some(if staged { Action::UnstageAll } else { Action::StageAll });
                 }
             });
         }
     });
-    ui.separator();
+    ui.add_space(4.0);
 
     if files.is_empty() {
-        ui.label(RichText::new("—").weak());
+        let note = if staged {
+            "El índice está vacío"
+        } else {
+            "Nada sin preparar"
+        };
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(note)
+                    .font(theme::body(11.5))
+                    .color(theme::FAINT),
+            );
+        });
         return;
     }
 
     for file in files {
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+
             let button = if staged { "−" } else { "+" };
-            if ui.small_button(button).on_hover_text(if staged { "Quitar del índice" } else { "Preparar" }).clicked() {
+            let hint = if staged { "Quitar del índice" } else { "Preparar" };
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(button).font(theme::mono(12.0)))
+                        .min_size(egui::vec2(22.0, 20.0)),
+                )
+                .on_hover_text(hint)
+                .clicked()
+            {
                 *action = Some(if staged {
                     Action::Unstage(file.path.clone())
                 } else {
@@ -184,13 +252,13 @@ fn section(
 
             ui.label(
                 RichText::new(file.kind.tag())
-                    .monospace()
+                    .font(theme::mono(11.0))
                     .color(kind_color(file.kind)),
             );
 
             let is_selected = selected == Some((file.path.as_str(), staged));
             if ui
-                .selectable_label(is_selected, shorten(&file.path))
+                .selectable_label(is_selected, theme::path_text(&file.path, 11.5, is_selected))
                 .on_hover_text(&file.path)
                 .clicked()
             {
@@ -200,16 +268,6 @@ fn section(
     }
 }
 
-/// Deja visible el nombre del fichero y recorta los directorios intermedios.
-fn shorten(path: &str) -> String {
-    const MAX: usize = 38;
-    if path.chars().count() <= MAX {
-        return path.to_string();
-    }
-    let tail: String = path.chars().rev().take(MAX - 2).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("…/{}", tail.trim_start_matches('/'))
-}
-
 fn show_diff(
     ui: &mut egui::Ui,
     selected: Option<(&str, bool)>,
@@ -217,35 +275,33 @@ fn show_diff(
     action: &mut Option<Action>,
 ) {
     let Some((path, staged)) = selected else {
-        ui.vertical_centered(|ui| {
-            ui.add_space(60.0);
-            ui.label(RichText::new("Selecciona un fichero para ver su diff").weak());
-        });
+        theme::empty(ui, "Elige un fichero para ver su cambio");
         return;
     };
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(path).monospace().strong());
+        ui.label(theme::path_text(path, 12.5, false));
         ui.label(
-            RichText::new(if staged { "índice" } else { "árbol de trabajo" })
-                .weak()
-                .small(),
+            RichText::new(if staged { "en el índice" } else { "en el árbol de trabajo" })
+                .font(theme::body(11.0))
+                .color(theme::FAINT),
         );
         if let Some(diff) = diff {
             let (added, removed) = diff.counts();
-            ui.label(RichText::new(format!("+{added}")).color(ADDED).small());
-            ui.label(RichText::new(format!("−{removed}")).color(REMOVED).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                diff_view::counts(ui, added, removed);
+            });
         }
     });
-    ui.separator();
+    theme::rule(ui);
 
     let Some(diff) = diff else {
-        ui.label(RichText::new("sin diff").weak());
+        theme::empty(ui, "Sin cambios que mostrar");
         return;
     };
 
     if diff.binary {
-        ui.label(RichText::new("Fichero binario").weak());
+        theme::empty(ui, "Fichero binario");
         return;
     }
 
@@ -253,12 +309,14 @@ fn show_diff(
         .id_salt("diff")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.spacing_mut().item_spacing.y = 2.0;
 
             for hunk in &diff.hunks {
                 // Cada hunk se puede mover por su cuenta, que es lo que hace
                 // `git add -p` sin tener que contestar preguntas en la terminal.
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+
                     let label = if staged { "− Quitar" } else { "+ Preparar" };
                     let hint = if staged {
                         "Devolver solo este hunk al árbol de trabajo"
@@ -266,7 +324,13 @@ fn show_diff(
                         "Preparar solo este hunk"
                     };
 
-                    if ui.small_button(label).on_hover_text(hint).clicked() {
+                    if ui
+                        .add(egui::Button::new(
+                            RichText::new(label).font(theme::body(11.0)),
+                        ))
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
                         let path = path.to_string();
                         *action = Some(if staged {
                             Action::UnstageHunk { path, hunk: hunk.id }
@@ -275,21 +339,20 @@ fn show_diff(
                         });
                     }
 
-                    if !hunk.header.is_empty() {
-                        ui.label(
-                            RichText::new(&hunk.header)
-                                .monospace()
-                                .color(Color32::from_rgb(0x7A, 0xA6, 0xD6)),
-                        );
-                    }
+                    ui.label(
+                        RichText::new(hunk.header.trim())
+                            .font(theme::mono(11.0))
+                            .color(theme::FAINT),
+                    );
 
                     let (added, removed) = hunk.counts();
-                    ui.label(RichText::new(format!("+{added}")).small().color(ADDED));
-                    ui.label(RichText::new(format!("−{removed}")).small().color(REMOVED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        diff_view::counts(ui, added, removed);
+                    });
                 });
 
                 diff_view::lines(ui, hunk);
-                ui.add_space(6.0);
+                ui.add_space(8.0);
             }
         });
 }

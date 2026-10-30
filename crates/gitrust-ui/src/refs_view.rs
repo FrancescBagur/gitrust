@@ -6,13 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use gitrust_core::{Oid, RefEntry, RefKind};
 
-const HEAD_COLOR: Color32 = Color32::from_rgb(0xFF, 0xD1, 0x4A);
-const LOCAL_COLOR: Color32 = Color32::from_rgb(0x7A, 0xC6, 0xFF);
-const REMOTE_COLOR: Color32 = Color32::from_gray(150);
-const TAG_COLOR: Color32 = Color32::from_rgb(0xC7, 0xA6, 0xF5);
+use crate::theme;
 
 /// Devuelve el commit al que apunta la referencia pulsada.
 pub fn show(
@@ -23,13 +20,15 @@ pub fn show(
 ) -> Option<Oid> {
     let mut clicked = None;
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.add(
         egui::TextEdit::singleline(filter)
             .desired_width(f32::INFINITY)
-            .hint_text("Filtrar ramas"),
+            .margin(egui::vec2(8.0, 5.0))
+            .font(theme::body(12.5))
+            .hint_text(RichText::new("Buscar una rama").color(theme::FAINT)),
     );
-    ui.add_space(6.0);
+    ui.add_space(8.0);
 
     let needle = filter.trim().to_lowercase();
     let matching: Vec<&RefEntry> = refs
@@ -37,13 +36,24 @@ pub fn show(
         .filter(|entry| needle.is_empty() || entry.name.to_lowercase().contains(&needle))
         .collect();
 
+    if refs.is_empty() {
+        theme::empty(ui, "Sin referencias");
+        return None;
+    }
+
+    if matching.is_empty() {
+        theme::empty(ui, "Ninguna rama con ese nombre");
+        return None;
+    }
+
     egui::ScrollArea::vertical()
         .id_salt("refs")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            section(ui, "LOCAL", RefKind::LocalBranch, &matching, selected, &mut clicked);
-            section(ui, "REMOTAS", RefKind::RemoteBranch, &matching, selected, &mut clicked);
-            section(ui, "ETIQUETAS", RefKind::Tag, &matching, selected, &mut clicked);
+            section(ui, "Ramas", RefKind::LocalBranch, &matching, selected, &mut clicked);
+            section(ui, "Remotas", RefKind::RemoteBranch, &matching, selected, &mut clicked);
+            section(ui, "Etiquetas", RefKind::Tag, &matching, selected, &mut clicked);
+            ui.add_space(12.0);
         });
 
     clicked
@@ -58,17 +68,12 @@ fn section(
     clicked: &mut Option<Oid>,
 ) {
     let entries: Vec<&RefEntry> = refs.iter().copied().filter(|e| e.kind == kind).collect();
-
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).small().strong());
-        ui.label(RichText::new(entries.len().to_string()).small().weak());
-    });
-
     if entries.is_empty() {
-        ui.label(RichText::new("—").weak().small());
-        ui.add_space(8.0);
         return;
     }
+
+    theme::section(ui, title, entries.len());
+    ui.add_space(2.0);
 
     // Las que no tienen carpeta van arriba; el resto, en su grupo.
     let mut folders: BTreeMap<&str, Vec<&RefEntry>> = BTreeMap::new();
@@ -80,7 +85,10 @@ fn section(
     }
 
     for (folder, group) in folders {
-        egui::CollapsingHeader::new(RichText::new(folder).small())
+        let head = egui::RichText::new(folder)
+            .font(theme::body(12.0))
+            .color(theme::MUTED);
+        egui::CollapsingHeader::new(head)
             .id_salt((title, folder))
             .default_open(group.len() <= 8)
             .show(ui, |ui| {
@@ -90,29 +98,31 @@ fn section(
             });
     }
 
-    ui.add_space(8.0);
+    ui.add_space(10.0);
 }
 
 fn leaf(ui: &mut egui::Ui, entry: &RefEntry, selected: Option<Oid>, clicked: &mut Option<Oid>) {
-    let color = if entry.is_head {
-        HEAD_COLOR
-    } else {
-        match entry.kind {
-            RefKind::LocalBranch => LOCAL_COLOR,
-            RefKind::RemoteBranch => REMOTE_COLOR,
-            RefKind::Tag => TAG_COLOR,
-            RefKind::Head => HEAD_COLOR,
-        }
+    // El color dice qué clase de referencia es: las locales en el azur del
+    // grafo, las remotas apagadas porque suelen duplicar a una local, y las
+    // etiquetas en el violeta de su pastilla.
+    let color = match (entry.is_head, entry.kind) {
+        (true, _) | (_, RefKind::Head) => theme::HEAD,
+        (_, RefKind::LocalBranch) => theme::lane(0),
+        (_, RefKind::RemoteBranch) => theme::MUTED,
+        (_, RefKind::Tag) => theme::lane(6),
     };
 
-    let label = if entry.is_head {
-        format!("● {}", entry.leaf())
+    let font = if entry.is_head {
+        theme::medium(12.5)
     } else {
-        entry.leaf().to_string()
+        theme::body(12.5)
     };
 
     let is_selected = selected == Some(entry.target);
-    let response = ui.selectable_label(is_selected, RichText::new(label).color(color));
+    let response = ui.selectable_label(
+        is_selected,
+        RichText::new(entry.leaf()).font(font).color(color),
+    );
 
     if response.on_hover_text(&entry.name).clicked() {
         *clicked = Some(entry.target);

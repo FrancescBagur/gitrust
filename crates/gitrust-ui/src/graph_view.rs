@@ -3,46 +3,51 @@
 //! Dibuja solo las filas visibles. Con un repositorio de decenas de miles de
 //! commits el coste por fotograma depende del alto de la ventana, no del
 //! tamaño de la historia.
+//!
+//! La fila es la unidad de lectura: el mensaje a la izquierda con todo el
+//! contraste, y autor, fecha y hash alineados a la derecha en columnas de
+//! ancho fijo. Son esas columnas las que dan la estructura, así que no hace
+//! falta ni una sola línea vertical. Cuando la ventana se estrecha las
+//! columnas se retiran por orden de importancia en vez de chocar entre sí.
 
 use chrono::{Local, TimeZone};
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke};
 use gitrust_core::{Graph, Oid, RefKind, Row};
 
-const ROW_H: f32 = 26.0;
-const LANE_W: f32 = 16.0;
+use crate::theme;
+
+const LANE_W: f32 = 17.0;
 const DOT_R: f32 = 4.5;
-const LINE_W: f32 = 1.8;
-const GUTTER: f32 = 10.0;
+const LINE_W: f32 = 2.0;
+const GUTTER: f32 = 12.0;
 
-const SELECTED_BG: Color32 = Color32::from_rgb(0x27, 0x3A, 0x55);
-
-/// Colores de carril. Se recorren en ciclo según nacen las ramas.
-const PALETTE: [Color32; 8] = [
-    Color32::from_rgb(0x55, 0xA2, 0xF7),
-    Color32::from_rgb(0x6D, 0xC9, 0x51),
-    Color32::from_rgb(0xF2, 0x9D, 0x38),
-    Color32::from_rgb(0xD9, 0x63, 0xD9),
-    Color32::from_rgb(0x40, 0xC8, 0xC0),
-    Color32::from_rgb(0xE5, 0x5F, 0x5F),
-    Color32::from_rgb(0xB0, 0x8E, 0xF5),
-    Color32::from_rgb(0xD6, 0xC4, 0x45),
-];
-
-fn lane_color(index: usize) -> Color32 {
-    PALETTE[index % PALETTE.len()]
-}
+/// Columnas de la derecha, de fuera hacia dentro.
+const PAD_R: f32 = 14.0;
+const HASH_W: f32 = 58.0;
+const DATE_W: f32 = 100.0;
+const AUTHOR_W: f32 = 116.0;
+const COL_GAP: f32 = 16.0;
+/// Por debajo de esto el mensaje queda tan recortado que la columna estorba
+/// más de lo que informa, y se retira.
+const SUMMARY_MIN: f32 = 200.0;
+/// Carriles que se reservan como mucho antes de la columna del mensaje.
+///
+/// Un repositorio puede tener veinte ramas vivas a la vez en algún punto de su
+/// historia, pero reservar sitio para las veinte deja una franja vacía en las
+/// miles de filas donde solo hay dos. Ocho cubre lo que se ve en la práctica;
+/// lo que pase de ahí se recorta contra la columna del mensaje.
+const MAX_LANES: usize = 8;
 
 /// Devuelve el commit pulsado, si lo hay.
 pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<Oid> {
     if graph.rows.is_empty() {
-        ui.vertical_centered(|ui| {
-            ui.add_space(60.0);
-            ui.label(egui::RichText::new("Sin commits que mostrar").weak());
-        });
+        theme::empty(ui, "Abre un repositorio para ver su historia");
         return None;
     }
 
-    let lanes = graph.lane_count.max(1);
+    // Con una historia muy ramificada los carriles se comerían la columna
+    // del mensaje, así que a partir de cierto punto se dejan solapar.
+    let lanes = graph.lane_count.clamp(1, MAX_LANES);
     let graph_w = GUTTER * 2.0 + lanes as f32 * LANE_W;
     let mut clicked = None;
 
@@ -50,55 +55,80 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
         .id_salt("grafo")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let total_h = graph.rows.len() as f32 * ROW_H;
+            let row_h = theme::ROW_H;
+            let total_h = graph.rows.len() as f32 * row_h;
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), total_h),
                 egui::Sense::click(),
             );
             let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 0.0, theme::CANVAS);
+
+            // Los carriles se pintan contra su propia franja: así una historia
+            // más ancha que el tope se recorta en seco en vez de cruzar por
+            // debajo de los mensajes.
+            let lanes_painter = painter.with_clip_rect(Rect::from_min_max(
+                rect.min,
+                egui::pos2(rect.left() + graph_w, rect.max.y),
+            ));
 
             // Solo las filas que caen dentro del recorte visible.
             let clip = ui.clip_rect();
-            let first = (((clip.top() - rect.top()) / ROW_H).floor() as isize).max(0) as usize;
-            let last = ((((clip.bottom() - rect.top()) / ROW_H).ceil() as usize) + 1)
+            let first = (((clip.top() - rect.top()) / row_h).floor() as isize).max(0) as usize;
+            let last = ((((clip.bottom() - rect.top()) / row_h).ceil() as usize) + 1)
                 .min(graph.rows.len());
 
+            let row_at = |y: f32| {
+                let index = ((y - rect.top()) / row_h).floor();
+                (index >= 0.0 && (index as usize) < graph.rows.len()).then(|| index as usize)
+            };
+
+            let hovered = response.hover_pos().and_then(|pos| row_at(pos.y));
             if response.clicked() {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let index = ((pos.y - rect.top()) / ROW_H).floor();
-                    if index >= 0.0 && (index as usize) < graph.rows.len() {
-                        clicked = Some(graph.rows[index as usize].commit.id);
-                    }
+                if let Some(index) = response.interact_pointer_pos().and_then(|p| row_at(p.y)) {
+                    clicked = Some(graph.rows[index].commit.id);
                 }
             }
 
             let lane_x = |lane: usize| rect.left() + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
-            let row_y = |row: usize| rect.top() + row as f32 * ROW_H + ROW_H / 2.0;
+            let row_y = |row: usize| rect.top() + row as f32 * row_h + row_h / 2.0;
+
+            let columns = Columns::for_width(rect.left() + graph_w, rect.right());
 
             for index in first..last {
                 let row = &graph.rows[index];
+                let band = Rect::from_min_size(
+                    egui::pos2(rect.left(), rect.top() + index as f32 * row_h),
+                    egui::vec2(rect.width(), row_h),
+                );
 
+                // La fila elegida se marca con su propio color de carril en el
+                // canto izquierdo, no con un azul traído de fuera: así se ve de
+                // un vistazo a qué rama pertenece lo que se está mirando.
                 if selected == Some(row.commit.id) {
-                    let band = egui::Rect::from_min_size(
-                        egui::pos2(rect.left(), rect.top() + index as f32 * ROW_H),
-                        egui::vec2(rect.width(), ROW_H),
+                    painter.rect_filled(band, 0.0, theme::CHOSEN);
+                    painter.rect_filled(
+                        Rect::from_min_size(band.min, egui::vec2(2.0, band.height())),
+                        0.0,
+                        theme::lane(row.color),
                     );
-                    painter.rect_filled(band, 0.0, SELECTED_BG);
+                } else if hovered == Some(index) {
+                    painter.rect_filled(band, 0.0, theme::HOVER);
                 }
 
                 // Las líneas de esta fila bajan hasta la siguiente.
                 for link in &row.links {
-                    let stroke = Stroke::new(LINE_W, lane_color(link.color));
+                    let stroke = Stroke::new(LINE_W, theme::lane(link.color));
                     let top = Pos2::new(lane_x(link.from), row_y(index));
                     let bottom = Pos2::new(lane_x(link.to), row_y(index + 1));
 
                     if link.from == link.to {
-                        painter.line_segment([top, bottom], stroke);
+                        lanes_painter.line_segment([top, bottom], stroke);
                     } else {
                         // Curva en S para que el salto de carril se lea bien.
-                        let c1 = Pos2::new(top.x, top.y + ROW_H * 0.5);
-                        let c2 = Pos2::new(bottom.x, bottom.y - ROW_H * 0.5);
-                        painter.add(egui::Shape::CubicBezier(
+                        let c1 = Pos2::new(top.x, top.y + row_h * 0.5);
+                        let c2 = Pos2::new(bottom.x, bottom.y - row_h * 0.5);
+                        lanes_painter.add(egui::Shape::CubicBezier(
                             egui::epaint::CubicBezierShape::from_points_stroke(
                                 [top, c1, c2, bottom],
                                 false,
@@ -109,8 +139,8 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
                     }
                 }
 
-                draw_commit(&painter, row, lane_x(row.lane), row_y(index));
-                draw_text(&painter, ui, row, rect.left() + graph_w, row_y(index), rect.right());
+                draw_commit(&lanes_painter, row, lane_x(row.lane), row_y(index));
+                draw_row(&painter, ui, row, rect.left() + graph_w, row_y(index), &columns);
             }
         });
 
@@ -118,97 +148,175 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
 }
 
 fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
-    let color = lane_color(row.color);
+    let color = theme::lane(row.color);
     let center = Pos2::new(x, y);
+
+    // Un cerco del color del lienzo despega el punto de las líneas que pasan
+    // por detrás; sin él el grafo se emborrona en las confluencias.
+    painter.circle_filled(center, DOT_R + 2.5, theme::CANVAS);
 
     // Un merge se marca con un punto hueco; un commit normal, macizo.
     if row.commit.parents.len() > 1 {
-        painter.circle_filled(center, DOT_R, Color32::from_gray(24));
-        painter.circle_stroke(center, DOT_R, Stroke::new(2.0, color));
+        painter.circle_filled(center, DOT_R, theme::CANVAS);
+        painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(2.0, color));
     } else {
         painter.circle_filled(center, DOT_R, color);
     }
+
+    // Donde está HEAD se ve desde lejos.
+    if row.commit.refs.iter().any(|r| r.kind == RefKind::Head) {
+        painter.circle_stroke(center, DOT_R + 3.5, Stroke::new(1.5, theme::HEAD));
+    }
 }
 
-fn draw_text(
+/// Dónde cae cada columna de la derecha con el ancho que hay.
+struct Columns {
+    author: Option<f32>,
+    date: Option<f32>,
+    hash: Option<f32>,
+    summary_right: f32,
+}
+
+impl Columns {
+    fn for_width(left: f32, right: f32) -> Self {
+        let mut edge = right - PAD_R;
+        let mut columns = Self {
+            author: None,
+            date: None,
+            hash: None,
+            summary_right: right - PAD_R,
+        };
+
+        // De fuera hacia dentro, y cada una solo si al mensaje le queda sitio.
+        for (width, slot) in [
+            (HASH_W, &mut columns.hash),
+            (DATE_W, &mut columns.date),
+            (AUTHOR_W, &mut columns.author),
+        ] {
+            if edge - width - COL_GAP - left < SUMMARY_MIN {
+                break;
+            }
+            *slot = Some(edge);
+            edge -= width + COL_GAP;
+        }
+
+        columns.summary_right = edge - 8.0;
+        columns
+    }
+}
+
+fn draw_row(
     painter: &egui::Painter,
     ui: &egui::Ui,
     row: &Row,
     left: f32,
     y: f32,
-    right: f32,
+    columns: &Columns,
 ) {
-    let mut x = left + 6.0;
-    let label_font = FontId::monospace(11.0);
+    let mut x = left + 2.0;
 
     for label in &row.commit.refs {
-        let (color, text) = match label.kind {
-            RefKind::Head => (Color32::from_rgb(0xFF, 0xD1, 0x4A), format!("⌂ {}", label.name)),
-            RefKind::LocalBranch => (Color32::from_rgb(0x7A, 0xC6, 0xFF), label.name.clone()),
-            RefKind::RemoteBranch => (Color32::from_rgb(0x9A, 0xA6, 0xB2), label.name.clone()),
-            RefKind::Tag => (Color32::from_rgb(0xC7, 0xA6, 0xF5), format!("⚑ {}", label.name)),
-        };
-        let bounds = painter.text(
-            Pos2::new(x, y),
-            Align2::LEFT_CENTER,
-            text,
-            label_font.clone(),
-            color,
-        );
-        x = bounds.right() + 10.0;
+        x = draw_badge(painter, label, theme::lane(row.color), x, y, columns.summary_right);
     }
 
-    // Reservamos el ancho de las columnas de la derecha.
-    let meta_w = 300.0;
-    let summary_right = (right - meta_w).max(x + 40.0);
-
-    let summary = elide(ui, &row.commit.summary, summary_right - x, 13.0);
+    let summary_font = theme::body(13.0);
+    let summary = elide(ui, &row.commit.summary, columns.summary_right - x, &summary_font);
     painter.text(
         Pos2::new(x, y),
         Align2::LEFT_CENTER,
         summary,
-        FontId::proportional(13.0),
-        Color32::from_gray(222),
+        summary_font,
+        theme::TEXT,
     );
 
-    let when = Local
-        .timestamp_opt(row.commit.time, 0)
-        .single()
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default();
+    if let Some(edge) = columns.author {
+        let font = theme::body(11.5);
+        painter.text(
+            Pos2::new(edge, y),
+            Align2::RIGHT_CENTER,
+            elide(ui, &row.commit.author, AUTHOR_W, &font),
+            font,
+            theme::MUTED,
+        );
+    }
 
-    painter.text(
-        Pos2::new(right - 8.0, y),
-        Align2::RIGHT_CENTER,
-        &row.commit.short_id,
-        FontId::monospace(11.0),
-        Color32::from_gray(130),
-    );
-    painter.text(
-        Pos2::new(right - 78.0, y),
-        Align2::RIGHT_CENTER,
-        when,
-        FontId::monospace(11.0),
-        Color32::from_gray(130),
-    );
-    painter.text(
-        Pos2::new(right - 200.0, y),
-        Align2::RIGHT_CENTER,
-        elide(ui, &row.commit.author, 110.0, 11.0),
-        FontId::proportional(11.0),
-        Color32::from_gray(160),
-    );
+    if let Some(edge) = columns.date {
+        let when = Local
+            .timestamp_opt(row.commit.time, 0)
+            .single()
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        painter.text(
+            Pos2::new(edge, y),
+            Align2::RIGHT_CENTER,
+            when,
+            theme::mono(11.0),
+            theme::FAINT,
+        );
+    }
+
+    if let Some(edge) = columns.hash {
+        painter.text(
+            Pos2::new(edge, y),
+            Align2::RIGHT_CENTER,
+            &row.commit.short_id,
+            theme::mono(11.0),
+            theme::FAINT,
+        );
+    }
+}
+
+/// Una pastilla de referencia, teñida del carril en el que vive el commit, de
+/// modo que el nombre de la rama y su línea se lean como una misma hebra.
+///
+/// Las remotas van en hueco porque casi siempre duplican a una local, y lo que
+/// interesa es que no compitan con ella.
+fn draw_badge(
+    painter: &egui::Painter,
+    label: &gitrust_core::RefLabel,
+    lane: Color32,
+    x: f32,
+    y: f32,
+    limit: f32,
+) -> f32 {
+    let (text, color, filled) = match label.kind {
+        RefKind::Head => (label.name.clone(), theme::HEAD, true),
+        RefKind::LocalBranch => (label.name.clone(), lane, true),
+        RefKind::RemoteBranch => (label.name.clone(), theme::MUTED, false),
+        RefKind::Tag => (label.name.clone(), theme::lane(6), true),
+    };
+
+    let galley = painter.layout_no_wrap(text, theme::medium(11.0), color);
+    let width = galley.size().x + 12.0;
+
+    // Si la pastilla se come el mensaje, mejor no ponerla.
+    if x + width > limit - 60.0 {
+        return x;
+    }
+
+    let chip = Rect::from_min_size(Pos2::new(x, y - 9.0), egui::vec2(width, 18.0));
+    let radius = CornerRadius::same(3);
+    if filled {
+        painter.rect_filled(chip, radius, theme::tint(color, 38));
+    } else {
+        painter.rect_stroke(
+            chip,
+            radius,
+            Stroke::new(1.0, theme::HAIRLINE),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let text_pos = Pos2::new(chip.left() + 6.0, y - galley.size().y / 2.0);
+    painter.galley(text_pos, galley, color);
+
+    chip.right() + 6.0
 }
 
 /// Recorta el texto con puntos suspensivos si no cabe en `max_w`.
-fn elide(ui: &egui::Ui, text: &str, max_w: f32, size: f32) -> String {
-    let font = FontId::proportional(size);
+fn elide(ui: &egui::Ui, text: &str, max_w: f32, font: &FontId) -> String {
     let width = |s: &str| {
-        ui.fonts(|f| {
-            s.chars()
-                .map(|c| f.glyph_width(&font, c))
-                .sum::<f32>()
-        })
+        ui.fonts(|f| s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>())
     };
 
     if width(text) <= max_w {
