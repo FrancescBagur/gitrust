@@ -1,51 +1,11 @@
 //! Pruebas del ciclo preparar → commitear sobre un repositorio real y temporal.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::TempRepo;
 use gitrust_core::{ChangeKind, Repo};
-
-/// Crea un repositorio vacío en un directorio temporal propio de esta prueba.
-struct TempRepo {
-    dir: PathBuf,
-}
-
-impl TempRepo {
-    fn new(tag: &str) -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("gitrust-{tag}-{stamp}"));
-        fs::create_dir_all(&dir).unwrap();
-
-        let repo = git2::Repository::init(&dir).unwrap();
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "gitrust test").unwrap();
-        config.set_str("user.email", "test@example.invalid").unwrap();
-
-        Self { dir }
-    }
-
-    fn write(&self, name: &str, contents: &str) {
-        fs::write(self.dir.join(name), contents).unwrap();
-    }
-
-    fn open(&self) -> Repo {
-        Repo::open(&self.dir).unwrap()
-    }
-
-    fn path(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
 
 #[test]
 fn un_fichero_nuevo_pasa_de_sin_seguimiento_a_preparado() {

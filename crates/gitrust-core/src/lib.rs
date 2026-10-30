@@ -8,7 +8,9 @@ pub mod diff;
 pub mod graph;
 pub mod message;
 pub mod model;
+pub mod remote;
 pub mod repo;
+pub mod stash;
 pub mod status;
 
 pub use detail::{CommitDetail, CommitFile, RefEntry};
@@ -17,5 +19,7 @@ pub use diff::{DiffLine, FileDiff, Hunk, HunkId};
 pub use graph::{layout, layout_with_working};
 pub use message::{blocks, compose, Block, SUBJECT_LIMIT};
 pub use model::{Commit, Graph, Link, RefKind, RefLabel, Row};
+pub use remote::Tracking;
 pub use repo::Repo;
+pub use stash::StashEntry;
 pub use status::{ChangeKind, FileChange, WorkingState};

@@ -15,7 +15,7 @@ use crate::model::{Commit, RefKind, RefLabel};
 use crate::status::{staged_kind, unstaged_kind, ChangeKind, FileChange, WorkingState};
 
 pub struct Repo {
-    inner: Repository,
+    pub(crate) inner: Repository,
 }
 
 impl Repo {
@@ -394,6 +394,29 @@ impl Repo {
         for path in paths {
             self.unstage(path)?;
         }
+        Ok(())
+    }
+
+    /// Crea una rama donde está HEAD y se cambia a ella.
+    ///
+    /// El árbol de trabajo no se toca: la rama nueva apunta al mismo commit
+    /// que la vieja, así que lo que hubiera a medias sigue ahí y se puede
+    /// commitear ya en la rama nueva. Es la manera de darse cuenta tarde de
+    /// que uno estaba escribiendo en la rama equivocada.
+    pub fn branch_here(&self, name: &str) -> Result<()> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "la rama necesita un nombre");
+
+        let commit = self
+            .inner
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .context("el repositorio no tiene commits de los que partir")?;
+
+        self.inner
+            .branch(name, &commit, false)
+            .with_context(|| format!("no se pudo crear «{name}»"))?;
+        self.inner.set_head(&format!("refs/heads/{name}"))?;
         Ok(())
     }
 

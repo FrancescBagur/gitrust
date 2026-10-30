@@ -310,6 +310,37 @@ pub fn rule(ui: &mut egui::Ui) {
     ui.add_space(6.0);
 }
 
+/// La misma línea, de pie, para separar grupos dentro de una barra.
+///
+/// Un punto más clara que la horizontal: sobre el gris de la barra, el de los
+/// paneles no se llega a ver.
+pub fn vrule(ui: &mut egui::Ui) {
+    ui.add_space(6.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 19.0), egui::Sense::hover());
+    ui.painter()
+        .vline(rect.center().x, rect.top()..=rect.bottom(), Stroke::new(1.0, EDGE));
+    ui.add_space(6.0);
+}
+
+/// La punta de un botón que abre un desplegable.
+///
+/// Se pinta en vez de escribirse. El triángulo de Unicode no está en todas
+/// las fuentes, y donde falta sale el cuadro vacío de los caracteres que
+/// nadie sabe dibujar, que es peor que no poner nada.
+pub fn caret(ui: &egui::Ui, response: &egui::Response) {
+    let x = response.rect.right() - 11.0;
+    let y = response.rect.center().y + 1.0;
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x - 3.6, y - 2.0),
+            egui::pos2(x + 3.6, y - 2.0),
+            egui::pos2(x, y + 2.4),
+        ],
+        MUTED,
+        Stroke::NONE,
+    ));
+}
+
 /// Un mensaje centrado para cuando un panel no tiene nada que enseñar. Dice
 /// qué hacer, no se disculpa.
 pub fn empty(ui: &mut egui::Ui, text: &str) {

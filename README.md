@@ -15,9 +15,10 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Tres paneles: ramas, grafo y detalle del commit
 - [x] Tema propio: una sola familia de color saturado, la de los carriles
 - [x] Los cambios sin confirmar, como una fila más arriba del grafo
+- [x] Barra de acciones: pull, push, rama nueva y stash
 - [ ] Enmendar el último commit
-- [ ] Cambio de rama, push, pull
-- [ ] Merge con editor de conflictos, rebase interactivo, stash, worktrees
+- [ ] Cambiar a una rama que ya existe
+- [ ] Merge con editor de conflictos, rebase interactivo, worktrees
 
 ## Arquitectura
 
@@ -25,6 +26,8 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 crates/
   gitrust-core/     lógica Git, sin dependencias de UI
     repo.rs         repositorio, commits, índice y diffs (libgit2)
+    remote.rs       traer, llevar, y la distancia con la rama remota
+    stash.rs        la pila de cambios apartados
     graph.rs        algoritmo de carriles, y la fila de cambios sin confirmar
     status.rs       estado del árbol de trabajo
     diff.rs         diff troceado en hunks
@@ -34,6 +37,7 @@ crates/
   gitrust-ui/       aplicación egui
     main.rs         ventana, estado y ejecución de acciones
     theme.rs        color, tipografía y espaciado
+    action_bar.rs   pull, push, rama y stash
     refs_view.rs    barra lateral de ramas y etiquetas
     graph_view.rs   pintado del grafo
     detail_view.rs  panel de detalle del commit
@@ -46,6 +50,10 @@ ejecuta. Eso mantiene el pintado libre de efectos secundarios.
 
 El núcleo no conoce la UI. Si en algún momento egui deja de encajar, se
 sustituye `gitrust-ui` y la lógica Git sigue intacta.
+
+Lo que sale a la red —traer y llevar— se va a un hilo suyo, que abre su propio
+repositorio y devuelve una frase por un canal. El hilo que pinta no espera a
+nadie.
 
 **Backend Git:** `git2` (libgit2) para el grueso de las operaciones. Para
 credential helpers, LFS y hooks el plan es delegar en el binario `git` real,
@@ -76,9 +84,14 @@ cargo test -p gitrust-core
 ```
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
-operaciones sobre el índice son las que escriben en tus ficheros. Son las dos
-que llevan cobertura: doce pruebas, seis de ellas contra repositorios reales
-creados en `/tmp` y borrados al terminar.
+operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
+ficheros. Son las que llevan cobertura: treinta y nueve pruebas, veinticuatro
+de ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
+
+Las del remoto hablan con un repositorio bare en otro directorio temporal. Por
+una ruta de disco se recorre el mismo camino que con un remoto de verdad —los
+refspecs, el avance rápido, la rama que pasa a seguir a otra— sin depender de
+que haya red ni credenciales.
 
 ## Licencia
 

@@ -5,6 +5,7 @@
 //! derecha, de modo que pinchar en el grafo enseña el diff sin cambiar de
 //! pantalla.
 
+mod action_bar;
 mod changes_view;
 mod detail_view;
 mod diff_view;
@@ -16,7 +17,7 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, CommitDetail, FileDiff, Graph, Oid, RefEntry, RefKind,
-    Repo, WorkingState,
+    Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -58,6 +59,12 @@ struct App {
     refs: Vec<RefEntry>,
     ref_filter: String,
 
+    // La barra de acciones y lo que necesita saber.
+    tracking: Option<Tracking>,
+    stashes: Vec<StashEntry>,
+    draft: action_bar::Draft,
+    job: Option<Job>,
+
     // Commit seleccionado en el grafo.
     selected_commit: Option<Oid>,
     detail: Option<CommitDetail>,
@@ -70,6 +77,16 @@ struct App {
     diff: Option<FileDiff>,
     subject: String,
     body: String,
+}
+
+/// Una operación que tarda, corriendo aparte.
+///
+/// Traer o llevar tarda lo que tarde la red, y hacerlo en el hilo que pinta
+/// dejaría la ventana colgada sin explicar por qué. El hilo abre su propio
+/// repositorio —`git2::Repository` no viaja entre hilos— y manda de vuelta
+/// una sola cosa: la frase que toque poner en la barra de abajo.
+struct Job {
+    done: std::sync::mpsc::Receiver<Result<String>>,
 }
 
 impl App {
@@ -87,6 +104,10 @@ impl App {
             limit: 5_000,
             refs: Vec::new(),
             ref_filter: String::new(),
+            tracking: None,
+            stashes: Vec::new(),
+            draft: action_bar::Draft::default(),
+            job: None,
             selected_commit: None,
             detail: None,
             detail_file: None,
@@ -109,7 +130,7 @@ impl App {
     fn load(&mut self) {
         let started = std::time::Instant::now();
 
-        let repo = match self.repo() {
+        let mut repo = match self.repo() {
             Ok(repo) => repo,
             Err(err) => return self.fail(err),
         };
@@ -117,6 +138,8 @@ impl App {
         self.head = repo.head_name();
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
+        self.tracking = repo.tracking();
+        self.stashes = repo.stashes().unwrap_or_default();
 
         // El estado del árbol va antes que el grafo: de él depende que haya o
         // no una fila de cambios sin confirmar encima de la historia.
@@ -173,12 +196,13 @@ impl App {
 
     /// Recarga solo lo que cambia al tocar el índice.
     fn refresh(&mut self) {
-        let repo = match self.repo() {
+        let mut repo = match self.repo() {
             Ok(repo) => repo,
             Err(err) => return self.fail(err),
         };
 
         self.head = repo.head_name();
+        self.stashes = repo.stashes().unwrap_or_default();
         let had_working = self.has_working_row();
         self.read_work(&repo);
 
@@ -268,8 +292,8 @@ impl App {
     }
 
     /// Ejecuta una operación sobre el repositorio y recarga el estado.
-    fn run(&mut self, op: impl FnOnce(&Repo) -> Result<()>) -> bool {
-        match self.repo().and_then(|repo| op(&repo)) {
+    fn run(&mut self, op: impl FnOnce(&mut Repo) -> Result<()>) -> bool {
+        match self.repo().and_then(|mut repo| op(&mut repo)) {
             Ok(()) => {
                 self.refresh();
                 true
@@ -277,6 +301,62 @@ impl App {
             Err(err) => {
                 self.note_error(err.to_string());
                 false
+            }
+        }
+    }
+
+    /// Manda una operación lenta a su propio hilo.
+    ///
+    /// Mientras dure, la barra de acciones se apaga entera: encolar un push
+    /// detrás de un pull cuando ninguno ha terminado es pedir un lío que
+    /// luego hay que explicar.
+    fn spawn(
+        &mut self,
+        doing: &str,
+        work: impl FnOnce(&mut Repo) -> Result<String> + Send + 'static,
+    ) {
+        let (send, done) = std::sync::mpsc::channel();
+        let path = self.path.clone();
+
+        std::thread::spawn(move || {
+            let _ = send.send(Repo::open(&path).and_then(|mut repo| work(&mut repo)));
+        });
+
+        self.status = format!("{doing}…");
+        self.status_failed = false;
+        self.job = Some(Job { done });
+    }
+
+    /// Mira si la operación de fondo ha terminado.
+    ///
+    /// Mientras no lo haya hecho pide que se repinte: sin eso egui se duerme
+    /// en cuanto nadie toca el ratón, y el resultado se quedaría esperando a
+    /// que alguien moviera la ventana.
+    fn poll(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(job) = &self.job else {
+            return;
+        };
+
+        match job.done.try_recv() {
+            Ok(result) => {
+                self.job = None;
+                match result {
+                    Ok(note) => {
+                        self.load();
+                        self.status = note;
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(err.to_string()),
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.job = None;
+                self.note_error("la operación se cortó por el camino".to_string());
             }
         }
     }
@@ -290,6 +370,8 @@ impl App {
     fn fail(&mut self, err: anyhow::Error) {
         self.graph = Graph::default();
         self.refs.clear();
+        self.tracking = None;
+        self.stashes.clear();
         self.work = WorkingState::default();
         self.selected = None;
         self.diff = None;
@@ -350,8 +432,50 @@ impl App {
     }
 }
 
+impl App {
+    fn act(&mut self, action: action_bar::Action) {
+        use action_bar::Action;
+
+        match action {
+            // Las dos que salen a la red se van a un hilo aparte. El resto
+            // son locales y terminan antes de que se note.
+            Action::Pull => self.spawn("trayendo", |repo| repo.pull()),
+            Action::Push => self.spawn("llevando", |repo| repo.push()),
+
+            Action::Branch(name) => {
+                match self.repo().and_then(|repo| repo.branch_here(&name)) {
+                    Ok(()) => {
+                        self.load();
+                        self.status = format!("ahora estás en {name}");
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(err.to_string()),
+                }
+            }
+
+            Action::StashSave(message) => self.local(|repo| repo.stash_save(&message)),
+            Action::StashPop(index) => self.local(|repo| repo.stash_pop(index)),
+            Action::StashApply(index) => self.local(|repo| repo.stash_apply(index)),
+            Action::StashDrop(index) => self.local(|repo| repo.stash_drop(index)),
+        }
+    }
+
+    /// Una operación local que deja dicho cómo fue.
+    fn local(&mut self, op: impl FnOnce(&mut Repo) -> Result<String>) {
+        match self.repo().and_then(|mut repo| op(&mut repo)) {
+            Ok(note) => {
+                self.refresh();
+                self.status = note;
+                self.status_failed = false;
+            }
+            Err(err) => self.note_error(err.to_string()),
+        }
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll(ctx);
         self.top_bar(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
@@ -410,9 +534,86 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    self.repo_menu(ui);
+                    theme::vrule(ui);
+                    self.tabs(ui);
+                    theme::vrule(ui);
+
+                    // Dónde está HEAD, con el único ámbar de la ventana. Va
+                    // pegado a las acciones porque todas van a parar a él.
+                    if !self.head.is_empty() {
+                        ui.label(
+                            egui::RichText::new(&self.head)
+                                .font(theme::medium(12.0))
+                                .color(theme::HEAD)
+                                .background_color(theme::tint(theme::HEAD, 28)),
+                        );
+                        // Un respiro antes de las acciones: el ámbar de HEAD y
+                        // el de las cuentas son casi el mismo, y pegados se
+                        // leerían como una sola mancha de color.
+                        ui.add_space(11.0);
+                    }
+
+                    let action = action_bar::show(
+                        ui,
+                        self.tracking.as_ref(),
+                        &self.stashes,
+                        self.job.is_some(),
+                        &mut self.draft,
+                    );
+
+                    let mut reload = false;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        reload = ui
+                            .add_enabled(self.job.is_none(), egui::Button::new("↻"))
+                            .on_hover_text("Recargar")
+                            .clicked();
+                    });
+
+                    if let Some(action) = action {
+                        self.act(action);
+                    } else if reload {
+                        self.load();
+                    }
+                });
+            });
+    }
+
+    /// Qué repositorio está abierto, y cómo cambiarlo.
+    ///
+    /// A diario basta con el nombre de la carpeta. La ruta entera, que se
+    /// comía un tercio de la barra para no decir casi nada, se ha ido al
+    /// desplegable donde de verdad se usa: al abrir otro repositorio.
+    fn repo_menu(&mut self, ui: &mut egui::Ui) {
+        let name = std::path::Path::new(self.path.trim_end_matches('/'))
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "repositorio".to_string());
+
+        let button =
+            ui.button(egui::RichText::new(format!("{name}     ")).font(theme::medium(12.5)));
+        theme::caret(ui, &button);
+        let hint = self.path.clone();
+        let button = button.on_hover_text(hint);
+        let id = ui.make_persistent_id("menu-repo");
+
+        if button.clicked() {
+            ui.memory_mut(|memory| memory.toggle_popup(id));
+        }
+
+        let open = egui::popup::popup_below_widget(
+            ui,
+            id,
+            &button,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(430.0);
+                let mut go = false;
+
+                ui.horizontal(|ui| {
                     let entry = ui.add(
                         egui::TextEdit::singleline(&mut self.path)
-                            .desired_width(300.0)
+                            .desired_width(ui.available_width() - 66.0)
                             .margin(egui::vec2(8.0, 5.0))
                             .font(theme::mono(11.5))
                             .hint_text(
@@ -420,38 +621,25 @@ impl App {
                                     .color(theme::FAINT),
                             ),
                     );
-                    let reload = ui.button("Abrir").clicked();
-                    let submitted =
-                        entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if reload || submitted {
-                        self.selected = None;
-                        self.diff = None;
-                        self.selected_commit = None;
-                        self.detail = None;
-                        self.load();
-                    }
-
-                    ui.add_space(8.0);
-                    self.tabs(ui);
-
-                    // Dónde está HEAD, con el único ámbar de la ventana.
-                    if !self.head.is_empty() {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(&self.head)
-                                .font(theme::medium(12.0))
-                                .color(theme::HEAD)
-                                .background_color(theme::tint(theme::HEAD, 28)),
-                        );
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("↻").on_hover_text("Recargar").clicked() {
-                            self.load();
-                        }
-                    });
+                    go = ui.button("Abrir").clicked()
+                        || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 });
-            });
+
+                if go {
+                    ui.memory_mut(|memory| memory.close_popup());
+                }
+                go
+            },
+        )
+        .unwrap_or(false);
+
+        if open {
+            self.selected = None;
+            self.diff = None;
+            self.selected_commit = None;
+            self.detail = None;
+            self.load();
+        }
     }
 
     /// Las dos vistas, pegadas como un mando de dos posiciones.
