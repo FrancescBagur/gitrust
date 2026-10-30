@@ -47,6 +47,11 @@ impl Repo {
         }
     }
 
+    /// El commit al que apunta HEAD, si el repositorio tiene alguno.
+    pub fn head_id(&self) -> Option<Oid> {
+        self.inner.head().ok()?.peel(ObjectType::Commit).ok().map(|object| object.id())
+    }
+
     // ---------------------------------------------------------------- historia
 
     /// Recorre el historial de todas las referencias y devuelve hasta `limit`

@@ -348,3 +348,16 @@ pub fn files_label(count: usize) -> String {
         format!("{count} ficheros")
     }
 }
+
+/// «2 preparados, 3 sin preparar», callando el lado que esté vacío.
+pub fn pending_label(staged: usize, unstaged: usize) -> String {
+    let mut parts = Vec::new();
+    if staged > 0 {
+        let plural = if staged == 1 { "" } else { "s" };
+        parts.push(format!("{staged} preparado{plural}"));
+    }
+    if unstaged > 0 {
+        parts.push(format!("{unstaged} sin preparar"));
+    }
+    parts.join(", ")
+}

@@ -11,8 +11,8 @@
 //! columnas se retiran por orden de importancia en vez de chocar entre sí.
 
 use chrono::{Local, TimeZone};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke};
-use gitrust_core::{Graph, Oid, RefKind, Row};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Shape, Stroke};
+use gitrust_core::{Graph, Oid, RefKind, Row, WorkingState};
 
 use crate::theme;
 
@@ -37,13 +37,33 @@ const SUMMARY_MIN: f32 = 200.0;
 /// miles de filas donde solo hay dos. Ocho cubre lo que se ve en la práctica;
 /// lo que pase de ahí se recorta contra la columna del mensaje.
 const MAX_LANES: usize = 8;
+/// Trazo de la línea que baja de los cambios sin confirmar: raya y hueco.
+const DASH: (f32, f32) = (3.0, 3.5);
 
 /// Devuelve el commit pulsado, si lo hay.
-pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<Oid> {
+///
+/// El estado del árbol de trabajo hace falta para rotular la fila de cambios
+/// sin confirmar, cuando el grafo la trae.
+pub fn show(
+    ui: &mut egui::Ui,
+    graph: &Graph,
+    selected: Option<Oid>,
+    work: &WorkingState,
+) -> Option<Oid> {
     if graph.rows.is_empty() {
         theme::empty(ui, "Abre un repositorio para ver su historia");
         return None;
     }
+
+    // Hasta dónde baja la línea de los cambios sin confirmar: de su fila a la
+    // de HEAD, que es su padre. Lo que pase por ese carril antes de llegar
+    // sigue siendo esa misma línea, y se dibuja a trazos.
+    let pending = graph.rows.first().filter(|row| row.commit.is_working()).map(|row| {
+        let head = row.commit.parents[0];
+        let until = graph.rows.iter().position(|r| r.commit.id == head).unwrap_or(0);
+        (row.lane, until)
+    });
+    let pending_label = theme::pending_label(work.staged.len(), work.unstaged.len());
 
     // Con una historia muy ramificada los carriles se comerían la columna
     // del mensaje, así que a partir de cierto punto se dejan solapar.
@@ -95,34 +115,65 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
 
             let columns = Columns::for_width(rect.left() + graph_w, rect.right());
 
-            for index in first..last {
-                let row = &graph.rows[index];
-                let band = Rect::from_min_size(
+            let band_of = |index: usize| {
+                Rect::from_min_size(
                     egui::pos2(rect.left(), rect.top() + index as f32 * row_h),
                     egui::vec2(rect.width(), row_h),
-                );
+                )
+            };
+
+            // Los fondos van todos primero. Si cada fila pintara el suyo justo
+            // antes de sus líneas, la banda de la fila elegida taparía la mitad
+            // de la línea que baja hasta ella desde la de arriba.
+            for index in first..last {
+                let row = &graph.rows[index];
 
                 // La fila elegida se marca con su propio color de carril en el
                 // canto izquierdo, no con un azul traído de fuera: así se ve de
                 // un vistazo a qué rama pertenece lo que se está mirando.
                 if selected == Some(row.commit.id) {
+                    let band = band_of(index);
+                    let edge = if row.commit.is_working() {
+                        theme::MUTED
+                    } else {
+                        theme::lane(row.color)
+                    };
                     painter.rect_filled(band, 0.0, theme::CHOSEN);
                     painter.rect_filled(
                         Rect::from_min_size(band.min, egui::vec2(2.0, band.height())),
                         0.0,
-                        theme::lane(row.color),
+                        edge,
                     );
                 } else if hovered == Some(index) {
-                    painter.rect_filled(band, 0.0, theme::HOVER);
+                    painter.rect_filled(band_of(index), 0.0, theme::HOVER);
                 }
+            }
+
+            for index in first..last {
+                let row = &graph.rows[index];
+                let band = band_of(index);
 
                 // Las líneas de esta fila bajan hasta la siguiente.
                 for link in &row.links {
-                    let stroke = Stroke::new(LINE_W, theme::lane(link.color));
+                    // La que une los cambios con HEAD va a trazos y sin color:
+                    // todavía no es historia, y no debe leerse como una rama.
+                    // Solo la que baja recta por ese carril: una rama que se
+                    // fusione en HEAD también acaba ahí, y esa sí es historia.
+                    let dashed = pending.is_some_and(|(lane, until)| {
+                        index < until && link.from == lane && link.to == lane
+                    });
+                    let stroke = if dashed {
+                        Stroke::new(LINE_W, theme::MUTED)
+                    } else {
+                        Stroke::new(LINE_W, theme::lane(link.color))
+                    };
                     let top = Pos2::new(lane_x(link.from), row_y(index));
                     let bottom = Pos2::new(lane_x(link.to), row_y(index + 1));
 
-                    if link.from == link.to {
+                    if dashed {
+                        lanes_painter
+                            .extend(Shape::dashed_line(&[top, bottom], stroke, DASH.0, DASH.1));
+                    } else if link.from == link.to {
                         lanes_painter.line_segment([top, bottom], stroke);
                     } else {
                         // Curva en S para que el salto de carril se lea bien.
@@ -140,7 +191,18 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
                 }
 
                 draw_commit(&lanes_painter, row, lane_x(row.lane), row_y(index));
-                draw_row(&painter, ui, row, rect.left() + graph_w, row_y(index), &columns);
+
+                if row.commit.is_working() {
+                    draw_working(&painter, rect.left() + graph_w, row_y(index), &pending_label);
+                    // Un pelo deja claro dónde empieza lo que ya está escrito.
+                    painter.hline(
+                        band.x_range(),
+                        band.bottom(),
+                        Stroke::new(1.0, theme::HAIRLINE),
+                    );
+                } else {
+                    draw_row(&painter, ui, row, rect.left() + graph_w, row_y(index), &columns);
+                }
             }
         });
 
@@ -150,6 +212,16 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<O
 fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
     let color = theme::lane(row.color);
     let center = Pos2::new(x, y);
+
+    // Los cambios sin confirmar van huecos y en gris: no son un commit, y
+    // darles el color de la rama sería decir que ya forman parte de ella. El
+    // cerco se queda al ras del punto para no comerse los trazos de su línea,
+    // que es corta y tiene pocos que gastar.
+    if row.commit.is_working() {
+        painter.circle_filled(center, DOT_R + 1.0, theme::CANVAS);
+        painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(1.6, theme::MUTED));
+        return;
+    }
 
     // Un cerco del color del lienzo despega el punto de las líneas que pasan
     // por detrás; sin él el grafo se emborrona en las confluencias.
@@ -166,6 +238,31 @@ fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
     // Donde está HEAD se ve desde lejos.
     if row.commit.refs.iter().any(|r| r.kind == RefKind::Head) {
         painter.circle_stroke(center, DOT_R + 3.5, Stroke::new(1.5, theme::HEAD));
+    }
+}
+
+/// La fila de los cambios sin confirmar.
+///
+/// No lleva ni autor ni fecha ni hash, porque todavía no tiene ninguna de las
+/// tres cosas. En su lugar dice cuánto hay a cada lado del índice, que es lo
+/// único que se puede saber de ella.
+fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
+    let title = painter.text(
+        Pos2::new(left + 2.0, y),
+        Align2::LEFT_CENTER,
+        "Cambios sin confirmar",
+        theme::medium(13.0),
+        theme::TEXT,
+    );
+
+    if !pending.is_empty() {
+        painter.text(
+            Pos2::new(title.right() + 10.0, y),
+            Align2::LEFT_CENTER,
+            pending,
+            theme::body(11.5),
+            theme::MUTED,
+        );
     }
 }
 

@@ -84,6 +84,58 @@ pub fn show(
     action
 }
 
+/// El mismo panel en una sola columna, para el lado derecho de la historia.
+///
+/// Es lo que sale al elegir en el grafo la fila de cambios sin confirmar: las
+/// dos listas, el cuadro de commit y el diff, uno debajo de otro, de modo que
+/// se pueda preparar y commitear sin salir del grafo.
+pub fn compact(
+    ui: &mut egui::Ui,
+    state: &WorkingState,
+    selected: Option<(&str, bool)>,
+    diff: Option<&FileDiff>,
+    subject: &mut String,
+    body: &mut String,
+) -> Option<Action> {
+    let mut action = None;
+
+    ui.add_space(12.0);
+    ui.label(
+        RichText::new("Cambios sin confirmar")
+            .font(theme::strong(15.0))
+            .color(theme::TEXT),
+    );
+    ui.add_space(3.0);
+    let note = theme::pending_label(state.staged.len(), state.unstaged.len());
+    ui.label(
+        RichText::new(if note.is_empty() { "El árbol está limpio".to_string() } else { note })
+            .font(theme::body(11.5))
+            .color(theme::MUTED),
+    );
+
+    theme::rule(ui);
+
+    // Las listas se quedan en un tercio del panel; el resto es para el cuadro
+    // de commit y el diff, que es donde se trabaja.
+    let list_height = (ui.available_height() * 0.34).clamp(90.0, 300.0);
+    egui::ScrollArea::vertical()
+        .id_salt("listas-estrechas")
+        .max_height(list_height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            section(ui, "Preparado", &state.staged, selected, true, &mut action);
+            ui.add_space(12.0);
+            section(ui, "Sin preparar", &state.unstaged, selected, false, &mut action);
+        });
+
+    theme::rule(ui);
+    commit_box(ui, state, subject, body, &mut action);
+    theme::rule(ui);
+    show_diff(ui, selected, diff, &mut action);
+
+    action
+}
+
 /// El cuadro de commit: título y descripción por separado, como espera Git.
 fn commit_box(
     ui: &mut egui::Ui,

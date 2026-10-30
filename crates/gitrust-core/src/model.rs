@@ -30,6 +30,31 @@ pub struct Commit {
     pub refs: Vec<RefLabel>,
 }
 
+impl Commit {
+    /// El commit que todavía no existe: los cambios del árbol de trabajo.
+    ///
+    /// Git no le da identificador al árbol de trabajo, así que esta fila lleva
+    /// el Oid nulo. Ningún commit real puede tenerlo, de modo que es lo que la
+    /// distingue de las demás sin necesidad de un campo aparte, y el trazado
+    /// del grafo la trata como a cualquier otra: cuelga de HEAD por su padre.
+    pub fn working(head: Oid) -> Self {
+        Self {
+            id: Oid::zero(),
+            short_id: String::new(),
+            summary: String::new(),
+            author: String::new(),
+            time: 0,
+            parents: vec![head],
+            refs: Vec::new(),
+        }
+    }
+
+    /// Si esta fila son los cambios sin confirmar en vez de un commit.
+    pub fn is_working(&self) -> bool {
+        self.id.is_zero()
+    }
+}
+
 /// Una línea dibujada en la banda que va de una fila a la siguiente.
 ///
 /// `from` es el carril en la fila actual y `to` el carril en la fila de abajo.

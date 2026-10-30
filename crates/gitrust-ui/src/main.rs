@@ -15,7 +15,8 @@ mod theme;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, CommitDetail, FileDiff, Graph, Oid, RefEntry, RefKind, Repo, WorkingState,
+    compose, layout, layout_with_working, CommitDetail, FileDiff, Graph, Oid, RefEntry, RefKind,
+    Repo, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -117,52 +118,88 @@ impl App {
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
 
-        match repo.commits(self.limit) {
-            Ok(commits) => {
-                let total = commits.len();
-                let refs = self.refs.len();
-                self.graph = layout(commits);
-                self.summary = format!(
-                    "{total} {} en {refs} {}",
-                    if total == 1 { "commit" } else { "commits" },
-                    if refs == 1 { "referencia" } else { "referencias" },
-                );
-
-                // Al abrir, el panel derecho enseña dónde está HEAD en vez de
-                // recibir con un hueco: lo primero que uno quiere saber de un
-                // repositorio es qué fue lo último que pasó en él.
-                if self.selected_commit.is_none() {
-                    self.selected_commit = self
-                        .graph
-                        .rows
-                        .iter()
-                        .find(|row| row.commit.refs.iter().any(|r| r.kind == RefKind::Head))
-                        .or_else(|| self.graph.rows.first())
-                        .map(|row| row.commit.id);
-                }
-
-                self.status = format!("leído en {} ms", started.elapsed().as_millis());
-                self.status_failed = false;
-            }
-            Err(err) => return self.fail(err),
+        // El estado del árbol va antes que el grafo: de él depende que haya o
+        // no una fila de cambios sin confirmar encima de la historia.
+        self.read_work(&repo);
+        if let Err(err) = self.rebuild_graph(&repo) {
+            return self.fail(err);
         }
+        self.preselect();
 
-        self.reload_work(&repo);
+        self.status = format!("leído en {} ms", started.elapsed().as_millis());
+        self.status_failed = false;
         self.reload_detail(&repo);
+    }
+
+    /// Traza el grafo, con la fila de cambios sin confirmar si el árbol de
+    /// trabajo tiene algo que contar.
+    fn rebuild_graph(&mut self, repo: &Repo) -> Result<()> {
+        let commits = repo.commits(self.limit)?;
+        let total = commits.len();
+
+        self.graph = match repo.head_id() {
+            Some(head) if !self.work.is_clean() => layout_with_working(commits, head),
+            _ => layout(commits),
+        };
+
+        let refs = self.refs.len();
+        self.summary = format!(
+            "{total} {} en {refs} {}",
+            if total == 1 { "commit" } else { "commits" },
+            if refs == 1 { "referencia" } else { "referencias" },
+        );
+        Ok(())
+    }
+
+    /// Al abrir, el panel derecho enseña dónde está HEAD en vez de recibir con
+    /// un hueco: lo primero que uno quiere saber de un repositorio es qué fue
+    /// lo último que pasó en él.
+    fn preselect(&mut self) {
+        if self.selected_commit.is_some() {
+            return;
+        }
+        self.selected_commit = self
+            .graph
+            .rows
+            .iter()
+            .find(|row| row.commit.refs.iter().any(|r| r.kind == RefKind::Head))
+            .or_else(|| self.graph.rows.first())
+            .map(|row| row.commit.id);
+    }
+
+    fn has_working_row(&self) -> bool {
+        self.graph.rows.first().is_some_and(|row| row.commit.is_working())
     }
 
     /// Recarga solo lo que cambia al tocar el índice.
     fn refresh(&mut self) {
-        match self.repo() {
-            Ok(repo) => {
-                self.head = repo.head_name();
-                self.reload_work(&repo);
-            }
-            Err(err) => self.fail(err),
+        let repo = match self.repo() {
+            Ok(repo) => repo,
+            Err(err) => return self.fail(err),
+        };
+
+        self.head = repo.head_name();
+        let had_working = self.has_working_row();
+        self.read_work(&repo);
+
+        // La fila de cambios entra y sale del grafo con el árbol de trabajo:
+        // si el árbol acaba de ensuciarse, o de quedarse limpio, hay que
+        // volver a trazarlo para que la fila aparezca o se vaya.
+        let wants_working = !self.work.is_clean();
+        if had_working != wants_working {
+            let _ = self.rebuild_graph(&repo);
+        }
+
+        // Y si lo elegido era esa fila y ya no existe, el cursor se va a HEAD
+        // en lugar de quedarse señalando a un hueco.
+        if !wants_working && self.selected_commit.is_some_and(|oid| oid.is_zero()) {
+            self.selected_commit = None;
+            self.preselect();
+            self.reload_detail(&repo);
         }
     }
 
-    fn reload_work(&mut self, repo: &Repo) {
+    fn read_work(&mut self, repo: &Repo) {
         match repo.status() {
             Ok(work) => self.work = work,
             Err(err) => return self.note_error(format!("no se pudo leer el estado: {err}")),
@@ -181,7 +218,9 @@ impl App {
     }
 
     fn reload_detail(&mut self, repo: &Repo) {
-        let Some(oid) = self.selected_commit else {
+        // La fila de cambios sin confirmar no tiene detalle que leer: el panel
+        // derecho le enseña el árbol de trabajo en su lugar.
+        let Some(oid) = self.selected_commit.filter(|oid| !oid.is_zero()) else {
             self.detail = None;
             self.detail_diff = None;
             return;
@@ -291,13 +330,20 @@ impl App {
             }
             Action::Commit => {
                 let message = compose(&self.subject, &self.body);
-                if self.run(move |repo| repo.commit(&message).map(|_| ())) {
-                    self.subject.clear();
-                    self.body.clear();
-                    // El commit cambia la historia: hay que redibujar el grafo.
-                    self.load();
-                    self.status = format!("commit creado en {}", self.head);
-                    self.status_failed = false;
+                match self.repo().and_then(|repo| repo.commit(&message)) {
+                    Ok(oid) => {
+                        self.subject.clear();
+                        self.body.clear();
+                        // El cursor se queda en lo recién escrito: la fila de
+                        // cambios donde estaba acaba de dejar de existir.
+                        self.selected_commit = Some(oid);
+                        self.detail_file = None;
+                        // El commit cambia la historia: hay que redibujar el grafo.
+                        self.load();
+                        self.status = format!("commit creado en {}", self.head);
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(err.to_string()),
                 }
             }
         }
@@ -325,7 +371,9 @@ impl eframe::App for App {
             .frame(frame)
             .show(ctx, |ui| match self.tab {
                 Tab::History => {
-                    if let Some(oid) = graph_view::show(ui, &self.graph, self.selected_commit) {
+                    let clicked =
+                        graph_view::show(ui, &self.graph, self.selected_commit, &self.work);
+                    if let Some(oid) = clicked {
                         self.select_commit(oid);
                     }
                 }
@@ -483,7 +531,13 @@ impl App {
     }
 
     fn detail_panel(&mut self, ctx: &egui::Context) {
+        // Con la fila de cambios elegida, el panel derecho pasa a ser el árbol
+        // de trabajo entero: listas, cuadro de commit y diff. Así se prepara y
+        // se commitea sin salir del grafo, que es lo que hace que las dos
+        // vistas se sientan una sola.
+        let working = self.selected_commit.is_some_and(|oid| oid.is_zero());
         let mut clicked = None;
+        let mut action = None;
 
         egui::SidePanel::right("detalle")
             .resizable(true)
@@ -497,14 +551,33 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {
-                clicked = detail_view::show(
-                    ui,
-                    self.detail.as_ref(),
-                    self.detail_file.as_deref(),
-                    self.detail_diff.as_ref(),
-                );
+                if working {
+                    let selected = self
+                        .selected
+                        .as_ref()
+                        .map(|(path, staged)| (path.as_str(), *staged));
+
+                    action = changes_view::compact(
+                        ui,
+                        &self.work,
+                        selected,
+                        self.diff.as_ref(),
+                        &mut self.subject,
+                        &mut self.body,
+                    );
+                } else {
+                    clicked = detail_view::show(
+                        ui,
+                        self.detail.as_ref(),
+                        self.detail_file.as_deref(),
+                        self.detail_diff.as_ref(),
+                    );
+                }
             });
 
+        if let Some(action) = action {
+            self.handle(action);
+        }
         if let Some(path) = clicked {
             self.select_detail_file(path);
         }

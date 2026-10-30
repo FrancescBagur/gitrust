@@ -127,6 +127,30 @@ pub fn layout(commits: Vec<Commit>) -> Graph {
     Graph { rows, lane_count }
 }
 
+/// Igual que `layout`, pero con una fila de cambios sin confirmar encima de
+/// todo, colgando de HEAD.
+///
+/// La fila entra en el trazado como un commit más, con HEAD por padre, así que
+/// el algoritmo la coloca sola: ocupa un carril, HEAD converge en él y hereda
+/// su color, y la línea que los une la dibuja el mismo código que une dos
+/// commits. Si HEAD no es lo más reciente de la historia —porque uno está en
+/// una rama vieja—, esa línea baja por el carril de la izquierda hasta donde
+/// esté, que es justo lo que hay que ver.
+///
+/// Si HEAD no aparece en la lista (porque el límite la cortó antes) no se
+/// añade nada: una línea que bajase hasta el final sin llegar a ningún sitio
+/// diría algo falso.
+pub fn layout_with_working(commits: Vec<Commit>, head: Oid) -> Graph {
+    if !commits.iter().any(|commit| commit.id == head) {
+        return layout(commits);
+    }
+
+    let mut all = Vec::with_capacity(commits.len() + 1);
+    all.push(Commit::working(head));
+    all.extend(commits);
+    layout(all)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +220,57 @@ mod tests {
         assert_eq!(graph.rows[1].color, graph.rows[3].color);
         // La rama fusionada estrena color.
         assert_ne!(graph.rows[2].color, graph.rows[0].color);
+    }
+
+    #[test]
+    fn los_cambios_sin_confirmar_cuelgan_de_head_y_visten_su_color() {
+        let graph = layout_with_working(vec![commit(2, &[1]), commit(1, &[])], oid(2));
+
+        assert_eq!(graph.rows.len(), 3, "la fila de cambios va por delante");
+        let working = &graph.rows[0];
+        assert!(working.commit.is_working());
+        assert_eq!(working.commit.parents, vec![oid(2)]);
+
+        // Comparte carril y color con HEAD: son la misma rama.
+        assert_eq!(working.lane, graph.rows[1].lane);
+        assert_eq!(working.color, graph.rows[1].color);
+
+        // Y una sola línea recta los une.
+        assert_eq!(working.links.len(), 1);
+        assert_eq!((working.links[0].from, working.links[0].to), (0, 0));
+    }
+
+    #[test]
+    fn la_linea_baja_hasta_head_aunque_no_sea_lo_mas_reciente() {
+        // Estamos en la rama vieja (commit 2) mientras otra sigue adelante.
+        let graph = layout_with_working(
+            vec![commit(4, &[3]), commit(3, &[1]), commit(2, &[1]), commit(1, &[])],
+            oid(2),
+        );
+
+        let working_lane = graph.rows[0].lane;
+        let head = graph
+            .rows
+            .iter()
+            .position(|row| row.commit.id == oid(2))
+            .expect("HEAD sigue en el grafo");
+
+        // El carril de los cambios se mantiene ocupado hasta llegar a HEAD.
+        for row in &graph.rows[..head] {
+            assert!(
+                row.links.iter().any(|link| link.to == working_lane),
+                "la línea tiene que seguir bajando por su carril"
+            );
+        }
+        assert_eq!(graph.rows[head].lane, working_lane, "y terminar en HEAD");
+    }
+
+    #[test]
+    fn sin_head_en_la_historia_no_se_anade_la_fila() {
+        // El límite dejó fuera al commit donde está HEAD.
+        let graph = layout_with_working(vec![commit(3, &[2])], oid(1));
+
+        assert_eq!(graph.rows.len(), 1);
+        assert!(!graph.rows[0].commit.is_working());
     }
 }

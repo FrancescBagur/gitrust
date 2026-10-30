@@ -14,6 +14,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Stage y unstage por hunk suelto
 - [x] Tres paneles: ramas, grafo y detalle del commit
 - [x] Tema propio: una sola familia de color saturado, la de los carriles
+- [x] Los cambios sin confirmar, como una fila más arriba del grafo
 - [ ] Enmendar el último commit
 - [ ] Cambio de rama, push, pull
 - [ ] Merge con editor de conflictos, rebase interactivo, stash, worktrees
@@ -24,7 +25,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 crates/
   gitrust-core/     lógica Git, sin dependencias de UI
     repo.rs         repositorio, commits, índice y diffs (libgit2)
-    graph.rs        algoritmo de carriles
+    graph.rs        algoritmo de carriles, y la fila de cambios sin confirmar
     status.rs       estado del árbol de trabajo
     diff.rs         diff troceado en hunks
     detail.rs       detalle de un commit y referencias
