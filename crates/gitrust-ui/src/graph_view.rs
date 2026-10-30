@@ -4,7 +4,8 @@
 //! commits el coste por fotograma depende del alto de la ventana, no del
 //! tamaño de la historia.
 //!
-//! La fila es la unidad de lectura: el mensaje a la izquierda con todo el
+//! La fila es la unidad de lectura: las ramas y etiquetas en su columna a la
+//! izquierda del todo, luego los carriles, después el mensaje con todo el
 //! contraste, y autor, fecha y hash alineados a la derecha en columnas de
 //! ancho fijo. Son esas columnas las que dan la estructura, así que no hace
 //! falta ni una sola línea vertical. Cuando la ventana se estrecha las
@@ -39,6 +40,14 @@ const SUMMARY_MIN: f32 = 200.0;
 const MAX_LANES: usize = 8;
 /// Trazo de la línea que baja de los cambios sin confirmar: raya y hueco.
 const DASH: (f32, f32) = (3.0, 3.5);
+
+/// La columna de referencias: aire contra el borde, tope y hueco entre
+/// pastillas, y lo que se reserva para la cuenta de las que no caben.
+const REFS_PAD: f32 = 10.0;
+const REFS_MAX: f32 = 236.0;
+const BADGE_PAD: f32 = 6.0;
+const BADGE_GAP: f32 = 5.0;
+const MORE_W: f32 = 26.0;
 
 /// Devuelve el commit pulsado, si lo hay.
 ///
@@ -84,12 +93,17 @@ pub fn show(
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 0.0, theme::CANVAS);
 
+            // La columna de ramas se mide antes que nada: de su ancho depende
+            // dónde empieza todo lo demás.
+            let refs_w = refs_width(ui, graph, rect.width());
+            let lanes_left = rect.left() + refs_w;
+
             // Los carriles se pintan contra su propia franja: así una historia
             // más ancha que el tope se recorta en seco en vez de cruzar por
             // debajo de los mensajes.
             let lanes_painter = painter.with_clip_rect(Rect::from_min_max(
-                rect.min,
-                egui::pos2(rect.left() + graph_w, rect.max.y),
+                egui::pos2(lanes_left, rect.min.y),
+                egui::pos2(lanes_left + graph_w, rect.max.y),
             ));
 
             // Solo las filas que caen dentro del recorte visible.
@@ -110,10 +124,11 @@ pub fn show(
                 }
             }
 
-            let lane_x = |lane: usize| rect.left() + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
+            let lane_x = |lane: usize| lanes_left + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
             let row_y = |row: usize| rect.top() + row as f32 * row_h + row_h / 2.0;
 
-            let columns = Columns::for_width(rect.left() + graph_w, rect.right());
+            let text_left = lanes_left + graph_w;
+            let columns = Columns::for_width(text_left, rect.right());
 
             let band_of = |index: usize| {
                 Rect::from_min_size(
@@ -193,7 +208,7 @@ pub fn show(
                 draw_commit(&lanes_painter, row, lane_x(row.lane), row_y(index));
 
                 if row.commit.is_working() {
-                    draw_working(&painter, rect.left() + graph_w, row_y(index), &pending_label);
+                    draw_working(&painter, text_left, row_y(index), &pending_label);
                     // Un pelo deja claro dónde empieza lo que ya está escrito.
                     painter.hline(
                         band.x_range(),
@@ -201,7 +216,8 @@ pub fn show(
                         Stroke::new(1.0, theme::HAIRLINE),
                     );
                 } else {
-                    draw_row(&painter, ui, row, rect.left() + graph_w, row_y(index), &columns);
+                    draw_refs(&painter, ui, row, lanes_left, rect.left() + 8.0, row_y(index));
+                    draw_row(&painter, ui, row, text_left, row_y(index), &columns);
                 }
             }
         });
@@ -310,12 +326,7 @@ fn draw_row(
     y: f32,
     columns: &Columns,
 ) {
-    let mut x = left + 2.0;
-
-    for label in &row.commit.refs {
-        x = draw_badge(painter, label, theme::lane(row.color), x, y, columns.summary_right);
-    }
-
+    let x = left + 2.0;
     let summary_font = theme::body(13.0);
     let summary = elide(ui, &row.commit.summary, columns.summary_right - x, &summary_font);
     painter.text(
@@ -363,36 +374,152 @@ fn draw_row(
     }
 }
 
-/// Una pastilla de referencia, teñida del carril en el que vive el commit, de
-/// modo que el nombre de la rama y su línea se lean como una misma hebra.
+/// El ancho de la columna de referencias: lo que pida la fila más cargada,
+/// con tope.
 ///
-/// Las remotas van en hueco porque casi siempre duplican a una local, y lo que
-/// interesa es que no compitan con ella.
+/// Se mide cada fotograma, pero solo sobre las filas que llevan alguna, que en
+/// cualquier repositorio son unas pocas entre miles. El tope por el ancho
+/// disponible es para que en una ventana estrecha la columna ceda antes que el
+/// mensaje: el mensaje es lo que se viene a leer.
+fn refs_width(ui: &egui::Ui, graph: &Graph, available: f32) -> f32 {
+    let font = theme::medium(11.0);
+
+    let widest = ui.fonts(|fonts| {
+        graph
+            .rows
+            .iter()
+            .filter(|row| !row.commit.refs.is_empty())
+            .map(|row| {
+                row.commit
+                    .ordered_refs()
+                    .iter()
+                    .map(|(label, _)| badge_w(fonts, &label.name, &font))
+                    .sum::<f32>()
+                    + REFS_PAD
+            })
+            .fold(0.0_f32, f32::max)
+    });
+
+    if widest <= 0.0 {
+        return 0.0;
+    }
+    (widest + REFS_PAD).min(REFS_MAX).min(available * 0.28)
+}
+
+/// Las ramas y etiquetas de una fila, pegadas al grafo y creciendo hacia
+/// fuera.
+///
+/// Lo que más importa queda junto a los carriles, que es adonde va la vista, y
+/// lo que no cabe se cae por el lado de fuera dejando dicho cuánto se calla.
+/// Los nombres se alinean contra el grafo en vez de contra el borde de la
+/// ventana: así forman columna aunque midan cosas distintas.
+fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left: f32, y: f32) {
+    let refs = row.commit.ordered_refs();
+    if refs.is_empty() {
+        return;
+    }
+
+    let font = theme::medium(11.0);
+    let widths: Vec<f32> =
+        ui.fonts(|fonts| refs.iter().map(|(l, _)| badge_w(fonts, &l.name, &font)).collect());
+
+    // Cuántas caben. Si alguna se queda fuera hay que repetir la cuenta
+    // reservando sitio para decirlo, que también ocupa.
+    let fitting = |reserve: f32| {
+        let mut x = right;
+        let mut count = 0;
+        for width in &widths {
+            if x - width < left + reserve {
+                break;
+            }
+            x -= width + BADGE_GAP;
+            count += 1;
+        }
+        count
+    };
+
+    let mut shown = fitting(0.0);
+    if shown < refs.len() {
+        shown = fitting(MORE_W);
+    }
+
+    let lane = theme::lane(row.color);
+    let mut x = right;
+    let mut from = 0;
+
+    // Si no cabe ni la primera, se recorta en vez de desaparecer: media rama
+    // dice de qué va esta fila, y una cuenta a secas no dice nada.
+    if shown == 0 {
+        let reserve = if refs.len() > 1 { MORE_W } else { 0.0 };
+        let room = right - left - reserve - BADGE_PAD * 2.0;
+        if room > 24.0 {
+            let (label, current) = refs[0];
+            let text = elide(ui, &label.name, room, &font);
+            let width = ui.fonts(|fonts| badge_w(fonts, &text, &font));
+            x -= width;
+            draw_badge(painter, &text, label.kind, current, lane, x, y, width);
+            x -= BADGE_GAP;
+            shown = 1;
+            from = 1;
+        }
+    }
+
+    for index in from..shown {
+        let (label, current) = refs[index];
+        x -= widths[index];
+        draw_badge(painter, &label.name, label.kind, current, lane, x, y, widths[index]);
+        x -= BADGE_GAP;
+    }
+
+    if shown < refs.len() {
+        painter.text(
+            Pos2::new(x, y),
+            Align2::RIGHT_CENTER,
+            format!("+{}", refs.len() - shown),
+            theme::mono(10.5),
+            theme::FAINT,
+        );
+    }
+}
+
+/// Una pastilla de referencia.
+///
+/// La rama en la que uno está va maciza, y es la única de toda la ventana que
+/// lo está. El peso hace lo que el color no puede: uno de los ocho carriles
+/// es ámbar, así que una rama cualquiera que caiga en él se vestiría igual
+/// que HEAD y diría que estás donde no estás.
+///
+/// Las demás locales van teñidas de su carril, de modo que el nombre y su
+/// línea se lean como una misma hebra. Las remotas van en hueco porque casi
+/// siempre duplican a una local, y lo que interesa es que no compitan.
 fn draw_badge(
     painter: &egui::Painter,
-    label: &gitrust_core::RefLabel,
+    name: &str,
+    kind: RefKind,
+    current: bool,
     lane: Color32,
     x: f32,
     y: f32,
-    limit: f32,
-) -> f32 {
-    let (text, color, filled) = match label.kind {
-        RefKind::Head => (label.name.clone(), theme::HEAD, true),
-        RefKind::LocalBranch => (label.name.clone(), lane, true),
-        RefKind::RemoteBranch => (label.name.clone(), theme::MUTED, false),
-        RefKind::Tag => (label.name.clone(), theme::lane(6), true),
-    };
-
-    let galley = painter.layout_no_wrap(text, theme::medium(11.0), color);
-    let width = galley.size().x + 12.0;
-
-    // Si la pastilla se come el mensaje, mejor no ponerla.
-    if x + width > limit - 60.0 {
-        return x;
-    }
-
+    width: f32,
+) {
     let chip = Rect::from_min_size(Pos2::new(x, y - 9.0), egui::vec2(width, 18.0));
     let radius = CornerRadius::same(3);
+    let text = Pos2::new(chip.left() + BADGE_PAD, y);
+    let font = theme::medium(11.0);
+
+    if current {
+        painter.rect_filled(chip, radius, theme::HEAD);
+        painter.text(text, Align2::LEFT_CENTER, name, font, theme::CANVAS);
+        return;
+    }
+
+    let (color, filled) = match kind {
+        RefKind::Head => (theme::HEAD, true),
+        RefKind::LocalBranch => (lane, true),
+        RefKind::RemoteBranch => (theme::MUTED, false),
+        RefKind::Tag => (theme::lane(6), true),
+    };
+
     if filled {
         painter.rect_filled(chip, radius, theme::tint(color, 38));
     } else {
@@ -403,18 +530,20 @@ fn draw_badge(
             egui::StrokeKind::Inside,
         );
     }
+    painter.text(text, Align2::LEFT_CENTER, name, font, color);
+}
 
-    let text_pos = Pos2::new(chip.left() + 6.0, y - galley.size().y / 2.0);
-    painter.galley(text_pos, galley, color);
+fn badge_w(fonts: &egui::epaint::Fonts, text: &str, font: &FontId) -> f32 {
+    text_w(fonts, text, font) + BADGE_PAD * 2.0
+}
 
-    chip.right() + 6.0
+fn text_w(fonts: &egui::epaint::Fonts, text: &str, font: &FontId) -> f32 {
+    text.chars().map(|c| fonts.glyph_width(font, c)).sum()
 }
 
 /// Recorta el texto con puntos suspensivos si no cabe en `max_w`.
 fn elide(ui: &egui::Ui, text: &str, max_w: f32, font: &FontId) -> String {
-    let width = |s: &str| {
-        ui.fonts(|f| s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>())
-    };
+    let width = |s: &str| ui.fonts(|fonts| text_w(fonts, s, font));
 
     if width(text) <= max_w {
         return text.to_string();

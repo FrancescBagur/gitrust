@@ -120,11 +120,17 @@ impl Repo {
             map.entry(object.id()).or_default().push(label);
         }
 
+        // La marca de HEAD lleva el nombre de la rama en la que está, no la
+        // palabra «HEAD». Así se sabe cuál de las ramas que señalan a este
+        // commit es la que uno tiene puesta, que con dos o tres encima del
+        // mismo commit no se podría adivinar. Desacoplado, `shorthand` ya
+        // devuelve «HEAD» y la marca se queda sola, que es lo correcto.
         if let Ok(head) = self.inner.head() {
             if let Ok(object) = head.peel(ObjectType::Commit) {
+                let name = head.shorthand().unwrap_or("HEAD").to_string();
                 map.entry(object.id())
                     .or_default()
-                    .insert(0, RefLabel { name: "HEAD".to_string(), kind: RefKind::Head });
+                    .insert(0, RefLabel { name, kind: RefKind::Head });
             }
         }
 

@@ -16,6 +16,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Tema propio: una sola familia de color saturado, la de los carriles
 - [x] Los cambios sin confirmar, como una fila más arriba del grafo
 - [x] Barra de acciones: pull, push, rama nueva y stash
+- [x] Columna de ramas y etiquetas a la izquierda del grafo
 - [ ] Enmendar el último commit
 - [ ] Cambiar a una rama que ya existe
 - [ ] Merge con editor de conflictos, rebase interactivo, worktrees
@@ -33,13 +34,13 @@ crates/
     diff.rs         diff troceado en hunks
     detail.rs       detalle de un commit y referencias
     message.rs      composición del mensaje de commit
-    model.rs        tipos compartidos
+    model.rs        tipos compartidos, y qué referencia manda en un commit
   gitrust-ui/       aplicación egui
     main.rs         ventana, estado y ejecución de acciones
     theme.rs        color, tipografía y espaciado
     action_bar.rs   pull, push, rama y stash
     refs_view.rs    barra lateral de ramas y etiquetas
-    graph_view.rs   pintado del grafo
+    graph_view.rs   pintado del grafo y de la columna de referencias
     detail_view.rs  panel de detalle del commit
     changes_view.rs listas de cambios, diff y cuadro de commit
     diff_view.rs    pintado compartido de líneas de diff
@@ -85,7 +86,7 @@ cargo test -p gitrust-core
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
 operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: treinta y nueve pruebas, veinticuatro
+ficheros. Son las que llevan cobertura: cuarenta y cuatro pruebas, veinticuatro
 de ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
 
 Las del remoto hablan con un repositorio bare en otro directorio temporal. Por
