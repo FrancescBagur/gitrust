@@ -1,0 +1,271 @@
+//! gitrust: cliente Git de escritorio.
+//!
+//! Fase 1: visor del grafo de commits.
+//! Fase 2: el bucle diario — ver cambios, preparar y commitear.
+
+mod changes_view;
+mod graph_view;
+
+use anyhow::Result;
+use eframe::egui;
+use gitrust_core::{compose, layout, FileDiff, Graph, Repo, WorkingState};
+
+fn main() -> eframe::Result<()> {
+    let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1180.0, 760.0])
+            .with_min_inner_size([720.0, 420.0])
+            .with_title("gitrust"),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "gitrust",
+        options,
+        Box::new(move |cc| Ok(Box::new(App::new(cc, path)))),
+    )
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Tab {
+    History,
+    Changes,
+}
+
+struct App {
+    path: String,
+    head: String,
+    status: String,
+    tab: Tab,
+
+    graph: Graph,
+    limit: usize,
+
+    work: WorkingState,
+    selected: Option<(String, bool)>,
+    diff: Option<FileDiff>,
+    subject: String,
+    body: String,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
+        let mut app = Self {
+            path,
+            head: String::new(),
+            status: String::new(),
+            tab: Tab::History,
+            graph: Graph::default(),
+            limit: 5_000,
+            work: WorkingState::default(),
+            selected: None,
+            diff: None,
+            subject: String::new(),
+            body: String::new(),
+        };
+        app.load();
+        app
+    }
+
+    fn repo(&self) -> Result<Repo> {
+        Repo::open(&self.path)
+    }
+
+    /// Recarga todo: historia y estado del árbol de trabajo.
+    fn load(&mut self) {
+        let started = std::time::Instant::now();
+
+        let repo = match self.repo() {
+            Ok(repo) => repo,
+            Err(err) => return self.fail(err),
+        };
+
+        self.head = repo.head_name();
+        self.path = repo.workdir().display().to_string();
+
+        match repo.commits(self.limit) {
+            Ok(commits) => {
+                let total = commits.len();
+                self.graph = layout(commits);
+                self.status = format!(
+                    "{total} commits · {} carriles · {} ms",
+                    self.graph.lane_count,
+                    started.elapsed().as_millis()
+                );
+            }
+            Err(err) => return self.fail(err),
+        }
+
+        self.reload_work(&repo);
+    }
+
+    /// Recarga solo el estado del índice y el diff seleccionado.
+    fn refresh(&mut self) {
+        match self.repo() {
+            Ok(repo) => {
+                self.head = repo.head_name();
+                self.reload_work(&repo);
+            }
+            Err(err) => self.fail(err),
+        }
+    }
+
+    fn reload_work(&mut self, repo: &Repo) {
+        match repo.status() {
+            Ok(work) => self.work = work,
+            Err(err) => {
+                self.status = format!("error leyendo el estado: {err}");
+                return;
+            }
+        }
+
+        // Si el fichero seleccionado ya no está en su lado, soltamos la selección.
+        if let Some((path, staged)) = self.selected.clone() {
+            let list = if staged { &self.work.staged } else { &self.work.unstaged };
+            if list.iter().any(|f| f.path == path) {
+                self.diff = repo.file_diff(&path, staged).ok();
+            } else {
+                self.selected = None;
+                self.diff = None;
+            }
+        }
+    }
+
+    /// Ejecuta una operación sobre el repositorio y recarga el estado.
+    fn run(&mut self, op: impl FnOnce(&Repo) -> Result<()>) -> bool {
+        match self.repo().and_then(|repo| op(&repo)) {
+            Ok(()) => {
+                self.refresh();
+                true
+            }
+            Err(err) => {
+                self.status = format!("error: {err}");
+                false
+            }
+        }
+    }
+
+    fn fail(&mut self, err: anyhow::Error) {
+        self.graph = Graph::default();
+        self.work = WorkingState::default();
+        self.selected = None;
+        self.diff = None;
+        self.head.clear();
+        self.status = format!("error: {err}");
+    }
+
+    fn handle(&mut self, action: changes_view::Action) {
+        use changes_view::Action;
+
+        match action {
+            Action::Select { path, staged } => {
+                self.selected = Some((path.clone(), staged));
+                self.diff = self.repo().and_then(|r| r.file_diff(&path, staged)).ok();
+            }
+            Action::Stage(path) => {
+                self.run(|repo| repo.stage(&path));
+            }
+            Action::Unstage(path) => {
+                self.run(|repo| repo.unstage(&path));
+            }
+            Action::StageAll => {
+                let paths: Vec<String> = self.work.unstaged.iter().map(|f| f.path.clone()).collect();
+                self.run(|repo| repo.stage_all(&paths));
+            }
+            Action::UnstageAll => {
+                let paths: Vec<String> = self.work.staged.iter().map(|f| f.path.clone()).collect();
+                self.run(|repo| repo.unstage_all(&paths));
+            }
+            Action::Commit => {
+                let message = compose(&self.subject, &self.body);
+                let committed = self.run(move |repo| repo.commit(&message).map(|_| ()));
+                if committed {
+                    self.subject.clear();
+                    self.body.clear();
+                    // El commit cambia la historia: hay que redibujar el grafo.
+                    self.load();
+                    self.status = format!("commit creado en {}", self.head);
+                }
+            }
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("barra").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let entry = ui.add(
+                    egui::TextEdit::singleline(&mut self.path)
+                        .desired_width(360.0)
+                        .hint_text("ruta a un repositorio Git"),
+                );
+                let reload = ui.button("Abrir").clicked();
+                let submitted =
+                    entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if reload || submitted {
+                    self.selected = None;
+                    self.diff = None;
+                    self.load();
+                }
+
+                ui.separator();
+                ui.selectable_value(&mut self.tab, Tab::History, "Historia");
+
+                let pending = self.work.staged.len() + self.work.unstaged.len();
+                let label = if pending > 0 {
+                    format!("Cambios ({pending})")
+                } else {
+                    "Cambios".to_string()
+                };
+                ui.selectable_value(&mut self.tab, Tab::Changes, label);
+
+                if !self.head.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(&self.head).strong());
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("↻").on_hover_text("Recargar").clicked() {
+                        self.load();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        });
+
+        egui::TopBottomPanel::bottom("estado").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(&self.status).weak());
+            ui.add_space(2.0);
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::History => graph_view::show(ui, &self.graph),
+            Tab::Changes => {
+                let selected = self
+                    .selected
+                    .as_ref()
+                    .map(|(path, staged)| (path.as_str(), *staged));
+
+                let action = changes_view::show(
+                    ui,
+                    &self.work,
+                    selected,
+                    self.diff.as_ref(),
+                    &mut self.subject,
+                    &mut self.body,
+                );
+
+                if let Some(action) = action {
+                    self.handle(action);
+                }
+            }
+        });
+    }
+}
