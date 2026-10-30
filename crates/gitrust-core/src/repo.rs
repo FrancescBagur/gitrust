@@ -4,11 +4,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository, Sort, StatusOptions};
+use git2::{
+    ApplyLocation, ApplyOptions, Delta, Diff, DiffFormat, DiffHunk, DiffOptions, ObjectType, Oid,
+    Repository, Sort, StatusOptions,
+};
 
-use crate::diff::{DiffLine, FileDiff, Hunk};
+use crate::detail::{CommitDetail, CommitFile, RefEntry};
+use crate::diff::{DiffLine, FileDiff, Hunk, HunkId};
 use crate::model::{Commit, RefKind, RefLabel};
-use crate::status::{staged_kind, unstaged_kind, FileChange, WorkingState};
+use crate::status::{staged_kind, unstaged_kind, ChangeKind, FileChange, WorkingState};
 
 pub struct Repo {
     inner: Repository,
@@ -173,40 +177,115 @@ impl Repo {
             self.inner.diff_index_to_workdir(None, Some(&mut options))?
         };
 
-        let mut out = FileDiff { path: path.to_string(), ..Default::default() };
+        collect_file_diff(&diff, path)
+    }
 
-        diff.print(DiffFormat::Patch, |_delta, hunk, line| {
-            match line.origin() {
-                // Cabecera del fichero: ya sabemos de qué fichero se trata.
-                'F' => {}
-                'B' => out.binary = true,
-                'H' => {
-                    let header = String::from_utf8_lossy(line.content()).trim_end().to_string();
-                    out.hunks.push(Hunk { header, lines: Vec::new() });
-                }
-                origin => {
-                    // Un fichero sin seguimiento no trae cabecera de hunk.
-                    if out.hunks.is_empty() {
-                        let header = hunk
-                            .map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
-                            .unwrap_or_default();
-                        out.hunks.push(Hunk { header, lines: Vec::new() });
-                    }
-                    if let Some(current) = out.hunks.last_mut() {
-                        current.lines.push(DiffLine {
-                            origin,
-                            content: String::from_utf8_lossy(line.content())
-                                .trim_end_matches(['\n', '\r'])
-                                .to_string(),
-                            old_lineno: line.old_lineno(),
-                            new_lineno: line.new_lineno(),
-                        });
-                    }
-                }
+    // ------------------------------------------------------------- un commit
+
+    /// Mensaje, autoría y ficheros tocados por un commit, comparándolo con su
+    /// primer padre. Un commit raíz se compara con el árbol vacío.
+    pub fn commit_detail(&self, oid: Oid) -> Result<CommitDetail> {
+        let commit = self.inner.find_commit(oid)?;
+        let author = commit.author();
+
+        let tree = commit.tree()?;
+        let parent_tree = match commit.parent(0) {
+            Ok(parent) => Some(parent.tree()?),
+            Err(_) => None,
+        };
+        let diff = self
+            .inner
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+
+        let mut files: Vec<CommitFile> = diff
+            .deltas()
+            .filter_map(|delta| {
+                let path = delta.new_file().path().or_else(|| delta.old_file().path())?;
+                Some(CommitFile {
+                    path: path.display().to_string(),
+                    kind: delta_kind(delta.status()),
+                })
+            })
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // El mensaje es «asunto\n\ncuerpo»; guardamos las dos partes aparte.
+        let message = commit.message().unwrap_or("");
+        let body = message
+            .split_once("\n\n")
+            .map(|(_, body)| body.trim_end().to_string())
+            .unwrap_or_default();
+
+        Ok(CommitDetail {
+            id: oid,
+            short_id: oid.to_string().chars().take(7).collect(),
+            summary: commit.summary().unwrap_or("(sin mensaje)").to_string(),
+            body,
+            author: author.name().unwrap_or("(desconocido)").to_string(),
+            email: author.email().unwrap_or_default().to_string(),
+            time: commit.time().seconds(),
+            parents: commit.parent_ids().collect(),
+            files,
+        })
+    }
+
+    /// Diff de un fichero dentro de un commit, contra su primer padre.
+    pub fn commit_file_diff(&self, oid: Oid, path: &str) -> Result<FileDiff> {
+        let commit = self.inner.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let parent_tree = match commit.parent(0) {
+            Ok(parent) => Some(parent.tree()?),
+            Err(_) => None,
+        };
+
+        let mut options = DiffOptions::new();
+        options.pathspec(path).context_lines(3);
+
+        let diff = self.inner.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            Some(&mut options),
+        )?;
+        collect_file_diff(&diff, path)
+    }
+
+    /// Todas las referencias, para la barra lateral. Se omite el `HEAD` de
+    /// cada remoto, que es un alias y no una rama más.
+    pub fn references(&self) -> Result<Vec<RefEntry>> {
+        let head = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|head| head.shorthand().map(str::to_string));
+
+        let mut out = Vec::new();
+        for reference in self.inner.references()? {
+            let reference = reference?;
+            let Some(name) = reference.name() else {
+                continue;
+            };
+            if name.ends_with("/HEAD") {
+                continue;
             }
-            true
-        })?;
+            let Ok(object) = reference.peel(ObjectType::Commit) else {
+                continue;
+            };
 
+            let (short, kind) = if let Some(branch) = name.strip_prefix("refs/heads/") {
+                (branch.to_string(), RefKind::LocalBranch)
+            } else if let Some(branch) = name.strip_prefix("refs/remotes/") {
+                (branch.to_string(), RefKind::RemoteBranch)
+            } else if let Some(tag) = name.strip_prefix("refs/tags/") {
+                (tag.to_string(), RefKind::Tag)
+            } else {
+                continue;
+            };
+
+            let is_head = kind == RefKind::LocalBranch && head.as_deref() == Some(short.as_str());
+            out.push(RefEntry { name: short, kind, target: object.id(), is_head });
+        }
+
+        out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
     }
 
@@ -238,6 +317,64 @@ impl Repo {
                 index.write()?;
             }
         }
+        Ok(())
+    }
+
+    /// Prepara un solo hunk, dejando el resto del fichero sin preparar.
+    ///
+    /// Aplica al índice el diff del árbol de trabajo filtrado a ese hunk, que
+    /// es lo que hace `git add -p` por dentro.
+    pub fn stage_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
+        let mut options = DiffOptions::new();
+        options
+            .pathspec(path)
+            .context_lines(3)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true);
+
+        let diff = self.inner.diff_index_to_workdir(None, Some(&mut options))?;
+        self.apply_hunk(&diff, hunk)
+    }
+
+    /// Devuelve un solo hunk del índice al árbol de trabajo.
+    ///
+    /// El diff se calcula invertido, de modo que aplicarlo al índice deshace
+    /// el cambio. En un diff invertido los lados están intercambiados, así que
+    /// el hunk se busca con sus rangos también invertidos.
+    pub fn unstage_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
+        let mut options = DiffOptions::new();
+        options.pathspec(path).context_lines(3).reverse(true);
+
+        let tree = match self.inner.head() {
+            Ok(head) => Some(head.peel_to_tree()?),
+            Err(_) => None,
+        };
+        let diff = self
+            .inner
+            .diff_tree_to_index(tree.as_ref(), None, Some(&mut options))?;
+
+        self.apply_hunk(&diff, hunk.reversed())
+    }
+
+    fn apply_hunk(&self, diff: &Diff<'_>, wanted: HunkId) -> Result<()> {
+        let mut applied = false;
+        {
+            let mut options = ApplyOptions::new();
+            options.hunk_callback(|hunk| match hunk {
+                Some(hunk) => {
+                    let matches = hunk_id(&hunk) == wanted;
+                    applied |= matches;
+                    matches
+                }
+                // Sin hunk es la cabecera del fichero: debe pasar.
+                None => true,
+            });
+
+            self.inner
+                .apply(diff, ApplyLocation::Index, Some(&mut options))?;
+        }
+
+        anyhow::ensure!(applied, "el hunk ya no existe; recarga el diff");
         Ok(())
     }
 
@@ -279,5 +416,70 @@ impl Repo {
             .inner
             .commit(Some("HEAD"), &signature, &signature, message, &tree, &parents)?;
         Ok(oid)
+    }
+}
+
+/// Recorre un diff ya calculado y lo trocea en hunks y líneas.
+fn collect_file_diff(diff: &Diff<'_>, path: &str) -> Result<FileDiff> {
+    let mut out = FileDiff { path: path.to_string(), ..Default::default() };
+
+    diff.print(DiffFormat::Patch, |_delta, hunk, line| {
+        match line.origin() {
+            // Cabecera del fichero: ya sabemos de qué fichero se trata.
+            'F' => {}
+            'B' => out.binary = true,
+            'H' => {
+                let header = String::from_utf8_lossy(line.content()).trim_end().to_string();
+                let id = hunk.as_ref().map(hunk_id).unwrap_or_default();
+                out.hunks.push(Hunk { header, id, lines: Vec::new() });
+            }
+            origin => {
+                // Un fichero sin seguimiento no trae cabecera de hunk.
+                if out.hunks.is_empty() {
+                    let header = hunk
+                        .as_ref()
+                        .map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
+                        .unwrap_or_default();
+                    let id = hunk.as_ref().map(hunk_id).unwrap_or_default();
+                    out.hunks.push(Hunk { header, id, lines: Vec::new() });
+                }
+                if let Some(current) = out.hunks.last_mut() {
+                    current.lines.push(DiffLine {
+                        origin,
+                        content: String::from_utf8_lossy(line.content())
+                            .trim_end_matches(['\n', '\r'])
+                            .to_string(),
+                        old_lineno: line.old_lineno(),
+                        new_lineno: line.new_lineno(),
+                    });
+                }
+            }
+        }
+        true
+    })?;
+
+    Ok(out)
+}
+
+/// Traduce el estado de un delta de libgit2 al nuestro.
+fn delta_kind(status: Delta) -> ChangeKind {
+    match status {
+        Delta::Added | Delta::Copied | Delta::Untracked => ChangeKind::Added,
+        Delta::Deleted => ChangeKind::Deleted,
+        Delta::Renamed => ChangeKind::Renamed,
+        Delta::Typechange => ChangeKind::TypeChange,
+        Delta::Conflicted => ChangeKind::Conflicted,
+        _ => ChangeKind::Modified,
+    }
+}
+
+/// Los cuatro rangos de la cabecera de un hunk, que lo identifican dentro de
+/// su diff.
+fn hunk_id(hunk: &DiffHunk<'_>) -> HunkId {
+    HunkId {
+        old_start: hunk.old_start(),
+        old_lines: hunk.old_lines(),
+        new_start: hunk.new_start(),
+        new_lines: hunk.new_lines(),
     }
 }

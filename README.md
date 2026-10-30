@@ -11,7 +11,8 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Pintado virtualizado (solo las filas visibles)
 - [x] Lista de cambios separada entre índice y árbol de trabajo
 - [x] Diff por fichero, stage y unstage, y commit con título y descripción
-- [ ] Stage y unstage por hunk
+- [x] Stage y unstage por hunk suelto
+- [x] Tres paneles: ramas, grafo y detalle del commit
 - [ ] Enmendar el último commit
 - [ ] Cambio de rama, push, pull
 - [ ] Merge con editor de conflictos, rebase interactivo, stash, worktrees
@@ -25,12 +26,16 @@ crates/
     graph.rs        algoritmo de carriles
     status.rs       estado del árbol de trabajo
     diff.rs         diff troceado en hunks
+    detail.rs       detalle de un commit y referencias
     message.rs      composición del mensaje de commit
     model.rs        tipos compartidos
   gitrust-ui/       aplicación egui
     main.rs         ventana, estado y ejecución de acciones
+    refs_view.rs    barra lateral de ramas y etiquetas
     graph_view.rs   pintado del grafo
+    detail_view.rs  panel de detalle del commit
     changes_view.rs listas de cambios, diff y cuadro de commit
+    diff_view.rs    pintado compartido de líneas de diff
 ```
 
 Las vistas no tocan el repositorio: devuelven una `Action` y `main.rs` la

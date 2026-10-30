@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+# El rustdoc del paquete de Pop!_OS no arranca (le falta libLLVM) y no tenemos
+# ejemplos ejecutables en los doc-comments.
+doctest = false
+
 [dependencies]
 anyhow.workspace = true
 git2.workspace = true

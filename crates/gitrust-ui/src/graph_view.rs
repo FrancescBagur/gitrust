@@ -6,13 +6,15 @@
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke};
-use gitrust_core::{Graph, RefKind, Row};
+use gitrust_core::{Graph, Oid, RefKind, Row};
 
 const ROW_H: f32 = 26.0;
 const LANE_W: f32 = 16.0;
 const DOT_R: f32 = 4.5;
 const LINE_W: f32 = 1.8;
 const GUTTER: f32 = 10.0;
+
+const SELECTED_BG: Color32 = Color32::from_rgb(0x27, 0x3A, 0x55);
 
 /// Colores de carril. Se recorren en ciclo según nacen las ramas.
 const PALETTE: [Color32; 8] = [
@@ -30,25 +32,28 @@ fn lane_color(index: usize) -> Color32 {
     PALETTE[index % PALETTE.len()]
 }
 
-pub fn show(ui: &mut egui::Ui, graph: &Graph) {
+/// Devuelve el commit pulsado, si lo hay.
+pub fn show(ui: &mut egui::Ui, graph: &Graph, selected: Option<Oid>) -> Option<Oid> {
     if graph.rows.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
             ui.label(egui::RichText::new("Sin commits que mostrar").weak());
         });
-        return;
+        return None;
     }
 
     let lanes = graph.lane_count.max(1);
     let graph_w = GUTTER * 2.0 + lanes as f32 * LANE_W;
+    let mut clicked = None;
 
     egui::ScrollArea::vertical()
+        .id_salt("grafo")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let total_h = graph.rows.len() as f32 * ROW_H;
-            let (rect, _) = ui.allocate_exact_size(
+            let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), total_h),
-                egui::Sense::hover(),
+                egui::Sense::click(),
             );
             let painter = ui.painter_at(rect);
 
@@ -58,11 +63,28 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph) {
             let last = ((((clip.bottom() - rect.top()) / ROW_H).ceil() as usize) + 1)
                 .min(graph.rows.len());
 
+            if response.clicked() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let index = ((pos.y - rect.top()) / ROW_H).floor();
+                    if index >= 0.0 && (index as usize) < graph.rows.len() {
+                        clicked = Some(graph.rows[index as usize].commit.id);
+                    }
+                }
+            }
+
             let lane_x = |lane: usize| rect.left() + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
             let row_y = |row: usize| rect.top() + row as f32 * ROW_H + ROW_H / 2.0;
 
             for index in first..last {
                 let row = &graph.rows[index];
+
+                if selected == Some(row.commit.id) {
+                    let band = egui::Rect::from_min_size(
+                        egui::pos2(rect.left(), rect.top() + index as f32 * ROW_H),
+                        egui::vec2(rect.width(), ROW_H),
+                    );
+                    painter.rect_filled(band, 0.0, SELECTED_BG);
+                }
 
                 // Las líneas de esta fila bajan hasta la siguiente.
                 for link in &row.links {
@@ -91,6 +113,8 @@ pub fn show(ui: &mut egui::Ui, graph: &Graph) {
                 draw_text(&painter, ui, row, rect.left() + graph_w, row_y(index), rect.right());
             }
         });
+
+    clicked
 }
 
 fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {

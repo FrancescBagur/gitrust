@@ -1,7 +1,9 @@
 //! Panel de cambios: listas de índice y árbol de trabajo, diff y commit.
 
 use eframe::egui::{self, Color32, RichText};
-use gitrust_core::{ChangeKind, FileChange, FileDiff, WorkingState, SUBJECT_LIMIT};
+use gitrust_core::{ChangeKind, FileChange, FileDiff, HunkId, WorkingState, SUBJECT_LIMIT};
+
+use crate::diff_view::{self, ADDED, REMOVED};
 
 /// Lo que el usuario ha pedido en este fotograma. La vista no toca el
 /// repositorio: solo describe la intención y deja que `main` la ejecute.
@@ -9,6 +11,8 @@ pub enum Action {
     Select { path: String, staged: bool },
     Stage(String),
     Unstage(String),
+    StageHunk { path: String, hunk: HunkId },
+    UnstageHunk { path: String, hunk: HunkId },
     StageAll,
     UnstageAll,
     Commit,
@@ -133,7 +137,7 @@ pub fn show(
         });
 
     egui::CentralPanel::default().show_inside(ui, |ui| {
-        show_diff(ui, selected, diff);
+        show_diff(ui, selected, diff, &mut action);
     });
 
     action
@@ -206,7 +210,12 @@ fn shorten(path: &str) -> String {
     format!("…/{}", tail.trim_start_matches('/'))
 }
 
-fn show_diff(ui: &mut egui::Ui, selected: Option<(&str, bool)>, diff: Option<&FileDiff>) {
+fn show_diff(
+    ui: &mut egui::Ui,
+    selected: Option<(&str, bool)>,
+    diff: Option<&FileDiff>,
+    action: &mut Option<Action>,
+) {
     let Some((path, staged)) = selected else {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
@@ -224,8 +233,8 @@ fn show_diff(ui: &mut egui::Ui, selected: Option<(&str, bool)>, diff: Option<&Fi
         );
         if let Some(diff) = diff {
             let (added, removed) = diff.counts();
-            ui.label(RichText::new(format!("+{added}")).color(Color32::from_rgb(0x6D, 0xC9, 0x51)).small());
-            ui.label(RichText::new(format!("−{removed}")).color(Color32::from_rgb(0xE5, 0x5F, 0x5F)).small());
+            ui.label(RichText::new(format!("+{added}")).color(ADDED).small());
+            ui.label(RichText::new(format!("−{removed}")).color(REMOVED).small());
         }
     });
     ui.separator();
@@ -247,34 +256,39 @@ fn show_diff(ui: &mut egui::Ui, selected: Option<(&str, bool)>, diff: Option<&Fi
             ui.spacing_mut().item_spacing.y = 1.0;
 
             for hunk in &diff.hunks {
-                if !hunk.header.is_empty() {
-                    ui.label(
-                        RichText::new(&hunk.header)
-                            .monospace()
-                            .color(Color32::from_rgb(0x7A, 0xA6, 0xD6)),
-                    );
-                }
-
-                for line in &hunk.lines {
-                    let (fg, bg) = match line.origin {
-                        '+' => (
-                            Color32::from_rgb(0xBC, 0xE8, 0xA8),
-                            Color32::from_rgb(0x1C, 0x2E, 0x1C),
-                        ),
-                        '-' => (
-                            Color32::from_rgb(0xF0, 0xAE, 0xAE),
-                            Color32::from_rgb(0x33, 0x1C, 0x1C),
-                        ),
-                        _ => (Color32::from_gray(185), Color32::TRANSPARENT),
+                // Cada hunk se puede mover por su cuenta, que es lo que hace
+                // `git add -p` sin tener que contestar preguntas en la terminal.
+                ui.horizontal(|ui| {
+                    let label = if staged { "− Quitar" } else { "+ Preparar" };
+                    let hint = if staged {
+                        "Devolver solo este hunk al árbol de trabajo"
+                    } else {
+                        "Preparar solo este hunk"
                     };
 
-                    ui.label(
-                        RichText::new(format!("{}{}", line.origin, line.content))
-                            .monospace()
-                            .color(fg)
-                            .background_color(bg),
-                    );
-                }
+                    if ui.small_button(label).on_hover_text(hint).clicked() {
+                        let path = path.to_string();
+                        *action = Some(if staged {
+                            Action::UnstageHunk { path, hunk: hunk.id }
+                        } else {
+                            Action::StageHunk { path, hunk: hunk.id }
+                        });
+                    }
+
+                    if !hunk.header.is_empty() {
+                        ui.label(
+                            RichText::new(&hunk.header)
+                                .monospace()
+                                .color(Color32::from_rgb(0x7A, 0xA6, 0xD6)),
+                        );
+                    }
+
+                    let (added, removed) = hunk.counts();
+                    ui.label(RichText::new(format!("+{added}")).small().color(ADDED));
+                    ui.label(RichText::new(format!("−{removed}")).small().color(REMOVED));
+                });
+
+                diff_view::lines(ui, hunk);
                 ui.add_space(6.0);
             }
         });

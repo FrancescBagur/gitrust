@@ -1,22 +1,27 @@
 //! gitrust: cliente Git de escritorio.
 //!
-//! Fase 1: visor del grafo de commits.
-//! Fase 2: el bucle diario — ver cambios, preparar y commitear.
+//! La ventana sigue el reparto de los clientes gráficos al uso: referencias a
+//! la izquierda, grafo en el centro y el detalle de lo seleccionado a la
+//! derecha, de modo que pinchar en el grafo enseña el diff sin cambiar de
+//! pantalla.
 
 mod changes_view;
+mod detail_view;
+mod diff_view;
 mod graph_view;
+mod refs_view;
 
 use anyhow::Result;
 use eframe::egui;
-use gitrust_core::{compose, layout, FileDiff, Graph, Repo, WorkingState};
+use gitrust_core::{compose, layout, CommitDetail, FileDiff, Graph, Oid, RefEntry, Repo, WorkingState};
 
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([720.0, 420.0])
+            .with_inner_size([1360.0, 820.0])
+            .with_min_inner_size([900.0, 480.0])
             .with_title("gitrust"),
         ..Default::default()
     };
@@ -42,7 +47,16 @@ struct App {
 
     graph: Graph,
     limit: usize,
+    refs: Vec<RefEntry>,
+    ref_filter: String,
 
+    // Commit seleccionado en el grafo.
+    selected_commit: Option<Oid>,
+    detail: Option<CommitDetail>,
+    detail_file: Option<String>,
+    detail_diff: Option<FileDiff>,
+
+    // Árbol de trabajo.
     work: WorkingState,
     selected: Option<(String, bool)>,
     diff: Option<FileDiff>,
@@ -61,6 +75,12 @@ impl App {
             tab: Tab::History,
             graph: Graph::default(),
             limit: 5_000,
+            refs: Vec::new(),
+            ref_filter: String::new(),
+            selected_commit: None,
+            detail: None,
+            detail_file: None,
+            detail_diff: None,
             work: WorkingState::default(),
             selected: None,
             diff: None,
@@ -75,7 +95,7 @@ impl App {
         Repo::open(&self.path)
     }
 
-    /// Recarga todo: historia y estado del árbol de trabajo.
+    /// Recarga todo: historia, referencias y estado del árbol de trabajo.
     fn load(&mut self) {
         let started = std::time::Instant::now();
 
@@ -86,14 +106,15 @@ impl App {
 
         self.head = repo.head_name();
         self.path = repo.workdir().display().to_string();
+        self.refs = repo.references().unwrap_or_default();
 
         match repo.commits(self.limit) {
             Ok(commits) => {
                 let total = commits.len();
                 self.graph = layout(commits);
                 self.status = format!(
-                    "{total} commits · {} carriles · {} ms",
-                    self.graph.lane_count,
+                    "{total} commits · {} ramas · {} ms",
+                    self.refs.len(),
                     started.elapsed().as_millis()
                 );
             }
@@ -101,9 +122,10 @@ impl App {
         }
 
         self.reload_work(&repo);
+        self.reload_detail(&repo);
     }
 
-    /// Recarga solo el estado del índice y el diff seleccionado.
+    /// Recarga solo lo que cambia al tocar el índice.
     fn refresh(&mut self) {
         match self.repo() {
             Ok(repo) => {
@@ -126,13 +148,49 @@ impl App {
         // Si el fichero seleccionado ya no está en su lado, soltamos la selección.
         if let Some((path, staged)) = self.selected.clone() {
             let list = if staged { &self.work.staged } else { &self.work.unstaged };
-            if list.iter().any(|f| f.path == path) {
+            if list.iter().any(|file| file.path == path) {
                 self.diff = repo.file_diff(&path, staged).ok();
             } else {
                 self.selected = None;
                 self.diff = None;
             }
         }
+    }
+
+    fn reload_detail(&mut self, repo: &Repo) {
+        let Some(oid) = self.selected_commit else {
+            self.detail = None;
+            self.detail_diff = None;
+            return;
+        };
+
+        self.detail = repo.commit_detail(oid).ok();
+        self.detail_diff = match (&self.detail, &self.detail_file) {
+            (Some(_), Some(path)) => repo.commit_file_diff(oid, path).ok(),
+            _ => None,
+        };
+    }
+
+    fn select_commit(&mut self, oid: Oid) {
+        self.selected_commit = Some(oid);
+        self.detail_file = None;
+        self.detail_diff = None;
+
+        match self.repo() {
+            Ok(repo) => self.reload_detail(&repo),
+            Err(err) => self.fail(err),
+        }
+    }
+
+    fn select_detail_file(&mut self, path: String) {
+        let Some(oid) = self.selected_commit else {
+            return;
+        };
+        self.detail_diff = self
+            .repo()
+            .and_then(|repo| repo.commit_file_diff(oid, &path))
+            .ok();
+        self.detail_file = Some(path);
     }
 
     /// Ejecuta una operación sobre el repositorio y recarga el estado.
@@ -151,9 +209,12 @@ impl App {
 
     fn fail(&mut self, err: anyhow::Error) {
         self.graph = Graph::default();
+        self.refs.clear();
         self.work = WorkingState::default();
         self.selected = None;
         self.diff = None;
+        self.detail = None;
+        self.detail_diff = None;
         self.head.clear();
         self.status = format!("error: {err}");
     }
@@ -172,6 +233,12 @@ impl App {
             Action::Unstage(path) => {
                 self.run(|repo| repo.unstage(&path));
             }
+            Action::StageHunk { path, hunk } => {
+                self.run(|repo| repo.stage_hunk(&path, hunk));
+            }
+            Action::UnstageHunk { path, hunk } => {
+                self.run(|repo| repo.unstage_hunk(&path, hunk));
+            }
             Action::StageAll => {
                 let paths: Vec<String> = self.work.unstaged.iter().map(|f| f.path.clone()).collect();
                 self.run(|repo| repo.stage_all(&paths));
@@ -182,8 +249,7 @@ impl App {
             }
             Action::Commit => {
                 let message = compose(&self.subject, &self.body);
-                let committed = self.run(move |repo| repo.commit(&message).map(|_| ()));
-                if committed {
+                if self.run(move |repo| repo.commit(&message).map(|_| ())) {
                     self.subject.clear();
                     self.body.clear();
                     // El commit cambia la historia: hay que redibujar el grafo.
@@ -202,7 +268,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 let entry = ui.add(
                     egui::TextEdit::singleline(&mut self.path)
-                        .desired_width(360.0)
+                        .desired_width(320.0)
                         .hint_text("ruta a un repositorio Git"),
                 );
                 let reload = ui.button("Abrir").clicked();
@@ -211,6 +277,8 @@ impl eframe::App for App {
                 if reload || submitted {
                     self.selected = None;
                     self.diff = None;
+                    self.selected_commit = None;
+                    self.detail = None;
                     self.load();
                 }
 
@@ -245,8 +313,44 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // Las referencias acompañan siempre, se mire la historia o los cambios.
+        let mut ref_clicked = None;
+        egui::SidePanel::left("referencias")
+            .resizable(true)
+            .default_width(240.0)
+            .show(ctx, |ui| {
+                ref_clicked =
+                    refs_view::show(ui, &self.refs, &mut self.ref_filter, self.selected_commit);
+            });
+        if let Some(oid) = ref_clicked {
+            self.select_commit(oid);
+            self.tab = Tab::History;
+        }
+
+        if self.tab == Tab::History {
+            let mut file_clicked = None;
+            egui::SidePanel::right("detalle")
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    file_clicked = detail_view::show(
+                        ui,
+                        self.detail.as_ref(),
+                        self.detail_file.as_deref(),
+                        self.detail_diff.as_ref(),
+                    );
+                });
+            if let Some(path) = file_clicked {
+                self.select_detail_file(path);
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::History => graph_view::show(ui, &self.graph),
+            Tab::History => {
+                if let Some(oid) = graph_view::show(ui, &self.graph, self.selected_commit) {
+                    self.select_commit(oid);
+                }
+            }
             Tab::Changes => {
                 let selected = self
                     .selected
