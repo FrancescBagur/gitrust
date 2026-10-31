@@ -54,6 +54,33 @@ impl Commit {
         self.id.is_zero()
     }
 
+    /// Si este commit encaja con lo que se está buscando.
+    ///
+    /// Busca en lo que uno recuerda de un commit cuando lo busca: de qué iba,
+    /// quién lo hizo, o el principio de su hash si lo tiene copiado de algún
+    /// sitio. La aguja tiene que venir ya en minúsculas; se compara miles de
+    /// veces por fotograma y pasarla cada vez sería tirar el trabajo.
+    pub fn matches(&self, needle: &str) -> bool {
+        // La fila de cambios sin confirmar no tiene nada que buscar, y su Oid
+        // nulo encajaría con cualquier aguja que empiece por cero.
+        if self.is_working() {
+            return false;
+        }
+
+        if self.summary.to_lowercase().contains(needle)
+            || self.author.to_lowercase().contains(needle)
+            || self.short_id.starts_with(needle)
+        {
+            return true;
+        }
+
+        // Un hash más largo que el corto solo puede venir pegado, así que se
+        // compara entero y solo cuando la aguja tiene pinta de serlo.
+        needle.len() > self.short_id.len()
+            && needle.chars().all(|c| c.is_ascii_hexdigit())
+            && self.id.to_string().starts_with(needle)
+    }
+
     /// Las referencias que señalan aquí, de la que más importa a la que menos,
     /// y cada una diciendo si es donde uno está.
     ///
@@ -164,6 +191,50 @@ mod tests {
             .into_iter()
             .map(|(label, current)| (label.name.as_str(), current))
             .collect()
+    }
+
+    fn buscable(summary: &str, author: &str, id: Oid) -> Commit {
+        Commit {
+            id,
+            short_id: id.to_string().chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: author.to_string(),
+            time: 0,
+            parents: Vec::new(),
+            refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn se_busca_por_mensaje_por_autor_y_por_hash() {
+        let id = Oid::from_str("3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3").unwrap();
+        let commit = buscable("feat: la Paleta de carriles", "Francesc", id);
+
+        // Sin distinguir mayúsculas, y por cualquiera de los tres lados.
+        assert!(commit.matches("paleta"));
+        assert!(commit.matches("carriles"));
+        assert!(commit.matches("franc"));
+        assert!(commit.matches("3f2a1b9"));
+        assert!(!commit.matches("rebase"));
+    }
+
+    #[test]
+    fn un_hash_mas_largo_que_el_corto_se_compara_entero() {
+        let id = Oid::from_str("3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3").unwrap();
+        let commit = buscable("feat: algo", "Quien sea", id);
+
+        assert!(commit.matches("3f2a1b9c4d5e"));
+        assert!(!commit.matches("3f2a1b9c4d5f"));
+        // Y lo que no es un hash no se compara como tal, aunque sea largo.
+        assert!(!commit.matches("zzzzzzzzzzzz"));
+    }
+
+    #[test]
+    fn la_fila_de_cambios_sin_confirmar_no_encaja_con_nada() {
+        let commit = Commit::working(Oid::zero());
+        assert!(!commit.matches("a"));
+        // Ni siquiera con una aguja que su Oid nulo cumpliría.
+        assert!(!commit.matches("0000"));
     }
 
     #[test]

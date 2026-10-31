@@ -12,7 +12,9 @@
 //! columnas se retiran por orden de importancia en vez de chocar entre sí.
 
 use chrono::{Local, TimeZone};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Shape, Stroke};
+use eframe::egui::{
+    self, Align, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Shape, Stroke,
+};
 use gitrust_core::{Graph, Oid, RefKind, Row, WorkingState};
 
 use crate::theme;
@@ -49,15 +51,93 @@ const BADGE_PAD: f32 = 6.0;
 const BADGE_GAP: f32 = 5.0;
 const MORE_W: f32 = 26.0;
 
+/// Lo que ha pasado en la barra de buscar.
+pub enum Found {
+    /// La aguja ha cambiado: hay que volver a contar.
+    Changed,
+    Next,
+    Prev,
+    Nothing,
+}
+
+/// La barra de buscar, encima del grafo.
+///
+/// No filtra: deja la historia entera donde está y apaga lo que no encaja.
+/// Un grafo al que se le quitan filas deja de ser un grafo —los carriles no
+/// llevarían a ninguna parte—, y lo que uno busca casi siempre lo quiere ver
+/// en su sitio, con lo que tenía alrededor.
+pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -> Found {
+    let mut event = Found::Nothing;
+
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        let entry = ui.add(
+            egui::TextEdit::singleline(needle)
+                .desired_width(260.0)
+                .margin(egui::vec2(8.0, 5.0))
+                .font(theme::body(12.0))
+                .hint_text(RichText::new("Buscar: mensaje, autor o hash").color(theme::FAINT)),
+        );
+
+        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+            entry.request_focus();
+        }
+        if entry.changed() {
+            event = Found::Changed;
+        }
+
+        // Enter salta a la siguiente; con Shift, a la de antes. Es lo que
+        // hacen todas las barras de buscar que uno ha usado.
+        if entry.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            event = if ui.input(|i| i.modifiers.shift) { Found::Prev } else { Found::Next };
+        }
+
+        if needle.trim().is_empty() {
+            return;
+        }
+
+        ui.add_space(4.0);
+        let (text, color) = match found {
+            0 => ("sin resultados".to_string(), theme::MUTED),
+            n => (format!("{} de {n}", at + 1), theme::FAINT),
+        };
+        ui.label(RichText::new(text).font(theme::mono(11.0)).color(color));
+
+        if found > 0 {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (glyph, hint, what) in [
+                ("↑", "Anterior (Shift+Enter)", Found::Prev),
+                ("↓", "Siguiente (Enter)", Found::Next),
+            ] {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(glyph).font(theme::body(12.0)))
+                            .min_size(egui::vec2(24.0, 22.0)),
+                    )
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    event = what;
+                }
+            }
+        }
+    });
+
+    event
+}
+
 /// Devuelve el commit pulsado, si lo hay.
 ///
 /// El estado del árbol de trabajo hace falta para rotular la fila de cambios
-/// sin confirmar, cuando el grafo la trae.
+/// sin confirmar, cuando el grafo la trae. `needle` apaga lo que no encaja, y
+/// `bring` trae una fila a la vista de un salto.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
     selected: Option<Oid>,
     work: &WorkingState,
+    needle: &str,
+    bring: Option<usize>,
 ) -> Option<Oid> {
     if graph.rows.is_empty() {
         theme::empty(ui, "Abre un repositorio para ver su historia");
@@ -129,6 +209,16 @@ pub fn show(
 
             let text_left = lanes_left + graph_w;
             let columns = Columns::for_width(text_left, rect.right());
+
+            // Traer una fila a la vista se pide aquí dentro, que es donde se
+            // sabe en qué píxel cae.
+            if let Some(index) = bring.filter(|index| *index < graph.rows.len()) {
+                let band = Rect::from_min_size(
+                    egui::pos2(rect.left(), rect.top() + index as f32 * row_h),
+                    egui::vec2(rect.width(), row_h),
+                );
+                ui.scroll_to_rect(band, Some(Align::Center));
+            }
 
             let band_of = |index: usize| {
                 Rect::from_min_size(
@@ -216,8 +306,11 @@ pub fn show(
                         Stroke::new(1.0, theme::HAIRLINE),
                     );
                 } else {
+                    // Lo que no encaja con lo que se busca se apaga, pero se
+                    // queda: su carril sigue haciendo falta para leer el resto.
+                    let dim = !needle.is_empty() && !row.commit.matches(needle);
                     draw_refs(&painter, ui, row, lanes_left, rect.left() + 8.0, row_y(index));
-                    draw_row(&painter, ui, row, text_left, row_y(index), &columns);
+                    draw_row(&painter, ui, row, text_left, row_y(index), &columns, dim);
                 }
             }
         });
@@ -325,6 +418,7 @@ fn draw_row(
     left: f32,
     y: f32,
     columns: &Columns,
+    dim: bool,
 ) {
     let x = left + 2.0;
     let summary_font = theme::body(13.0);
@@ -334,7 +428,7 @@ fn draw_row(
         Align2::LEFT_CENTER,
         summary,
         summary_font,
-        theme::TEXT,
+        if dim { theme::FAINT } else { theme::TEXT },
     );
 
     if let Some(edge) = columns.author {
@@ -344,7 +438,7 @@ fn draw_row(
             Align2::RIGHT_CENTER,
             elide(ui, &row.commit.author, AUTHOR_W, &font),
             font,
-            theme::MUTED,
+            if dim { theme::FAINT } else { theme::MUTED },
         );
     }
 

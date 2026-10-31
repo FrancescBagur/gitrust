@@ -56,6 +56,12 @@ struct App {
 
     graph: Graph,
     limit: usize,
+    /// Lo que se busca en la historia, y dónde está.
+    needle: String,
+    found: Vec<usize>,
+    at: usize,
+    /// La fila que hay que traer a la vista en el próximo fotograma.
+    bring: Option<usize>,
     refs: Vec<RefEntry>,
     ref_filter: String,
 
@@ -132,6 +138,10 @@ impl App {
             tab: Tab::History,
             graph: Graph::default(),
             limit: 5_000,
+            needle: String::new(),
+            found: Vec::new(),
+            at: 0,
+            bring: None,
             refs: Vec::new(),
             ref_filter: String::new(),
             tracking: None,
@@ -186,6 +196,7 @@ impl App {
         }
         self.preselect();
 
+        self.recount();
         self.status = format!("leído en {} ms", started.elapsed().as_millis());
         self.status_failed = false;
         self.reload_detail(&repo);
@@ -225,6 +236,53 @@ impl App {
             .find(|row| row.commit.refs.iter().any(|r| r.kind == RefKind::Head))
             .or_else(|| self.graph.rows.first())
             .map(|row| row.commit.id);
+    }
+
+    /// Vuelve a contar qué filas encajan con lo que se busca.
+    ///
+    /// Se rehace al escribir y al recargar: los índices son posiciones en el
+    /// grafo, y un grafo nuevo los deja sin sentido.
+    fn recount(&mut self) {
+        let needle = self.needle.trim().to_lowercase();
+        self.found = if needle.is_empty() {
+            Vec::new()
+        } else {
+            self.graph
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.commit.matches(&needle))
+                .map(|(index, _)| index)
+                .collect()
+        };
+        self.at = 0;
+    }
+
+    /// Salta a la coincidencia siguiente o anterior, dando la vuelta al final.
+    fn jump(&mut self, forward: bool) {
+        if self.found.is_empty() {
+            return;
+        }
+        let last = self.found.len() - 1;
+        self.at = match (forward, self.at) {
+            (true, at) if at >= last => 0,
+            (true, at) => at + 1,
+            (false, 0) => last,
+            (false, at) => at - 1,
+        };
+        self.land();
+    }
+
+    /// Trae la coincidencia actual a la vista y la elige.
+    fn land(&mut self) {
+        let Some(&index) = self.found.get(self.at) else {
+            return;
+        };
+        self.bring = Some(index);
+        if let Some(row) = self.graph.rows.get(index) {
+            let oid = row.commit.id;
+            self.select_commit(oid);
+        }
     }
 
     fn has_working_row(&self) -> bool {
@@ -276,6 +334,7 @@ impl App {
         let wants_working = !self.work.is_clean();
         if had_working != wants_working {
             let _ = self.rebuild_graph(&repo);
+            self.recount();
         }
 
         // Y si lo elegido era esa fila y ya no existe, el cursor se va a HEAD
@@ -782,8 +841,25 @@ impl eframe::App for App {
             .frame(frame)
             .show(ctx, |ui| match self.tab {
                 Tab::History => {
-                    let clicked =
-                        graph_view::show(ui, &self.graph, self.selected_commit, &self.work);
+                    match graph_view::finder(ui, &mut self.needle, self.found.len(), self.at) {
+                        graph_view::Found::Changed => {
+                            self.recount();
+                            self.land();
+                        }
+                        graph_view::Found::Next => self.jump(true),
+                        graph_view::Found::Prev => self.jump(false),
+                        graph_view::Found::Nothing => {}
+                    }
+
+                    let needle = self.needle.trim().to_lowercase();
+                    let clicked = graph_view::show(
+                        ui,
+                        &self.graph,
+                        self.selected_commit,
+                        &self.work,
+                        &needle,
+                        self.bring.take(),
+                    );
                     if let Some(oid) = clicked {
                         self.select_commit(oid);
                     }
