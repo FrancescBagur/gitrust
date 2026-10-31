@@ -990,6 +990,8 @@ impl App {
     /// Las referencias acompañan siempre, se mire la historia o los cambios.
     fn refs_panel(&mut self, ctx: &egui::Context) {
         let mut picked = None;
+        // Con HEAD desacoplado no hay rama a la que traerse nada.
+        let on_branch = self.refs.iter().any(|entry| entry.is_head);
 
         egui::SidePanel::left("referencias")
             .resizable(true)
@@ -1006,6 +1008,7 @@ impl App {
                     &self.refs,
                     &mut self.ref_filter,
                     self.selected_commit,
+                    on_branch.then_some(self.head.as_str()),
                     self.job.is_some(),
                 );
             });
@@ -1016,6 +1019,11 @@ impl App {
                 self.tab = Tab::History;
             }
             Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
+            Some(refs_view::Pick::Merge(name)) => {
+                // Puede reescribir el árbol entero, así que va aparte.
+                let doing = format!("fusionando {name}");
+                self.spawn(&doing, move |repo| repo.merge(&name));
+            }
             Some(refs_view::Pick::DeleteBranch { name, remote }) => {
                 self.ask_delete_branch(name, remote)
             }

@@ -7,6 +7,7 @@ pub mod branch;
 pub mod detail;
 pub mod diff;
 pub mod graph;
+pub mod merge;
 pub mod message;
 pub mod model;
 pub mod remote;

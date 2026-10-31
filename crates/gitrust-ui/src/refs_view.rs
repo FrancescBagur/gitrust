@@ -21,6 +21,8 @@ pub enum Pick {
     DeleteTag(String),
     /// Borrar esa rama: la de aquí, o la del remoto.
     DeleteBranch { name: String, remote: bool },
+    /// Traerse esa rama a la que se tiene puesta.
+    Merge(String),
 }
 
 /// Devuelve lo que se haya pedido sobre una referencia.
@@ -33,6 +35,7 @@ pub fn show(
     refs: &[RefEntry],
     filter: &mut String,
     selected: Option<Oid>,
+    head: Option<&str>,
     busy: bool,
 ) -> Option<Pick> {
     let mut picked = None;
@@ -72,7 +75,7 @@ pub fn show(
                 ("Remotas", RefKind::RemoteBranch),
                 ("Etiquetas", RefKind::Tag),
             ] {
-                section(ui, title, kind, &matching, selected, busy, &mut picked);
+                section(ui, title, kind, &matching, selected, head, busy, &mut picked);
             }
             ui.add_space(12.0);
         });
@@ -87,6 +90,7 @@ fn section(
     kind: RefKind,
     refs: &[&RefEntry],
     selected: Option<Oid>,
+    head: Option<&str>,
     busy: bool,
     picked: &mut Option<Pick>,
 ) {
@@ -117,20 +121,20 @@ fn section(
     for entry in &entries {
         match entry.folder() {
             Some(folder) => folders.entry(folder).or_default().push(entry),
-            None => leaf(ui, entry, selected, busy, picked),
+            None => leaf(ui, entry, selected, head, busy, picked),
         }
     }
 
     for (folder, group) in folders {
-        let head = egui::RichText::new(folder)
+        let label = egui::RichText::new(folder)
             .font(theme::body(12.0))
             .color(theme::MUTED);
-        egui::CollapsingHeader::new(head)
+        egui::CollapsingHeader::new(label)
             .id_salt((title, folder))
             .default_open(group.len() <= 8)
             .show(ui, |ui| {
                 for entry in group {
-                    leaf(ui, entry, selected, busy, picked);
+                    leaf(ui, entry, selected, head, busy, picked);
                 }
             });
     }
@@ -138,10 +142,12 @@ fn section(
     ui.add_space(10.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn leaf(
     ui: &mut egui::Ui,
     entry: &RefEntry,
     selected: Option<Oid>,
+    head: Option<&str>,
     busy: bool,
     picked: &mut Option<Pick>,
 ) {
@@ -194,6 +200,19 @@ fn leaf(
                 };
                 if button.clicked() {
                     *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+                    ui.close_menu();
+                }
+            }
+
+            // Traérsela a la que uno tiene puesta. Sin rama puesta no hay
+            // adónde traerla, así que entonces ni se ofrece.
+            if let Some(head) = head.filter(|_| switchable) {
+                if ui
+                    .button(format!("Fusionar en {head}"))
+                    .on_hover_text("si chocan, no se toca nada y se dice dónde")
+                    .clicked()
+                {
+                    *picked = Some(Pick::Merge(entry.name.clone()));
                     ui.close_menu();
                 }
             }

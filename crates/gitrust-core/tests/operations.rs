@@ -565,3 +565,124 @@ fn borrar_en_el_remoto_la_quita_de_alli_y_de_aqui() {
 
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+// ---------------------------------------------------------------- fusión
+
+/// Deja `rama` con un commit propio que toca `file`, y vuelve a donde estaba.
+fn rama_con_trabajo(temp: &TempRepo, rama: &str, file: &str, texto: &str) -> String {
+    let vuelta = temp.open().head_name();
+    temp.open().branch_here(rama).unwrap();
+    temp.write(file, texto);
+    let repo = temp.open();
+    repo.stage(file).unwrap();
+    repo.commit(&format!("feat: {file} en {rama}")).unwrap();
+    temp.open().checkout_branch(&vuelta).unwrap();
+    vuelta
+}
+
+#[test]
+fn sin_haberse_movido_la_rama_solo_avanza() {
+    let temp = TempRepo::new("fusion-rapida");
+    primer_commit(&temp);
+    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+
+    let antes = temp.open().commits(50).unwrap().len();
+    let nota = temp.open().merge("suya").unwrap();
+    assert!(nota.contains("sin fusión"), "{nota}");
+
+    let repo = temp.open();
+    // No hay commit de fusión: la historia es la misma, solo más larga.
+    assert_eq!(repo.commits(50).unwrap().len(), antes);
+    assert!(temp.path().join("b.txt").exists());
+    assert_eq!(repo.commit_detail(repo.head_id().unwrap()).unwrap().parents.len(), 1);
+}
+
+#[test]
+fn dos_historias_distintas_se_juntan_en_un_commit_de_dos_padres() {
+    let temp = TempRepo::new("fusion-real");
+    primer_commit(&temp);
+    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+
+    // Y aquí, mientras tanto, otra cosa en otro fichero.
+    temp.write("c.txt", "de la mia\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+
+    let nota = temp.open().merge("suya").unwrap();
+    assert!(nota.contains("fusionada"), "{nota}");
+
+    let repo = temp.open();
+    let head = repo.commit_detail(repo.head_id().unwrap()).unwrap();
+    assert_eq!(head.parents.len(), 2);
+    assert!(head.summary.starts_with("Merge suya"));
+
+    // Los dos ficheros están en el disco, y el árbol queda limpio.
+    assert!(temp.path().join("b.txt").exists());
+    assert!(temp.path().join("c.txt").exists());
+    assert!(repo.status().unwrap().is_clean());
+}
+
+#[test]
+fn un_choque_deja_el_repositorio_exactamente_como_estaba() {
+    let temp = TempRepo::new("fusion-choque");
+    primer_commit(&temp);
+    rama_con_trabajo(&temp, "suya", "a.txt", "lo que dice la otra\n");
+
+    temp.write("a.txt", "lo que digo yo\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    let mio = repo.commit("feat: a a mi manera").unwrap();
+
+    let err = temp.open().merge("suya").unwrap_err().to_string();
+    assert!(err.contains("a.txt"), "dice en qué choca: {err}");
+    assert!(err.contains("no se ha tocado nada"), "{err}");
+
+    // Ni commit de fusión, ni árbol revuelto, ni índice con conflictos.
+    let repo = temp.open();
+    assert_eq!(repo.head_id(), Some(mio));
+    assert!(repo.status().unwrap().is_clean());
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+        "lo que digo yo\n"
+    );
+}
+
+#[test]
+fn fusionar_con_el_arbol_a_medias_se_para_antes_de_empezar() {
+    let temp = TempRepo::new("fusion-sucia");
+    primer_commit(&temp);
+    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+
+    temp.write("c.txt", "de la mia\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+
+    // Faena sin guardar encima de una fusión que sí hace falta escribir.
+    temp.write("a.txt", "uno\na medias\n");
+
+    let err = temp.open().merge("suya").unwrap_err().to_string();
+    assert!(err.contains("aparta"), "{err}");
+    assert!(!temp.open().status().unwrap().is_clean(), "sigue a medias");
+}
+
+#[test]
+fn fusionar_lo_que_ya_esta_dentro_no_escribe_nada() {
+    let temp = TempRepo::new("fusion-aldia");
+    let vieja = primer_commit(&temp);
+    temp.open().branch_here("suya").unwrap();
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    let nota = temp.open().merge("suya").unwrap();
+    assert!(nota.contains("ya está dentro"), "{nota}");
+    assert_eq!(temp.open().commits(50).unwrap().len(), 1);
+}
+
+#[test]
+fn una_rama_no_se_fusiona_consigo_misma() {
+    let temp = TempRepo::new("fusion-misma");
+    let actual = primer_commit(&temp);
+    let err = temp.open().merge(&actual).unwrap_err().to_string();
+    assert!(err.contains("en la que estás"), "{err}");
+}
