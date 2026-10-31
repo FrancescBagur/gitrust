@@ -1,8 +1,8 @@
-//! El tablero: las ramas repartidas en columnas según en qué punto están.
+//! The board: the branches laid out in columns by where they stand.
 //!
-//! No hay nada que arrastrar todavía ni nada que guardar. Lo que se ve sale
-//! entero del grafo, así que no puede quedarse desfasado: en cuanto commiteas,
-//! la tarjeta cambia de columna sola.
+//! Nothing here is stored. What you see comes straight off the graph, so it
+//! cannot fall out of date: the moment you commit, the card changes column on
+//! its own.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Color32, RichText, Stroke};
@@ -11,29 +11,29 @@ use gitrust_core::{Board, Card, Lane};
 use crate::refs_view::Pick;
 use crate::theme;
 
-/// La tarjeta que se está arrastrando ahora mismo.
+/// The card being dragged right now.
 #[derive(Clone)]
 struct Dragged {
     branch: String,
     lane: Lane,
 }
 
-/// Lo que se ha pedido desde el tablero.
+/// What has been asked for from the board.
 pub enum Act {
-    /// Lo mismo que desde la lateral: ver un commit, o cambiar de rama.
+    /// The same as from the sidebar: see a commit, or switch branch.
     Pick(Pick),
-    /// Llevar esa rama al remoto.
+    /// Push that branch to the remote.
     Publish(String),
-    /// Traerla a la principal.
+    /// Bring it into the main branch.
     Land(String),
 }
 
-/// Si soltar una tarjeta de una columna en otra tiene una operación detrás.
+/// Whether dropping a card from one column into another has an operation behind it.
 ///
-/// Solo dos saltos la tienen, y por el mismo motivo los dos: son los únicos
-/// en los que uno puede decir qué comando haría lo que el arrastre promete.
-/// Una rama sin commits no se puede publicar, y de «hecho» no se vuelve
-/// arrastrando: eso sería deshacer una fusión, que es otra cosa y más seria.
+/// Only two moves do, and both for the same reason: they are the only ones
+/// where you can name the command that would do what the drag promises. A
+/// branch with no commits cannot be published, and you do not come back from
+/// "done" by dragging: that would undo a merge, which is another thing, and graver.
 fn allows(from: Lane, to: Lane) -> bool {
     matches!(
         (from, to),
@@ -53,11 +53,12 @@ fn transition(dragged: &Dragged, to: Lane) -> Option<Act> {
     })
 }
 
-/// El rótulo de cada columna y el color de su filete.
+/// Each column's label and the color of its rule.
 ///
-/// Los tres colores salen de los carriles del grafo, que es de donde sale todo
-/// el color saturado de la ventana. El ámbar no está: es de HEAD, y aquí
-/// compite con la rama puesta, que ya lo lleva en su tarjeta.
+/// The three colors come from the graph's lanes, which is where all the
+/// saturated color in the window comes from. Amber is not among them: it
+/// belongs to HEAD, and here it would fight the branch you are on, which
+/// already wears it on its card.
 fn column(lane: Lane) -> (&'static str, Color32) {
     match lane {
         Lane::Todo => ("To do", theme::MUTED),
@@ -67,7 +68,7 @@ fn column(lane: Lane) -> (&'static str, Color32) {
     }
 }
 
-/// Devuelve lo que se haya pedido sobre una rama del tablero.
+/// Gives back whatever has been asked about a branch on the board.
 pub fn show(
     ui: &mut egui::Ui,
     board: &Board,
@@ -91,8 +92,8 @@ pub fn show(
         );
     });
 
-    // Los proyectos son las carpetas de los nombres de rama: `tema/colores` y
-    // `tema/tipografia` son la misma faena, y la gente ya las nombra así.
+    // The projects are the folders in the branch names: `theme/colors` and
+    // `theme/typography` are the same job, and people already name them so.
     let projects = board.projects();
     if !projects.is_empty() {
         ui.add_space(6.0);
@@ -127,7 +128,7 @@ pub fn show(
 
             header(ui, lane, cards.len());
 
-            // La columna entera recibe lo que se suelte encima.
+            // The whole column takes whatever is dropped on it.
             let mut dropped = None;
             ui.scope(|ui| {
                 paint_drop_zone(ui, lane);
@@ -178,7 +179,7 @@ fn chip(text: &str, on: bool) -> RichText {
         .color(if on { theme::TEXT } else { theme::MUTED })
 }
 
-/// El rótulo de una columna, con su cuenta y su filete de color.
+/// A column's label, with its count and its rule of color.
 fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
     let (title, color) = column(lane);
 
@@ -197,9 +198,9 @@ fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
     ui.add_space(8.0);
 }
 
-/// Deja la zona de soltar del color de la columna, pero solo si lo que se
-/// arrastra puede caer ahí. Una columna que se enciende para cualquier cosa
-/// no está diciendo nada.
+/// Leaves the drop zone in the column's color, but only if what is being
+/// dragged can land there. A column that lights up for anything is not saying
+/// anything.
 fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane) {
     let accepts = egui::DragAndDrop::payload::<Dragged>(ui.ctx())
         .is_some_and(|dragged| allows(dragged.lane, lane));
@@ -216,7 +217,7 @@ fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane) {
     };
 }
 
-/// Una tarjeta: la rama, de qué proyecto es, cuánto lleva y de cuándo es.
+/// A card: the branch, which project it is from, how much it carries and how old it is.
 fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
     let frame = egui::Frame::NONE
         .fill(theme::PANEL)
@@ -233,8 +234,8 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 3.0;
 
-            // La rama puesta lleva el ámbar de HEAD, igual que en el grafo y
-            // en la barra: es la misma pregunta contestada en el mismo color.
+            // The branch you are on wears HEAD's amber, as in the graph and in
+            // the bar: it is the same question answered in the same color.
             ui.label(
                 RichText::new(card.leaf())
                     .font(theme::medium(12.5))
@@ -246,14 +247,14 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
 
     let response = inner.response.interact(egui::Sense::click());
 
-    // Mientras va por el aire la tarjeta se pinta en otra capa y movida, así
-    // que lo que se añada aquí encima caería en el hueco que dejó.
+    // While it is in the air the card is painted on another layer and shifted,
+    // so anything added here on top would land in the hole it left.
     if dragging {
         return None;
     }
 
-    // El realce va por el borde, no por el relleno: un relleno encima taparía
-    // lo que la tarjeta dice.
+    // The highlight goes on the border, not the fill: a fill on top would
+    // cover what the card says.
     if response.hovered() {
         ui.painter().rect_stroke(
             response.rect,
@@ -287,7 +288,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
     response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
 }
 
-/// «tema · 3 commits · hace 2 h», callando lo que no haya.
+/// "theme - 3 commits - 2 h ago", saying nothing of what is not there.
 fn note(card: &Card) -> String {
     let mut parts = Vec::new();
 
@@ -295,8 +296,9 @@ fn note(card: &Card) -> String {
         parts.push(project.clone());
     }
 
-    // Sin nada propio, la fecha es la del commit donde nació la rama, que no
-    // cuenta nada de la rama. Se calla y se dice lo único que se sabe.
+    // With nothing of its own, the date is that of the commit the branch was
+    // cut from, which says nothing about the branch. It keeps quiet and says
+    // the one thing it does know.
     if card.lane == Lane::Todo {
         parts.push("not started".to_string());
         return parts.join(" · ");
@@ -314,7 +316,7 @@ fn note(card: &Card) -> String {
     parts.join(" · ")
 }
 
-/// Cuánto hace, redondeado a lo que uno diría en voz alta.
+/// How long ago, rounded to what one would say out loud.
 fn ago(seconds: i64) -> Option<String> {
     let when = Local.timestamp_opt(seconds, 0).single()?;
     let elapsed = Local::now().signed_duration_since(when);

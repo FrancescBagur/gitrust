@@ -1,4 +1,4 @@
-//! Etiquetas: marcar un commit con un nombre que no se mueve.
+//! Tags: marking a commit with a name that does not move.
 
 use anyhow::{Context, Result};
 use git2::Oid;
@@ -6,16 +6,18 @@ use git2::Oid;
 use crate::repo::Repo;
 
 impl Repo {
-    /// Pone una etiqueta en un commit.
+    /// Puts a tag on a commit.
     ///
-    /// Con mensaje sale anotada: lleva quién la puso, cuándo y por qué, y es
-    /// un objeto propio del repositorio. Sin mensaje sale ligera, que es solo
-    /// un nombre apuntando al commit. Es la misma diferencia que hay entre
-    /// `git tag -a` y `git tag` a secas, y aquí se elige escribiendo o no, sin
-    /// un interruptor que explicar.
+    /// With a message it comes out annotated: it carries who put it there, when
+    /// and why, and it is an object of the repository in its own right. Without
+    /// a message it comes out lightweight, which is just a name pointing at the
+    /// commit. It is the same difference there is between `git tag -a` and plain
+    /// `git tag`, and here you choose it by writing or not, with no switch to
+    /// explain.
     ///
-    /// No pisa una que ya exista. Una etiqueta vale justamente porque no se
-    /// mueve; moverla en silencio sería quitarle lo único que tiene.
+    /// It does not walk over one that already exists. A tag is worth something
+    /// precisely because it does not move; moving it quietly would take away the
+    /// only thing it has.
     pub fn tag(&self, name: &str, target: Oid, message: &str) -> Result<()> {
         let name = name.trim();
         anyhow::ensure!(!name.is_empty(), "the tag needs a name");
@@ -38,10 +40,10 @@ impl Repo {
         .with_context(|| format!("could not create '{name}'"))
     }
 
-    /// Quita una etiqueta. El commit que señalaba se queda donde estaba.
+    /// Takes a tag off. The commit it pointed at stays where it was.
     ///
-    /// Solo la de aquí: la que esté en un remoto sigue allí hasta que se borre
-    /// allí, y eso todavía no se hace desde la aplicación.
+    /// Only the one here: one on a remote stays there until it is deleted there,
+    /// and that is not done from the app yet.
     pub fn delete_tag(&self, name: &str) -> Result<()> {
         self.inner
             .tag_delete(name)

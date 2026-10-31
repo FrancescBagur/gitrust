@@ -1,4 +1,4 @@
-//! Pruebas del ciclo preparar → commitear sobre un repositorio real y temporal.
+//! Tests of the stage -> commit cycle on a real, temporary repository.
 
 mod common;
 
@@ -8,9 +8,9 @@ use common::TempRepo;
 use gitrust_core::{ChangeKind, HunkId, Repo};
 
 #[test]
-fn un_fichero_nuevo_pasa_de_sin_seguimiento_a_preparado() {
+fn a_new_file_goes_from_untracked_to_staged() {
     let temp = TempRepo::new("stage");
-    temp.write("a.txt", "hola\n");
+    temp.write("a.txt", "hello\n");
     let repo = temp.open();
 
     let state = repo.status().unwrap();
@@ -28,9 +28,9 @@ fn un_fichero_nuevo_pasa_de_sin_seguimiento_a_preparado() {
 }
 
 #[test]
-fn el_diff_del_indice_muestra_las_lineas_anadidas() {
+fn the_index_diff_shows_the_added_lines() {
     let temp = TempRepo::new("diff");
-    temp.write("a.txt", "uno\ndos\n");
+    temp.write("a.txt", "one\ntwo\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
 
@@ -47,36 +47,36 @@ fn el_diff_del_indice_muestra_las_lineas_anadidas() {
         .filter(|line| line.origin == '+')
         .map(|line| line.content.as_str())
         .collect();
-    assert_eq!(lines, vec!["uno", "dos"]);
+    assert_eq!(lines, vec!["one", "two"]);
 }
 
 #[test]
-fn commitear_deja_el_arbol_limpio_y_crea_historia() {
+fn committing_leaves_the_tree_clean_and_makes_history() {
     let temp = TempRepo::new("commit");
-    temp.write("a.txt", "hola\n");
+    temp.write("a.txt", "hello\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    repo.commit("primer commit").unwrap();
+    repo.commit("first commit").unwrap();
 
     assert!(repo.status().unwrap().is_clean());
 
     let commits = repo.commits(10).unwrap();
     assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].summary, "primer commit");
+    assert_eq!(commits[0].summary, "first commit");
     assert!(commits[0].parents.is_empty());
-    // HEAD y la rama apuntan al commit recién creado.
+    // HEAD and the branch point at the commit just made.
     assert!(commits[0].refs.len() >= 2);
 }
 
 #[test]
-fn quitar_del_indice_devuelve_el_cambio_al_arbol_de_trabajo() {
+fn unstaging_puts_the_change_back_in_the_working_tree() {
     let temp = TempRepo::new("unstage");
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("base").unwrap();
 
-    temp.write("a.txt", "uno\ndos\n");
+    temp.write("a.txt", "one\ntwo\n");
     let state = repo.status().unwrap();
     assert_eq!(state.unstaged[0].kind, ChangeKind::Modified);
 
@@ -87,14 +87,14 @@ fn quitar_del_indice_devuelve_el_cambio_al_arbol_de_trabajo() {
 
     repo.unstage("a.txt").unwrap();
     let state = repo.status().unwrap();
-    assert!(state.staged.is_empty(), "el índice debe quedar vacío");
+    assert!(state.staged.is_empty(), "the index must be left empty");
     assert_eq!(state.unstaged[0].kind, ChangeKind::Modified);
 }
 
 #[test]
-fn borrar_un_fichero_se_prepara_como_borrado() {
+fn deleting_a_file_stages_as_a_deletion() {
     let temp = TempRepo::new("delete");
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("base").unwrap();
@@ -107,7 +107,7 @@ fn borrar_un_fichero_se_prepara_como_borrado() {
     assert_eq!(state.staged[0].kind, ChangeKind::Deleted);
 }
 
-/// Veinte líneas numeradas, con las indicadas reescritas.
+/// Twenty numbered lines, with the ones named rewritten.
 fn numbered(changed: &[u32]) -> String {
     (1..=20)
         .map(|n| {
@@ -120,7 +120,7 @@ fn numbered(changed: &[u32]) -> String {
         .collect()
 }
 
-/// Prepara un fichero de veinte líneas y lo commitea como base.
+/// Stages a file of twenty lines and commits it as a baseline.
 fn repo_with_base(temp: &TempRepo) -> Repo {
     temp.write("a.txt", &numbered(&[]));
     let repo = temp.open();
@@ -137,37 +137,37 @@ fn has_line(diff: &gitrust_core::FileDiff, origin: char, needle: &str) -> bool {
 }
 
 #[test]
-fn preparar_un_hunk_deja_el_otro_sin_preparar() {
+fn staging_one_hunk_leaves_the_other_unstaged() {
     let temp = TempRepo::new("stage-hunk");
     let repo = repo_with_base(&temp);
 
-    // Dos cambios lo bastante separados para caer en hunks distintos.
+    // Two changes far enough apart to fall in different hunks.
     temp.write("a.txt", &numbered(&[2, 18]));
 
     let pending = repo.file_diff("a.txt", false).unwrap();
-    assert_eq!(pending.hunks.len(), 2, "se esperaban dos hunks separados");
+    assert_eq!(pending.hunks.len(), 2, "two separate hunks were expected");
 
     repo.stage_hunk("a.txt", pending.hunks[0].id).unwrap();
 
-    // El índice recoge solo el primer cambio.
+    // The index takes only the first change.
     let staged = repo.file_diff("a.txt", true).unwrap();
     assert_eq!(staged.hunks.len(), 1);
     assert!(has_line(&staged, '+', "line 2 changed"));
     assert!(!has_line(&staged, '+', "line 18 changed"));
 
-    // El segundo sigue pendiente en el árbol de trabajo.
+    // The second is still pending in the working tree.
     let left = repo.file_diff("a.txt", false).unwrap();
     assert_eq!(left.hunks.len(), 1);
     assert!(has_line(&left, '+', "line 18 changed"));
 
-    // Y el fichero aparece en las dos listas a la vez.
+    // And the file shows up in both lists at once.
     let state = repo.status().unwrap();
     assert_eq!(state.staged.len(), 1);
     assert_eq!(state.unstaged.len(), 1);
 }
 
 #[test]
-fn quitar_un_hunk_lo_devuelve_al_arbol_de_trabajo() {
+fn unstaging_a_hunk_puts_it_back_in_the_working_tree() {
     let temp = TempRepo::new("unstage-hunk");
     let repo = repo_with_base(&temp);
 
@@ -180,7 +180,7 @@ fn quitar_un_hunk_lo_devuelve_al_arbol_de_trabajo() {
 
     repo.unstage_hunk("a.txt", staged.hunks[1].id).unwrap();
 
-    // En el índice queda el primero; el segundo vuelve a estar pendiente.
+    // The first stays in the index; the second is pending again.
     let left_staged = repo.file_diff("a.txt", true).unwrap();
     assert_eq!(left_staged.hunks.len(), 1);
     assert!(has_line(&left_staged, '+', "line 2 changed"));
@@ -189,14 +189,14 @@ fn quitar_un_hunk_lo_devuelve_al_arbol_de_trabajo() {
     assert_eq!(pending.hunks.len(), 1);
     assert!(has_line(&pending, '+', "line 18 changed"));
 
-    // El fichero del disco no se toca: sigue con los dos cambios.
+    // The file on disk is untouched: it still has both changes.
     let contents = fs::read_to_string(temp.path().join("a.txt")).unwrap();
     assert!(contents.contains("line 2 changed"));
     assert!(contents.contains("line 18 changed"));
 }
 
 #[test]
-fn un_hunk_que_ya_no_existe_da_error_en_vez_de_pasar_en_silencio() {
+fn a_hunk_that_no_longer_exists_errors_instead_of_passing_quietly() {
     let temp = TempRepo::new("stale-hunk");
     let repo = repo_with_base(&temp);
 
@@ -205,26 +205,26 @@ fn un_hunk_que_ya_no_existe_da_error_en_vez_de_pasar_en_silencio() {
     let hunk = diff.hunks[0].id;
 
     repo.stage_hunk("a.txt", hunk).unwrap();
-    // Ya está en el índice: el segundo intento no encuentra ese hunk.
+    // It is already in the index: the second try does not find that hunk.
     assert!(repo.stage_hunk("a.txt", hunk).is_err());
 }
 
 #[test]
-fn el_detalle_separa_asunto_y_cuerpo_y_lista_los_ficheros() {
+fn the_detail_splits_subject_and_body_and_lists_the_files() {
     let temp = TempRepo::new("detail");
-    temp.write("a.txt", "uno\n");
-    temp.write("b.txt", "dos\n");
+    temp.write("a.txt", "one\n");
+    temp.write("b.txt", "two\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.stage("b.txt").unwrap();
-    repo.commit("feat: dos ficheros\n\nY una explicación\nen dos líneas.")
+    repo.commit("feat: two files\n\nAnd an explanation\nin two lines.")
         .unwrap();
 
     let head = repo.commits(1).unwrap()[0].id;
     let detail = repo.commit_detail(head).unwrap();
 
-    assert_eq!(detail.summary, "feat: dos ficheros");
-    assert_eq!(detail.body, "Y una explicación\nen dos líneas.");
+    assert_eq!(detail.summary, "feat: two files");
+    assert_eq!(detail.body, "And an explanation\nin two lines.");
     assert!(!detail.is_merge());
 
     let paths: Vec<&str> = detail.files.iter().map(|f| f.path.as_str()).collect();
@@ -232,39 +232,39 @@ fn el_detalle_separa_asunto_y_cuerpo_y_lista_los_ficheros() {
     assert!(detail.files.iter().all(|f| f.kind == ChangeKind::Added));
     assert_eq!(detail.counts(), (2, 0, 0));
 
-    // Y el diff de uno de ellos sale del propio commit, no del árbol.
+    // And one of their diffs comes from the commit itself, not the tree.
     let diff = repo.commit_file_diff(head, "a.txt").unwrap();
-    assert!(has_line(&diff, '+', "uno"));
+    assert!(has_line(&diff, '+', "one"));
 }
 
 #[test]
-fn las_referencias_marcan_la_rama_de_head() {
+fn the_references_mark_heads_branch() {
     let temp = TempRepo::new("refs");
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("base").unwrap();
 
     let refs = repo.references().unwrap();
-    assert_eq!(refs.len(), 1, "solo la rama inicial");
+    assert_eq!(refs.len(), 1, "only the initial branch");
 
     let branch = &refs[0];
     assert!(branch.is_head);
     assert_eq!(branch.kind, gitrust_core::RefKind::LocalBranch);
-    // Sin barras en el nombre, no hay carpeta y la hoja es el nombre entero.
+    // With no slashes in the name there is no folder and the leaf is the whole name.
     assert_eq!(branch.folder(), None);
     assert_eq!(branch.leaf(), branch.name);
 }
 
 #[test]
-fn una_rama_con_barras_se_agrupa_por_su_carpeta() {
+fn a_branch_with_slashes_is_grouped_by_its_folder() {
     let temp = TempRepo::new("folders");
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("base").unwrap();
 
-    // Dos ramas con prefijo, como las que usa cualquier repositorio real.
+    // Two branches with a prefix, like the ones any real repository uses.
     let git = git2::Repository::open(temp.path()).unwrap();
     let head = git.head().unwrap().peel_to_commit().unwrap();
     git.branch("feat/login", &head, false).unwrap();
@@ -279,52 +279,52 @@ fn una_rama_con_barras_se_agrupa_por_su_carpeta() {
 }
 
 #[test]
-fn un_commit_sin_mensaje_se_rechaza() {
+fn a_commit_with_no_message_is_refused() {
     let temp = TempRepo::new("empty-msg");
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
 
     assert!(repo.commit("   ").is_err());
 }
 
-// --------------------------------------------------------------- enmendar
+// --------------------------------------------------------------- amending
 
 #[test]
-fn enmendar_cambia_el_mensaje_sin_escribir_historia() {
-    let temp = TempRepo::new("enmendar-mensaje");
-    temp.write("a.txt", "uno\n");
+fn amending_changes_the_message_without_writing_history() {
+    let temp = TempRepo::new("amend-message");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    let viejo = repo.commit("feat: asnuto mal escrito").unwrap();
+    let old_one = repo.commit("feat: sbuject spelled wrong").unwrap();
 
-    let nuevo = temp.open().amend("feat: asunto bien escrito").unwrap();
-    assert_ne!(nuevo, viejo, "enmendar escribe otro commit, no edita el de antes");
+    let new_file = temp.open().amend("feat: subject spelled right").unwrap();
+    assert_ne!(new_file, old_one, "amending writes another commit, it does not edit the old one");
 
     let repo = temp.open();
-    let detail = repo.commit_detail(nuevo).unwrap();
-    assert_eq!(detail.summary, "feat: asunto bien escrito");
-    assert!(detail.parents.is_empty(), "el padre sigue siendo el mismo: ninguno");
-    assert_eq!(repo.commits(50).unwrap().len(), 1, "no hay un commit de más");
+    let detail = repo.commit_detail(new_file).unwrap();
+    assert_eq!(detail.summary, "feat: subject spelled right");
+    assert!(detail.parents.is_empty(), "the parent is still the same: none");
+    assert_eq!(repo.commits(50).unwrap().len(), 1, "there is no extra commit");
 }
 
 #[test]
-fn enmendar_mete_lo_preparado_en_el_ultimo_commit() {
-    let temp = TempRepo::new("enmendar-ficheros");
-    temp.write("a.txt", "uno\n");
+fn amending_puts_what_is_staged_into_the_last_commit() {
+    let temp = TempRepo::new("amend-files");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
 
-    // El fichero que se olvidó, que es para lo que se enmienda.
-    temp.write("b.txt", "dos\n");
+    // The file that was forgotten, which is what amending is for.
+    temp.write("b.txt", "two\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
-    let nuevo = repo.amend("feat: a y b").unwrap();
+    let new_file = repo.amend("feat: a and b").unwrap();
 
     let repo = temp.open();
     let files: Vec<String> = repo
-        .commit_detail(nuevo)
+        .commit_detail(new_file)
         .unwrap()
         .files
         .into_iter()
@@ -336,47 +336,47 @@ fn enmendar_mete_lo_preparado_en_el_ultimo_commit() {
 }
 
 #[test]
-fn enmendar_conserva_al_autor_y_cambia_a_quien_lo_cierra() {
-    let temp = TempRepo::new("enmendar-autoria");
-    temp.write("a.txt", "uno\n");
+fn amending_keeps_the_author_and_changes_who_closes_it() {
+    let temp = TempRepo::new("amend-authorship");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    let viejo = repo.commit("feat: a").unwrap();
+    let old_one = repo.commit("feat: a").unwrap();
 
-    let cuando = {
+    let when = {
         let raw = git2::Repository::open(temp.path()).unwrap();
-        let seconds = raw.find_commit(viejo).unwrap().author().when().seconds();
+        let seconds = raw.find_commit(old_one).unwrap().author().when().seconds();
         seconds
     };
 
-    // Otra persona enmienda el commit de la primera.
+    // Somebody else amends the first person's commit.
     {
         let raw = git2::Repository::open(temp.path()).unwrap();
         let mut config = raw.config().unwrap();
-        config.set_str("user.name", "Otra").unwrap();
-        config.set_str("user.email", "otra@example.invalid").unwrap();
+        config.set_str("user.name", "Other").unwrap();
+        config.set_str("user.email", "other@example.invalid").unwrap();
     }
 
-    let nuevo = temp.open().amend("feat: a, mejor contado").unwrap();
+    let new_file = temp.open().amend("feat: a, better told").unwrap();
 
     let raw = git2::Repository::open(temp.path()).unwrap();
-    let commit = raw.find_commit(nuevo).unwrap();
+    let commit = raw.find_commit(new_file).unwrap();
     assert_eq!(commit.author().name(), Some("gitrust test"));
-    assert_eq!(commit.author().when().seconds(), cuando);
-    assert_eq!(commit.committer().name(), Some("Otra"));
+    assert_eq!(commit.author().when().seconds(), when);
+    assert_eq!(commit.committer().name(), Some("Other"));
 }
 
 #[test]
-fn sin_commits_no_hay_nada_que_enmendar() {
-    let temp = TempRepo::new("enmendar-vacio");
-    let err = temp.open().amend("feat: nada").unwrap_err().to_string();
+fn with_no_commits_there_is_nothing_to_amend() {
+    let temp = TempRepo::new("amend-empty");
+    let err = temp.open().amend("feat: nothing").unwrap_err().to_string();
     assert!(err.contains("no commit to amend"), "{err}");
 }
 
 #[test]
-fn enmendar_sin_mensaje_se_rechaza() {
-    let temp = TempRepo::new("enmendar-sin-mensaje");
-    temp.write("a.txt", "uno\n");
+fn amending_with_no_message_is_refused() {
+    let temp = TempRepo::new("amend-no-message");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
@@ -385,82 +385,82 @@ fn enmendar_sin_mensaje_se_rechaza() {
 }
 
 #[test]
-fn el_mensaje_de_head_vuelve_partido_en_asunto_y_cuerpo() {
-    let temp = TempRepo::new("mensaje-head");
-    assert!(temp.open().head_message().is_none(), "sin commits no hay mensaje");
+fn heads_message_comes_back_split_into_subject_and_body() {
+    let temp = TempRepo::new("head-message");
+    assert!(temp.open().head_message().is_none(), "with no commits there is no message");
 
-    temp.write("a.txt", "uno\n");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    repo.commit("feat: el asunto\n\nY el cuerpo,\nen dos líneas.\n").unwrap();
+    repo.commit("feat: the subject\n\nAnd the body,\nin two lines.\n").unwrap();
 
     let (subject, body) = temp.open().head_message().unwrap();
-    assert_eq!(subject, "feat: el asunto");
-    assert_eq!(body, "Y el cuerpo,\nen dos líneas.");
+    assert_eq!(subject, "feat: the subject");
+    assert_eq!(body, "And the body,\nin two lines.");
 }
 
-// -------------------------------------------------------------- descartar
+// ------------------------------------------------------------- discarding
 
 #[test]
-fn descartar_devuelve_el_fichero_a_lo_que_dice_el_indice() {
-    let temp = TempRepo::new("descartar");
-    temp.write("a.txt", "uno\n");
+fn discarding_puts_the_file_back_to_what_the_index_says() {
+    let temp = TempRepo::new("discard");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
 
-    temp.write("a.txt", "uno\nlo que me estoy inventando\n");
+    temp.write("a.txt", "one\nwhat I am making up\n");
     assert!(!temp.open().status().unwrap().is_clean());
 
     temp.open().discard("a.txt").unwrap();
 
-    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\n");
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "one\n");
     assert!(temp.open().status().unwrap().is_clean());
 }
 
 #[test]
-fn descartar_respeta_lo_que_ya_estaba_preparado() {
-    let temp = TempRepo::new("descartar-preparado");
-    temp.write("a.txt", "uno\n");
+fn discarding_keeps_what_was_already_staged() {
+    let temp = TempRepo::new("discard-staged");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
 
-    // Una parte preparada y otra encima sin preparar.
-    temp.write("a.txt", "uno\ndos\n");
+    // One part staged and another on top unstaged.
+    temp.write("a.txt", "one\ntwo\n");
     temp.open().stage("a.txt").unwrap();
-    temp.write("a.txt", "uno\ndos\ntres a medias\n");
+    temp.write("a.txt", "one\ntwo\nthree half-done\n");
 
     temp.open().discard("a.txt").unwrap();
 
-    // Vuelve al índice, no al commit: «dos» sobrevive porque estaba preparado.
-    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\ndos\n");
+    // It goes back to the index, not the commit: "two" survives because it was staged.
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "one\ntwo\n");
     let state = temp.open().status().unwrap();
     assert!(state.unstaged.is_empty());
     assert_eq!(state.staged.len(), 1);
 }
 
 #[test]
-fn descartar_un_fichero_sin_seguimiento_lo_borra() {
-    let temp = TempRepo::new("descartar-nuevo");
-    temp.write("a.txt", "uno\n");
+fn discarding_an_untracked_file_deletes_it() {
+    let temp = TempRepo::new("discard-new");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
 
-    temp.write("nuevo.txt", "no lo conoce nadie\n");
-    assert!(temp.path().join("nuevo.txt").exists());
+    temp.write("new.txt", "nobody knows it\n");
+    assert!(temp.path().join("new.txt").exists());
 
-    temp.open().discard("nuevo.txt").unwrap();
+    temp.open().discard("new.txt").unwrap();
 
-    assert!(!temp.path().join("nuevo.txt").exists());
+    assert!(!temp.path().join("new.txt").exists());
     assert!(temp.open().status().unwrap().is_clean());
 }
 
 #[test]
-fn descartar_un_fichero_borrado_lo_devuelve_al_disco() {
-    let temp = TempRepo::new("descartar-borrado");
-    temp.write("a.txt", "uno\n");
+fn discarding_a_deleted_file_puts_it_back_on_disk() {
+    let temp = TempRepo::new("discard-deleted");
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
     repo.commit("feat: a").unwrap();
@@ -468,42 +468,42 @@ fn descartar_un_fichero_borrado_lo_devuelve_al_disco() {
     fs::remove_file(temp.path().join("a.txt")).unwrap();
     temp.open().discard("a.txt").unwrap();
 
-    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\n");
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "one\n");
 }
 
 #[test]
-fn descartar_un_hunk_deja_el_otro_donde_estaba() {
-    let temp = TempRepo::new("descartar-hunk");
+fn discarding_one_hunk_leaves_the_other_where_it_was() {
+    let temp = TempRepo::new("discard-hunk");
     let repo = repo_with_base(&temp);
 
-    // Dos cambios lejos el uno del otro, que es lo que hace dos hunks.
+    // Two changes far from each other, which is what makes two hunks.
     temp.write("a.txt", &numbered(&[2, 18]));
 
     let diff = repo.file_diff("a.txt", false).unwrap();
-    assert_eq!(diff.hunks.len(), 2, "hacen falta dos hunks para esta prueba");
+    assert_eq!(diff.hunks.len(), 2, "this test needs two hunks");
 
     temp.open().discard_hunk("a.txt", diff.hunks[0].id).unwrap();
 
-    let texto = fs::read_to_string(temp.path().join("a.txt")).unwrap();
-    assert!(texto.contains("line 2\n"), "el primero vuelve: {texto}");
-    assert!(!texto.contains("line 2 changed"), "y de verdad: {texto}");
-    assert!(texto.contains("line 18 changed"), "el segundo se queda: {texto}");
+    let text = fs::read_to_string(temp.path().join("a.txt")).unwrap();
+    assert!(text.contains("line 2\n"), "the first comes back: {text}");
+    assert!(!text.contains("line 2 changed"), "and really: {text}");
+    assert!(text.contains("line 18 changed"), "the second stays: {text}");
 }
 
 #[test]
-fn descartar_un_hunk_de_un_fichero_nuevo_dice_que_se_descarte_entero() {
-    let temp = TempRepo::new("descartar-hunk-nuevo");
+fn discarding_a_hunk_of_a_new_file_says_to_discard_it_whole() {
+    let temp = TempRepo::new("discard-hunk-new");
     repo_with_base(&temp);
-    temp.write("nuevo.txt", "recien llegado\n");
+    temp.write("new.txt", "just arrived\n");
 
-    // Un fichero sin seguimiento no trae hunks: el diff no entra en su
-    // contenido mientras Git no sepa nada de él.
+    // An untracked file brings no hunks: the diff does not go into its
+    // contents while Git knows nothing about it.
     let repo = temp.open();
-    assert!(repo.file_diff("nuevo.txt", false).unwrap().hunks.is_empty());
+    assert!(repo.file_diff("new.txt", false).unwrap().hunks.is_empty());
 
     let err = temp
         .open()
-        .discard_hunk("nuevo.txt", HunkId::default())
+        .discard_hunk("new.txt", HunkId::default())
         .unwrap_err()
         .to_string();
     assert!(err.contains("discard it whole"), "{err}");

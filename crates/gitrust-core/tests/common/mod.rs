@@ -1,8 +1,8 @@
-//! El andamio que comparten las pruebas: un repositorio de verdad en un
-//! directorio temporal, que se borra solo al terminar cada prueba.
+//! The scaffolding the tests share: a real repository in a temporary
+//! directory, which deletes itself when each test ends.
 //!
-//! Cada binario de pruebas compila este módulo entero, así que lo que use
-//! uno le sobra al otro. No es código muerto: es código de la otra prueba.
+//! Every test binary compiles this whole module, so what one uses is surplus
+//! to the other. It is not dead code: it is the other test's code.
 #![allow(dead_code)]
 
 use std::fs;
@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gitrust_core::Repo;
 
-/// Crea un repositorio vacío en un directorio temporal propio de esta prueba.
+/// Makes an empty repository in a temporary directory of this test's own.
 pub struct TempRepo {
     dir: PathBuf,
 }
@@ -52,7 +52,7 @@ impl Drop for TempRepo {
     }
 }
 
-/// Un directorio temporal a secas, para lo que no es un árbol de trabajo.
+/// A plain temporary directory, for what is not a working tree.
 pub fn temp_dir(tag: &str) -> PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("gitrust-{tag}-{stamp}"));

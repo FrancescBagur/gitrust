@@ -1,17 +1,18 @@
-//! El trabajo en marcha, leído del grafo.
+//! The work in hand, read off the graph.
 //!
-//! Una rama es una unidad de trabajo, y el repositorio ya sabe en qué punto
-//! está cada una. Este módulo no guarda nada ni pregunta nada: mira dónde cae
-//! cada rama respecto a la principal y deduce la columna. Un tablero que se
-//! calcula no se puede quedar desfasado, que es lo que le pasa a todos los
-//! tableros que hay que mantener a mano.
+//! A branch is a unit of work, and the repository already knows where each one
+//! stands. This module stores nothing and asks nothing: it looks at where each
+//! branch falls against the main one and works out the column. A board that is
+//! worked out cannot fall out of date, which is what happens to every board
+//! somebody has to keep by hand.
 //!
-//! Lo que no puede saber, y conviene no fingir: Git no guarda cuándo se creó
-//! una rama. Una rama terminada y una que nunca empezó acaban las dos sin nada
-//! propio, y lo único que las separa es si la principal se la tragó en algún
-//! merge. Por eso «hecho» se lee de los commits de fusión, no de la distancia:
-//! una rama que entró por avance rápido, o aplastada en un solo commit, se
-//! queda en «por hacer». Mejor eso que decirte que terminaste algo que no.
+//! What it cannot know, and had better not pretend to: Git does not record
+//! when a branch was made. A finished branch and one that never started both
+//! end up with nothing of their own, and the only thing telling them apart is
+//! whether the main branch swallowed it in some merge. So "done" is read off
+//! the merge commits, not off the distance: a branch that went in by fast
+//! forward, or squashed into one commit, stays in "to do". Better that than
+//! telling you that you finished something you did not.
 
 use std::collections::HashSet;
 
@@ -20,66 +21,66 @@ use git2::{BranchType, ObjectType, Oid};
 
 use crate::repo::Repo;
 
-/// En qué punto está una rama.
+/// Where a branch stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
-    /// Creada y todavía en el mismo sitio que la principal.
+    /// Made, and still in the same place as the main branch.
     Todo,
-    /// Tiene commits propios y no ha salido de esta máquina.
+    /// It has commits of its own and has not left this machine.
     InProgress,
-    /// Tiene commits propios y ya está en el remoto, esperando a alguien.
+    /// It has commits of its own and is on the remote, waiting for somebody.
     InReview,
-    /// Todo lo suyo está dentro de la principal.
+    /// Everything of its own is inside the main branch.
     Done,
 }
 
 impl Lane {
-    /// Las cuatro, en el orden en que se leen de izquierda a derecha.
+    /// All four, in the order they are read from left to right.
     pub const ALL: [Lane; 4] = [Lane::Todo, Lane::InProgress, Lane::InReview, Lane::Done];
 }
 
-/// Una rama vista como trabajo.
+/// A branch seen as work.
 #[derive(Debug, Clone)]
 pub struct Card {
     pub branch: String,
-    /// La carpeta de su nombre: `tema` en `tema/colores`. Es lo que hace de
-    /// proyecto, porque es lo que la gente ya usa para decir que dos ramas
-    /// son la misma faena.
+    /// The folder in its name: `theme` in `theme/colors`. It is what stands in
+    /// for a project, because it is what people already use to say that two
+    /// branches are the same job.
     pub project: Option<String>,
     pub lane: Lane,
-    /// Commits suyos que la principal no tiene.
+    /// Commits of its own that the main branch does not have.
     pub ahead: usize,
-    /// Commits de la principal que a ella le faltan.
+    /// Commits of the main branch that it is missing.
     pub behind: usize,
-    /// Cuándo se escribió lo último que tiene.
+    /// When the last thing it has was written.
     pub time: i64,
-    /// Si es la rama que está puesta ahora mismo.
+    /// Whether it is the branch that is checked out right now.
     pub current: bool,
     pub target: Oid,
 }
 
 impl Card {
-    /// El nombre sin la carpeta, que es como se llama a la rama en voz alta.
+    /// The name without the folder, which is what the branch is called aloud.
     pub fn leaf(&self) -> &str {
         self.branch.rsplit_once('/').map_or(self.branch.as_str(), |(_, leaf)| leaf)
     }
 }
 
-/// El tablero entero.
+/// The whole board.
 #[derive(Debug, Clone)]
 pub struct Board {
     pub cards: Vec<Card>,
-    /// La rama contra la que se mide todo lo demás.
+    /// The branch everything else is measured against.
     pub trunk: String,
 }
 
 impl Board {
-    /// Las tarjetas de una columna, en el orden en que ya vienen.
+    /// The cards in one column, in the order they already come in.
     pub fn lane(&self, lane: Lane) -> impl Iterator<Item = &Card> {
         self.cards.iter().filter(move |card| card.lane == lane)
     }
 
-    /// Los proyectos que hay, sin repetir y por orden.
+    /// The projects there are, without repeats and in order.
     pub fn projects(&self) -> Vec<&str> {
         let mut names: Vec<&str> =
             self.cards.iter().filter_map(|card| card.project.as_deref()).collect();
@@ -90,7 +91,7 @@ impl Board {
 }
 
 impl Repo {
-    /// Clasifica cada rama local según dónde cae respecto a la principal.
+    /// Sorts each local branch by where it falls against the main one.
     pub fn board(&self) -> Result<Board> {
         let trunk = self.trunk()?;
         let tip = self
@@ -107,8 +108,8 @@ impl Repo {
             .ok()
             .and_then(|head| head.shorthand().map(str::to_string));
 
-        // Las puntas que la principal absorbió en algún merge. Es lo único
-        // que distingue una rama terminada de una que nunca llegó a empezar.
+        // The tips the main branch took in at some merge. It is the only thing
+        // telling a finished branch from one that never got started.
         let mut swallowed = HashSet::new();
         let mut walk = self.inner.revwalk()?;
         walk.push(tip)?;
@@ -121,8 +122,8 @@ impl Repo {
             }
         }
 
-        // Qué ramas conoce algún remoto, de una pasada: preguntarlo rama por
-        // rama sería recorrer la lista entera otras tantas veces.
+        // Which branches some remote knows, in one pass: asking branch by
+        // branch would walk the whole list that many times over.
         let mut published = HashSet::new();
         for reference in self.inner.references()? {
             let Some(name) = reference?.name().map(str::to_string) else {
@@ -151,9 +152,9 @@ impl Repo {
             let target = object.id();
             let (ahead, behind) = self.inner.graph_ahead_behind(target, tip)?;
 
-            // Con algo propio, la columna depende de si ha salido de aquí.
-            // Sin nada propio, de si la principal se la tragó o es que la
-            // rama todavía no ha hecho nada.
+            // With something of its own, the column depends on whether it has
+            // left here. With nothing of its own, on whether the main branch
+            // swallowed it or the branch has simply not done anything yet.
             let lane = if ahead > 0 {
                 match published.contains(&name) {
                     true => Lane::InReview,
@@ -183,17 +184,17 @@ impl Repo {
             });
         }
 
-        // Lo último que se tocó, primero: un tablero se lee por arriba.
+        // The last thing touched, first: a board is read from the top.
         cards.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| a.branch.cmp(&b.branch)));
         Ok(Board { cards, trunk })
     }
 
-    /// La rama contra la que se mide el resto del trabajo.
+    /// The branch the rest of the work is measured against.
     ///
-    /// Primero se le pregunta al remoto, que es quien lo sabe de verdad: su
-    /// HEAD apunta a la rama por defecto del repositorio. Si no hay remoto, se
-    /// prueban los nombres de siempre. Y si tampoco, la rama que esté puesta,
-    /// que al menos no es una invención.
+    /// The remote is asked first, because it is the one that really knows: its
+    /// HEAD points at the repository's default branch. With no remote, the
+    /// usual names are tried. And failing that, the branch that is checked out,
+    /// which is at least not an invention.
     pub fn trunk(&self) -> Result<String> {
         for remote in self.inner.remotes()?.iter().flatten() {
             let Ok(reference) = self.inner.find_reference(&format!("refs/remotes/{remote}/HEAD"))

@@ -1,12 +1,12 @@
-//! Panel de cambios: listas de índice y árbol de trabajo, diff y commit.
+//! The changes panel: the index and working tree lists, the diff and the commit box.
 
 use eframe::egui::{self, Color32, RichText};
 use gitrust_core::{ChangeKind, FileChange, FileDiff, HunkId, WorkingState, SUBJECT_LIMIT};
 
 use crate::{diff_view, theme};
 
-/// Lo que el usuario ha pedido en este fotograma. La vista no toca el
-/// repositorio: solo describe la intención y deja que `main` la ejecute.
+/// What the user has asked for in this frame. The view does not touch the
+/// repository: it only describes the intention and lets `main` carry it out.
 pub enum Action {
     Select { path: String, staged: bool },
     Stage(String),
@@ -15,28 +15,28 @@ pub enum Action {
     UnstageHunk { path: String, hunk: HunkId },
     StageAll,
     UnstageAll,
-    /// Tirar los cambios de un fichero. `untracked` cambia lo que se pierde:
-    /// un fichero nuevo se borra entero, uno conocido vuelve al índice.
+    /// Throw away a file's changes. `untracked` changes what is lost: a new
+    /// file is deleted whole, a known one goes back to the index.
     Discard { path: String, untracked: bool },
     DiscardHunk { path: String, hunk: HunkId },
     DiscardAll,
     Commit,
     Amend,
-    /// El interruptor de enmendar ha cambiado de postura.
+    /// The amend switch has changed position.
     AmendToggled,
 }
 
-/// El mensaje que se está escribiendo, y en qué commit va a acabar.
+/// The message being written, and which commit it will end up in.
 pub struct Draft<'a> {
     pub subject: &'a mut String,
     pub body: &'a mut String,
-    /// Si lo escrito va a rehacer el último commit en vez de crear otro.
+    /// Whether what is written will redo the last commit instead of making one.
     pub amend: &'a mut bool,
-    /// Hay un commit que enmendar. Sin él, el interruptor no se enseña.
+    /// There is a commit to amend. Without one, the switch is not shown.
     pub amendable: bool,
-    /// El remoto que ya tiene el último commit, si lo tiene. Enmendarlo
-    /// entonces obliga a forzar el siguiente envío, y eso hay que decirlo
-    /// antes, no después.
+    /// The remote that already has the last commit, if it has it. Amending it
+    /// then forces the next push, and that has to be said beforehand, not
+    /// after.
     pub pushed: Option<&'a str>,
 }
 
@@ -61,7 +61,7 @@ pub fn show(
 ) -> Option<Action> {
     let mut action = None;
 
-    egui::SidePanel::left("cambios")
+    egui::SidePanel::left("changes")
         .resizable(true)
         .default_width(330.0)
         .frame(
@@ -70,7 +70,7 @@ pub fn show(
                 .inner_margin(egui::Margin::symmetric(10, 0)),
         )
         .show_inside(ui, |ui| {
-            // El cuadro de commit va abajo del todo, fijo.
+            // The commit box goes right at the bottom, pinned.
             egui::TopBottomPanel::bottom("commit")
                 .resizable(false)
                 .frame(
@@ -81,7 +81,7 @@ pub fn show(
                 .show_inside(ui, |ui| commit_box(ui, state, draft, &mut action));
 
             egui::ScrollArea::vertical()
-                .id_salt("listas")
+                .id_salt("lists")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(10.0);
@@ -105,11 +105,11 @@ pub fn show(
     action
 }
 
-/// El mismo panel en una sola columna, para el lado derecho de la historia.
+/// The same panel in a single column, for the right-hand side of the history.
 ///
-/// Es lo que sale al elegir en el grafo la fila de cambios sin confirmar: las
-/// dos listas, el cuadro de commit y el diff, uno debajo de otro, de modo que
-/// se pueda preparar y commitear sin salir del grafo.
+/// It is what comes up when you pick the uncommitted-changes row in the graph:
+/// the two lists, the commit box and the diff, one below the other, so that
+/// you can stage and commit without leaving the graph.
 pub fn compact(
     ui: &mut egui::Ui,
     state: &WorkingState,
@@ -135,11 +135,11 @@ pub fn compact(
 
     theme::rule(ui);
 
-    // Las listas se quedan en un tercio del panel; el resto es para el cuadro
-    // de commit y el diff, que es donde se trabaja.
+    // The lists stay within a third of the panel; the rest is for the commit
+    // box and the diff, which is where the work happens.
     let list_height = (ui.available_height() * 0.34).clamp(90.0, 300.0);
     egui::ScrollArea::vertical()
-        .id_salt("listas-estrechas")
+        .id_salt("narrow-lists")
         .max_height(list_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -156,15 +156,15 @@ pub fn compact(
     action
 }
 
-/// El cuadro de commit: título y descripción por separado, como espera Git.
+/// The commit box: subject and description apart, as Git expects them.
 fn commit_box(
     ui: &mut egui::Ui,
     state: &WorkingState,
     draft: &mut Draft<'_>,
     action: &mut Option<Action>,
 ) {
-    // El asunto va aparte del cuerpo: Git espera una línea en blanco entre
-    // ambos y así no hay que recordarlo.
+    // The subject goes apart from the body: Git expects a blank line between
+    // the two, and this way nobody has to remember it.
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Title")
@@ -211,8 +211,8 @@ fn commit_box(
     );
     ui.add_space(8.0);
 
-    // Enmendando no hace falta tener nada preparado: cambiar solo el mensaje
-    // del último commit es la mitad de las veces que se enmienda.
+    // When amending, nothing needs to be staged: changing only the message of
+    // the last commit is half the times anyone amends.
     let amending = *draft.amend;
     let ready = !draft.subject.trim().is_empty() && (amending || !state.staged.is_empty());
     let shortcut =
@@ -233,8 +233,8 @@ fn commit_box(
             *action = Some(if amending { Action::Amend } else { Action::Commit });
         }
 
-        // Si no se puede commitear, el aviso dice qué falta en vez de
-        // limitarse a describir el estado.
+        // If there is nothing to commit, the hint says what is missing instead
+        // of merely describing the state.
         let note = if !amending && state.staged.is_empty() {
             "Stage something first".to_string()
         } else if draft.subject.trim().is_empty() {
@@ -267,8 +267,8 @@ fn commit_box(
         }
     });
 
-    // Enmendar un commit que ya salió deja dos historias distintas con el
-    // mismo nombre. Se puede hacer, pero no a ciegas.
+    // Amending a commit that already went out leaves two different histories
+    // with the same name. It can be done, but not blindly.
     if let (true, Some(remote)) = (amending, draft.pushed) {
         ui.add_space(6.0);
         ui.label(
@@ -314,8 +314,8 @@ fn section(
                     *action = Some(if staged { Action::UnstageAll } else { Action::StageAll });
                 }
 
-                // Tirar un lado entero no se deshace, así que se viste del
-                // color de lo que se borra y no se pone de primero.
+                // Throwing away a whole side cannot be undone, so it wears the
+                // color of what is being deleted and does not go first.
                 if !staged
                     && ui
                         .add(egui::Button::new(
@@ -385,9 +385,9 @@ fn section(
                 *action = Some(Action::Select { path: file.path.clone(), staged });
             }
 
-            // El de tirar se va al otro extremo de la fila, lejos del de
-            // preparar: entre dos botones pegados, el que no se deshace es el
-            // que no conviene pulsar sin querer.
+            // The throw-away one goes to the far end of the row, away from
+            // the staging one: between two buttons side by side, the one that
+            // cannot be undone is the one you should not press by accident.
             if !staged {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -455,8 +455,8 @@ fn show_diff(
             ui.spacing_mut().item_spacing.y = 2.0;
 
             for hunk in &diff.hunks {
-                // Cada hunk se puede mover por su cuenta, que es lo que hace
-                // `git add -p` sin tener que contestar preguntas en la terminal.
+                // Each hunk can be moved on its own, which is what `git add -p`
+                // does without making you answer questions in the terminal.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
 

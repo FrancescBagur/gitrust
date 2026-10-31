@@ -1,8 +1,8 @@
-//! Estado del árbol de trabajo: qué ha cambiado y si está preparado o no.
+//! The state of the working tree: what has changed, and whether it is staged.
 
 use git2::Status;
 
-/// Qué le ha pasado a un fichero.
+/// What has happened to a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     Added,
@@ -15,7 +15,7 @@ pub enum ChangeKind {
 }
 
 impl ChangeKind {
-    /// Letra corta para la lista, al estilo de `git status --short`.
+    /// A short letter for the list, in the style of `git status --short`.
     pub fn tag(self) -> &'static str {
         match self {
             ChangeKind::Added => "A",
@@ -36,7 +36,7 @@ pub struct FileChange {
     pub staged: bool,
 }
 
-/// Los dos lados del índice: lo que iría al próximo commit y lo que no.
+/// The two sides of the index: what would go in the next commit, and what would not.
 #[derive(Debug, Default, Clone)]
 pub struct WorkingState {
     pub staged: Vec<FileChange>,
@@ -49,7 +49,7 @@ impl WorkingState {
     }
 }
 
-/// Cambio registrado en el índice respecto a HEAD.
+/// A change recorded in the index against HEAD.
 pub(crate) fn staged_kind(status: Status) -> Option<ChangeKind> {
     if status.contains(Status::INDEX_NEW) {
         Some(ChangeKind::Added)
@@ -66,7 +66,7 @@ pub(crate) fn staged_kind(status: Status) -> Option<ChangeKind> {
     }
 }
 
-/// Cambio del árbol de trabajo respecto al índice.
+/// A change in the working tree against the index.
 pub(crate) fn unstaged_kind(status: Status) -> Option<ChangeKind> {
     if status.contains(Status::CONFLICTED) {
         Some(ChangeKind::Conflicted)

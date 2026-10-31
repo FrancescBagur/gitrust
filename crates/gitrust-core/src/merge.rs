@@ -1,9 +1,9 @@
-//! Juntar una rama con la actual.
+//! Joining a branch with the current one.
 //!
-//! Lo que no hay aquí es tan importante como lo que hay: si la fusión sale con
-//! conflictos, no se toca nada. Un repositorio a medio fusionar es un sitio
-//! del que hay que saber salir, y mientras la aplicación no tenga editor de
-//! conflictos no puede dejar a nadie ahí dentro.
+//! What is not here matters as much as what is: if the merge comes out with
+//! conflicts, nothing is touched. A half-merged repository is a place you have
+//! to know how to get out of, and while the app has no conflict editor it
+//! cannot leave anyone in there.
 
 use anyhow::{Context, Result};
 use git2::{build::CheckoutBuilder, ErrorCode, ObjectType};
@@ -11,15 +11,15 @@ use git2::{build::CheckoutBuilder, ErrorCode, ObjectType};
 use crate::repo::Repo;
 
 impl Repo {
-    /// Fusiona una rama en la actual. Vale tanto una local como una remota.
+    /// Merges a branch into the current one. A local or a remote one will do.
     ///
-    /// Si la actual no se ha movido desde que salió la otra, no hay dos
-    /// historias que juntar sino una que seguir, y la rama avanza sin escribir
-    /// ningún commit.
+    /// If the current one has not moved since the other left it, there are not
+    /// two histories to join but one to carry on, and the branch moves up
+    /// without writing any commit.
     ///
-    /// Si hay que juntarlas de verdad, la fusión se calcula primero en memoria.
-    /// Solo cuando sale limpia se escribe el commit y se actualiza el árbol, de
-    /// modo que un choque deja el repositorio exactamente como estaba.
+    /// If they really do have to be joined, the merge is worked out in memory
+    /// first. Only when it comes out clean is the commit written and the tree
+    /// brought up to date, so that a clash leaves the repository exactly as it was.
     pub fn merge(&self, name: &str) -> Result<String> {
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?.to_string();
@@ -40,8 +40,8 @@ impl Repo {
         let commit = self.inner.find_commit(theirs.id())?;
 
         if analysis.is_fast_forward() {
-            // Aquí el modo seguro vale: lo que tengas a medias y no estorbe
-            // viaja contigo, igual que al cambiar de rama.
+            // Here safe mode will do: what you have half-done and does not get
+            // in the way travels with you, as it does when switching branches.
             self.inner
                 .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
                 .context("unsaved changes are in the way; commit them or stash them")?;
@@ -52,8 +52,8 @@ impl Repo {
             return Ok(format!("{current} moves up to {name}, with no merge to write"));
         }
 
-        // De aquí en adelante hay que escribir un commit y reescribir el árbol
-        // entero, y eso no se puede hacer con trabajo a medias por encima.
+        // From here on a commit has to be written and the whole tree rewritten,
+        // and that cannot be done with half-finished work on top.
         anyhow::ensure!(
             self.status()?.is_clean(),
             "commit or stash what you have half-done before merging"
@@ -87,8 +87,8 @@ impl Repo {
             &[&ours, &commit],
         )?;
 
-        // La rama ya está donde toca; ahora el disco. Forzar aquí no pisa
-        // nada: el árbol estaba limpio antes de empezar.
+        // The branch is already where it belongs; now the disk. Forcing here
+        // walks over nothing: the tree was clean before we started.
         self.inner
             .checkout_head(Some(CheckoutBuilder::new().force()))
             .context("the merge was written but the working tree could not be updated")?;
@@ -98,14 +98,14 @@ impl Repo {
 }
 
 impl Repo {
-    /// Trae una rama a la principal, cambiándose a ella si hace falta.
+    /// Brings a branch into the main one, switching to it if need be.
     ///
-    /// Es lo que uno haría a mano: ponerse en la principal y fusionar.
-    /// Arrastrar una tarjeta a «hecho» es una sola intención, así que se
-    /// dice en una sola operación y no en dos que se pueden quedar a medias.
+    /// It is what you would do by hand: stand on the main branch and merge.
+    /// Dragging a card to "done" is a single intention, so it is said in a
+    /// single operation and not in two that can be left half-finished.
     ///
-    /// Si el cambio de rama falla no se ha tocado nada. Si falla la fusión,
-    /// te quedas en la principal, que es donde ibas: el aviso lo dice antes.
+    /// If the switch fails nothing has been touched. If the merge fails you
+    /// stay on the main branch, which is where you were going: the warning says so.
     pub fn land(&self, branch: &str) -> Result<String> {
         let trunk = self.trunk()?;
         anyhow::ensure!(branch != trunk, "{branch} is the main branch");
@@ -122,12 +122,12 @@ impl Repo {
         })
     }
 
-    /// Rehace los commits de la rama actual encima de otra.
+    /// Replays the current branch's commits on top of another.
     ///
-    /// Deja la historia recta, que es para lo que se usa. Si al reaplicar un
-    /// commit choca algo, se aborta el rebase entero: libgit2 sabe deshacerlo
-    /// y devolver la rama a donde estaba, así que no hay manera de quedarse a
-    /// medio camino. Terminarlo haría falta el editor de conflictos.
+    /// It leaves the history straight, which is what it is for. If replaying a
+    /// commit clashes with something, the whole rebase is aborted: libgit2 knows
+    /// how to undo it and put the branch back, so there is no way to be left
+    /// halfway. Finishing it would need the conflict editor.
     pub fn rebase_onto(&self, upstream: &str) -> Result<String> {
         anyhow::ensure!(
             self.status()?.is_clean(),
@@ -170,8 +170,8 @@ impl Repo {
 
             match rebase.commit(None, &signature, None) {
                 Ok(_) => replayed += 1,
-                // El cambio ya estaba arriba: no es un fallo, es un commit
-                // menos que reaplicar.
+                // The change was already up there: that is not a failure, it is
+                // one commit less to replay.
                 Err(err) if err.code() == ErrorCode::Applied => {}
                 Err(err) => {
                     let _ = rebase.abort();
@@ -190,8 +190,8 @@ impl Repo {
     }
 }
 
-/// Los ficheros que chocan, como se los nombraría en voz alta: tres y lo que
-/// quede. La lista entera no cabe en una barra de estado ni hace falta.
+/// The files that clash, named the way you would name them aloud: three and
+/// whatever is left. The whole list fits in no status bar, and is not needed.
 fn conflicting(index: &git2::Index) -> String {
     let Ok(conflicts) = index.conflicts() else {
         return "some file".to_string();

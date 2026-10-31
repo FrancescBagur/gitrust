@@ -1,12 +1,13 @@
-//! Pintado compartido de las líneas de un diff.
+//! The shared painting of a diff's lines.
 //!
-//! Lo usan el panel de cambios del árbol de trabajo y el de detalle de un
-//! commit, que solo se diferencian en lo que rodea a las líneas.
+//! The working tree's changes panel and a commit's detail panel both use it;
+//! they differ only in what surrounds the lines.
 //!
-//! Cada línea se pinta a mano en vez de con una etiqueta: así el fondo de lo
-//! añadido y lo quitado llega de borde a borde, en lugar de ceñirse al texto y
-//! dejar un borde dentado a la derecha. De paso cabe una canal con los números
-//! de línea de los dos lados, que es lo que hace falta para situar un cambio.
+//! Every line is painted by hand rather than with a label: that way the
+//! background of what was added and taken away runs edge to edge, instead of
+//! hugging the text and leaving a ragged border on the right. It also leaves
+//! room for a gutter with both sides' line numbers, which is what you need in
+//! order to place a change.
 
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Stroke};
 use gitrust_core::Hunk;
@@ -20,7 +21,7 @@ const LINE_H: f32 = 17.0;
 const NUM_W: f32 = 34.0;
 const GUTTER: f32 = NUM_W * 2.0 + 10.0;
 
-/// La cabecera `@@ ... @@` de un hunk, con su recuento.
+/// A hunk's `@@ ... @@` header, with its count.
 pub fn header(ui: &mut egui::Ui, hunk: &Hunk) {
     let (added, removed) = hunk.counts();
     ui.horizontal(|ui| {
@@ -35,7 +36,7 @@ pub fn header(ui: &mut egui::Ui, hunk: &Hunk) {
     });
 }
 
-/// Las líneas de un hunk, cada una con su banda de color a todo lo ancho.
+/// A hunk's lines, each with its band of color running the full width.
 pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
     let font = theme::mono(11.5);
     let width = ui.available_width();
@@ -61,8 +62,8 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
 
         if background != Color32::TRANSPARENT {
             painter.rect_filled(band, 0.0, background);
-            // Un filo del color pleno marca el lado del cambio sin repetir el
-            // signo a base de contraste.
+            // An edge of the full color marks the side of the change without
+            // repeating the sign through contrast.
             painter.rect_filled(
                 Rect::from_min_size(band.min, egui::vec2(2.0, LINE_H)),
                 0.0,
@@ -93,7 +94,7 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
         );
     }
 
-    // La canal se separa del código con un pelo, no con una caja.
+    // The gutter is set off from the code with a hair, not with a box.
     painter.vline(
         rect.left() + GUTTER - 6.0,
         rect.top()..=rect.bottom(),
@@ -101,7 +102,7 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
     );
 }
 
-/// `+n −n` del hunk o del fichero.
+/// The hunk's or the file's `+n -n`.
 pub fn counts(ui: &mut egui::Ui, added: usize, removed: usize) {
     if removed > 0 {
         ui.label(

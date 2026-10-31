@@ -1,15 +1,15 @@
-//! Composición del mensaje de commit a partir del título y la descripción.
+//! Putting the commit message together from the subject and the description.
 //!
-//! Git trata la primera línea como el asunto y espera una línea en blanco
-//! antes del cuerpo. Separarlos en la interfaz evita que eso se olvide.
+//! Git treats the first line as the subject and expects a blank line before
+//! the body. Keeping them apart in the interface means nobody forgets that.
 
-/// Longitud a partir de la cual el título se marca como largo.
+/// The length past which the subject is called long.
 ///
-/// 72 es el ancho con el que `git log` indenta sin desbordar una terminal de
-/// 80 columnas. No es un límite duro: avisamos, no impedimos.
+/// 72 is the width at which `git log` indents without overflowing an 80-column
+/// terminal. It is not a hard limit: we warn, we do not stop you.
 pub const SUBJECT_LIMIT: usize = 72;
 
-/// Une título y descripción con la línea en blanco que Git espera.
+/// Joins subject and description with the blank line Git expects.
 pub fn compose(subject: &str, body: &str) -> String {
     let subject = subject.trim();
     let body = body.trim();
@@ -21,25 +21,25 @@ pub fn compose(subject: &str, body: &str) -> String {
     }
 }
 
-/// Un trozo del cuerpo de un mensaje de commit.
+/// A piece of the body of a commit message.
 ///
-/// Los cuerpos vienen plegados a mano a unas setenta columnas, que es lo que
-/// pide una terminal pero no lo que mide un panel. Volver a plegar ese texto
-/// al ancho que haya produce un renglón corto detrás de cada largo, así que
-/// primero hay que deshacer los saltos de la prosa. Lo que no es prosa —una
-/// lista, un trozo de código, un *trailer*— se deja intacto, porque ahí el
-/// salto de línea significa algo.
+/// Bodies come wrapped by hand to about seventy columns, which is what a
+/// terminal asks for but not what a panel measures. Re-wrapping that text to
+/// whatever width there is leaves a short line behind every long one, so the
+/// prose's own line breaks have to be undone first. What is not prose -- a
+/// list, a piece of code, a *trailer* -- is left alone, because there a line
+/// break means something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
-    /// Prosa corrida: se puede volver a plegar al ancho disponible.
+    /// Running prose: it can be wrapped again to whatever width there is.
     Prose(String),
-    /// Texto que se respeta tal cual.
+    /// Text that is kept exactly as it came.
     Literal(String),
 }
 
-/// ¿Esta línea pierde su sentido si se la une con la siguiente?
+/// Does this line lose its meaning if it is joined to the next one?
 fn is_literal(line: &str) -> bool {
-    // Sangrada: casi siempre código o continuación de una lista.
+    // Indented: nearly always code, or a list carrying on.
     if line.starts_with(' ') || line.starts_with('\t') {
         return true;
     }
@@ -49,14 +49,14 @@ fn is_literal(line: &str) -> bool {
         return false;
     }
 
-    // Viñetas, citas, títulos y tablas.
+    // Bullets, quotes, headings and tables.
     if let Some(first) = trimmed.chars().next() {
         if matches!(first, '-' | '*' | '+' | '•' | '>' | '#' | '|' | '=') {
             return true;
         }
     }
 
-    // Listas numeradas: «1. algo», «2) algo».
+    // Numbered lists: "1. something", "2) something".
     let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() {
         if let Some(after) = trimmed[digits.len()..].chars().next() {
@@ -66,16 +66,16 @@ fn is_literal(line: &str) -> bool {
         }
     }
 
-    // Una sola palabra, pero solo si parece una ruta o un identificador: la
-    // última línea de un párrafo plegado a menudo es una palabra suelta, y esa
-    // sí hay que volver a unirla.
+    // A single word, but only if it looks like a path or an identifier: the
+    // last line of a wrapped paragraph is often a lone word, and that one does
+    // have to be joined back.
     if !trimmed.contains(' ')
         && (trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("::"))
     {
         return true;
     }
 
-    // Un trailer de Git: «Co-Authored-By: …», «Signed-off-by: …».
+    // A Git trailer: "Co-Authored-By: ...", "Signed-off-by: ...".
     if let Some((key, _)) = trimmed.split_once(": ") {
         if !key.is_empty()
             && !key.contains(' ')
@@ -88,10 +88,10 @@ fn is_literal(line: &str) -> bool {
     false
 }
 
-/// Parte el cuerpo en bloques, uniendo los renglones de la prosa.
+/// Cuts the body into blocks, joining the lines of the prose back together.
 ///
-/// Un bloque entero se respeta en cuanto una sola de sus líneas lo pide: en un
-/// párrafo mezclado es más seguro dejarlo como está que unir lo que no debía.
+/// A whole block is kept as it came the moment a single one of its lines asks
+/// for it: in a mixed paragraph, leaving it alone beats joining what should not.
 pub fn blocks(body: &str) -> Vec<Block> {
     let mut out = Vec::new();
 
@@ -128,86 +128,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sin_descripcion_el_mensaje_es_solo_el_titulo() {
-        assert_eq!(compose("feat: algo", ""), "feat: algo");
-        assert_eq!(compose("  feat: algo  ", "   "), "feat: algo");
+    fn with_no_description_the_message_is_just_the_subject() {
+        assert_eq!(compose("feat: something", ""), "feat: something");
+        assert_eq!(compose("  feat: something  ", "   "), "feat: something");
     }
 
     #[test]
-    fn el_cuerpo_va_tras_una_linea_en_blanco() {
+    fn the_body_goes_after_a_blank_line() {
         assert_eq!(
-            compose("feat: algo", "Por qué hacía falta."),
-            "feat: algo\n\nPor qué hacía falta."
+            compose("feat: something", "Why it was needed."),
+            "feat: something\n\nWhy it was needed."
         );
     }
 
     #[test]
-    fn los_saltos_internos_del_cuerpo_se_conservan() {
-        let body = "Primer párrafo.\n\n- una viñeta\n- otra";
-        let message = compose("fix: lo otro", body);
+    fn the_bodys_own_line_breaks_are_kept() {
+        let body = "First paragraph.\n\n- a bullet\n- another";
+        let message = compose("fix: the other thing", body);
 
-        assert!(message.starts_with("fix: lo otro\n\n"));
-        assert!(message.ends_with("- otra"));
+        assert!(message.starts_with("fix: the other thing\n\n"));
+        assert!(message.ends_with("- another"));
         assert_eq!(message.lines().count(), 6);
     }
 
     #[test]
-    fn la_prosa_plegada_a_mano_se_vuelve_a_unir() {
-        let body = "Compara dos periodos de la consola\ny deja el informe fuera del repo.";
+    fn prose_wrapped_by_hand_is_joined_back_up() {
+        let body = "Compares two periods from the console\nand leaves the report out of the repo.";
         assert_eq!(
             blocks(body),
             vec![Block::Prose(
-                "Compara dos periodos de la consola y deja el informe fuera del repo."
+                "Compares two periods from the console and leaves the report out of the repo."
                     .to_string()
             )]
         );
     }
 
     #[test]
-    fn una_lista_conserva_sus_saltos() {
-        let body = "- añade el comando\n- documenta las credenciales";
+    fn a_list_keeps_its_line_breaks() {
+        let body = "- adds the command\n- documents the credentials";
         assert_eq!(
             blocks(body),
             vec![Block::Literal(
-                "- añade el comando\n- documenta las credenciales".to_string()
+                "- adds the command\n- documents the credentials".to_string()
             )]
         );
     }
 
     #[test]
-    fn los_parrafos_y_los_trailers_salen_por_separado() {
-        let body = "Primero una\nexplicación.\n\n- un punto\n\nCo-Authored-By: Alguien <a@b.c>";
+    fn paragraphs_and_trailers_come_out_apart() {
+        let body = "First an\nexplanation.\n\n- a point\n\nCo-Authored-By: Somebody <a@b.c>";
         assert_eq!(
             blocks(body),
             vec![
-                Block::Prose("Primero una explicación.".to_string()),
-                Block::Literal("- un punto".to_string()),
-                Block::Literal("Co-Authored-By: Alguien <a@b.c>".to_string()),
+                Block::Prose("First an explanation.".to_string()),
+                Block::Literal("- a point".to_string()),
+                Block::Literal("Co-Authored-By: Somebody <a@b.c>".to_string()),
             ]
         );
     }
 
     #[test]
-    fn un_bloque_con_una_linea_literal_se_respeta_entero() {
-        // Si un párrafo mezcla prosa y código, unirlo rompería el código.
-        let body = "Esto lo arregla:\n    cargo test --workspace";
+    fn a_block_with_one_literal_line_is_kept_whole() {
+        // If a paragraph mixes prose and code, joining it would break the code.
+        let body = "This fixes it:\n    cargo test --workspace";
         assert!(matches!(blocks(body).as_slice(), [Block::Literal(_)]));
     }
 
     #[test]
-    fn una_ruta_suelta_no_se_une_al_parrafo_pero_una_palabra_si() {
+    fn a_lone_path_is_not_joined_to_the_paragraph_but_a_word_is() {
         assert!(matches!(
-            blocks("El fichero es\ncrates/core/src/lib.rs").as_slice(),
+            blocks("The file is\ncrates/core/src/lib.rs").as_slice(),
             [Block::Literal(_)]
         ));
         assert_eq!(
-            blocks("Una frase que acaba\nasí."),
-            vec![Block::Prose("Una frase que acaba así.".to_string())]
+            blocks("A sentence that ends\nhere."),
+            vec![Block::Prose("A sentence that ends here.".to_string())]
         );
     }
 
     #[test]
-    fn el_cuerpo_vacio_no_da_bloques() {
+    fn an_empty_body_gives_no_blocks() {
         assert!(blocks("").is_empty());
         assert!(blocks("\n\n  \n").is_empty());
     }

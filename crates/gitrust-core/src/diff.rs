@@ -1,6 +1,6 @@
-//! Representación del diff de un fichero, ya troceado en hunks.
+//! How a file's diff is represented, already cut into hunks.
 
-/// Una línea del diff. `origin` es la marca de libgit2: `+`, `-` o espacio.
+/// A line of the diff. `origin` is libgit2's mark: `+`, `-` or a space.
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub origin: char,
@@ -9,11 +9,11 @@ pub struct DiffLine {
     pub new_lineno: Option<u32>,
 }
 
-/// Identifica un hunk por los rangos de su cabecera `@@ -a,b +c,d @@`.
+/// Identifies a hunk by the ranges in its `@@ -a,b +c,d @@` header.
 ///
-/// Hace falta porque al preparar un hunk suelto hay que reconocerlo dentro de
-/// un diff que libgit2 vuelve a calcular: contar posiciones no vale, ya que el
-/// conjunto de hunks cambia en cuanto se aplica uno.
+/// It is needed because staging a single hunk means recognising it inside a
+/// diff that libgit2 works out again: counting positions does not do, since
+/// the set of hunks changes as soon as one of them is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HunkId {
     pub old_start: u32,
@@ -23,10 +23,10 @@ pub struct HunkId {
 }
 
 impl HunkId {
-    /// Los mismos rangos vistos desde un diff invertido.
+    /// The same ranges seen from an inverted diff.
     ///
-    /// Quitar un hunk del índice aplica el diff al revés, y en ese diff los
-    /// lados viejo y nuevo están intercambiados.
+    /// Taking a hunk out of the index applies the diff backwards, and in that
+    /// diff the old and new sides are swapped.
     pub fn reversed(self) -> Self {
         Self {
             old_start: self.new_start,
@@ -37,7 +37,7 @@ impl HunkId {
     }
 }
 
-/// Un bloque contiguo de cambios, con su cabecera `@@ ... @@`.
+/// A contiguous block of changes, with its `@@ ... @@` header.
 #[derive(Debug, Clone)]
 pub struct Hunk {
     pub header: String,
@@ -46,7 +46,7 @@ pub struct Hunk {
 }
 
 impl Hunk {
-    /// Cuántas líneas añade y cuántas quita este hunk.
+    /// How many lines this hunk adds and how many it takes away.
     pub fn counts(&self) -> (usize, usize) {
         let added = self.lines.iter().filter(|line| line.origin == '+').count();
         let removed = self.lines.iter().filter(|line| line.origin == '-').count();
@@ -62,7 +62,7 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
-    /// Cuántas líneas se añaden y cuántas se quitan en todo el fichero.
+    /// How many lines are added and taken away in the whole file.
     pub fn counts(&self) -> (usize, usize) {
         self.hunks.iter().fold((0, 0), |(added, removed), hunk| {
             let (a, r) = hunk.counts();

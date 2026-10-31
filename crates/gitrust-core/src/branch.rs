@@ -1,8 +1,8 @@
-//! Crear ramas y cambiar de una a otra.
+//! Making branches and switching between them.
 //!
-//! Cambiar de rama es la operación que más escribe en tu disco de todas las
-//! que hay aquí, así que todo en este módulo está puesto para que, cuando algo
-//! salga mal, salga mal antes de haber tocado nada.
+//! Switching branches writes more to your disk than anything else in here, so
+//! everything in this module is arranged so that when something goes wrong, it
+//! goes wrong before anything has been touched.
 
 use anyhow::{Context, Result};
 use git2::{build::CheckoutBuilder, BranchType, ErrorCode, ObjectType};
@@ -10,12 +10,12 @@ use git2::{build::CheckoutBuilder, BranchType, ErrorCode, ObjectType};
 use crate::repo::Repo;
 
 impl Repo {
-    /// Crea una rama donde está HEAD y se cambia a ella.
+    /// Makes a branch where HEAD is and switches to it.
     ///
-    /// El árbol de trabajo no se toca: la rama nueva apunta al mismo commit
-    /// que la vieja, así que lo que hubiera a medias sigue ahí y se puede
-    /// commitear ya en la rama nueva. Es la manera de darse cuenta tarde de
-    /// que uno estaba escribiendo en la rama equivocada.
+    /// The working tree is left alone: the new branch points at the same commit
+    /// as the old one, so whatever you had half-done is still there and can be
+    /// committed straight onto the new branch. It is how you notice late that
+    /// you were writing on the wrong branch.
     pub fn branch_here(&self, name: &str) -> Result<()> {
         let name = name.trim();
         anyhow::ensure!(!name.is_empty(), "the branch needs a name");
@@ -33,16 +33,16 @@ impl Repo {
         Ok(())
     }
 
-    /// Se cambia a una rama local que ya existe.
+    /// Switches to a local branch that already exists.
     ///
-    /// Primero el árbol y después HEAD. Si el árbol falla —porque hay cambios
-    /// sin guardar que chocan con lo que habría que escribir—, HEAD se queda
-    /// donde estaba y no hay nada a medias que arreglar.
+    /// The tree first, HEAD after. If the tree fails -- because unsaved changes
+    /// clash with what would have to be written -- HEAD stays where it was and
+    /// there is nothing half-done to put right.
     ///
-    /// El cambio va en modo seguro, que es el de `git checkout`: lo que tienes
-    /// cambiado y no estorba viaja contigo a la rama nueva, y lo que estorba
-    /// para el cambio entero. Los cambios sin guardar son tuyos; no es cosa
-    /// nuestra pisarlos para salir del paso.
+    /// The switch runs in safe mode, which is `git checkout`'s own: what you
+    /// have changed and does not get in the way travels with you to the new
+    /// branch, and what does get in the way stops the whole switch. Unsaved
+    /// changes are yours; it is not our place to walk over them to get by.
     pub fn checkout_branch(&self, name: &str) -> Result<String> {
         let reference = self
             .inner
@@ -61,12 +61,12 @@ impl Repo {
         Ok(format!("you are now on {name}"))
     }
 
-    /// Se cambia a una rama remota creando su pareja local.
+    /// Switches to a remote branch by creating its local counterpart.
     ///
-    /// Es lo que hace `git checkout rama` cuando la rama solo existe en el
-    /// remoto: crea la local donde apunta la remota y la deja siguiéndola. Si
-    /// la local ya existe no se toca y se va a ella, porque puede tener
-    /// trabajo que la remota todavía no conoce.
+    /// It is what `git checkout branch` does when the branch only exists on the
+    /// remote: it makes the local one where the remote one points and leaves it
+    /// tracking it. If the local one already exists it is left alone and you go
+    /// to it, because it may hold work the remote does not know about yet.
     pub fn checkout_remote(&self, name: &str) -> Result<String> {
         let (_, local) = name
             .split_once('/')
@@ -91,10 +91,10 @@ impl Repo {
         self.checkout_branch(local)
     }
 
-    /// Borra una rama local.
+    /// Deletes a local branch.
     ///
-    /// La actual no: borrarla dejaría HEAD señalando a algo que ya no existe,
-    /// y salir de ahí no se puede desde la aplicación.
+    /// Not the current one: deleting it would leave HEAD pointing at something
+    /// that no longer exists, and there is no way out of that from the app.
     pub fn delete_branch(&self, name: &str) -> Result<()> {
         let head = self
             .inner
@@ -113,15 +113,15 @@ impl Repo {
             .with_context(|| format!("could not delete '{name}'"))
     }
 
-    /// Cuántos commits de esa rama no están en ninguna otra parte.
+    /// How many of that branch's commits are nowhere else.
     ///
-    /// Es exactamente lo que se pierde al borrarla. Cero quiere decir que
-    /// todo lo suyo ya está en otro sitio —otra rama, un remoto, una
-    /// etiqueta— y que borrarla no se lleva nada por delante.
+    /// It is exactly what deleting it would lose. Zero means everything of its
+    /// own is already somewhere else -- another branch, a remote, a tag -- and
+    /// that deleting it takes nothing down with it.
     ///
-    /// Se calcula recorriendo su historia y escondiendo la de todas las demás
-    /// referencias, que es lo mismo que hace `git branch -d` para decidir si
-    /// se niega.
+    /// It is worked out by walking its history and hiding that of every other
+    /// reference, which is what `git branch -d` does to decide whether to
+    /// refuse.
     pub fn unmerged(&self, name: &str) -> Result<usize> {
         let refname = format!("refs/heads/{name}");
         let target = self
@@ -152,9 +152,9 @@ impl Repo {
     }
 }
 
-/// Traduce el «N conflicts prevent checkout» de libgit2 a algo que se pueda
-/// hacer. El número de conflictos no le sirve a nadie; saber que hay un stash
-/// a un clic, sí.
+/// Turns libgit2's "N conflicts prevent checkout" into something you can act
+/// on. The number of conflicts is no use to anyone; knowing a stash is one
+/// click away is.
 fn blocked(err: git2::Error, name: &str) -> anyhow::Error {
     if err.code() == ErrorCode::Conflict {
         anyhow::anyhow!(

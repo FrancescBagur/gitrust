@@ -1,24 +1,24 @@
-//! Detalle de un commit y de las referencias del repositorio.
+//! A commit's detail, and the repository's references.
 
 use git2::Oid;
 
 use crate::model::RefKind;
 use crate::status::ChangeKind;
 
-/// Un fichero tocado por un commit.
+/// A file a commit touched.
 #[derive(Debug, Clone)]
 pub struct CommitFile {
     pub path: String,
     pub kind: ChangeKind,
 }
 
-/// Todo lo que el panel de detalle necesita de un commit.
+/// Everything the detail panel needs from a commit.
 #[derive(Debug, Clone)]
 pub struct CommitDetail {
     pub id: Oid,
     pub short_id: String,
     pub summary: String,
-    /// El cuerpo del mensaje, sin el asunto ni la línea en blanco.
+    /// The body of the message, without the subject or the blank line.
     pub body: String,
     pub author: String,
     pub email: String,
@@ -32,7 +32,7 @@ impl CommitDetail {
         self.parents.len() > 1
     }
 
-    /// Cuántos ficheros se añaden, se modifican y se borran.
+    /// How many files are added, changed and deleted.
     pub fn counts(&self) -> (usize, usize, usize) {
         let mut added = 0;
         let mut modified = 0;
@@ -48,30 +48,30 @@ impl CommitDetail {
     }
 }
 
-/// Una referencia del repositorio, para la barra lateral.
+/// A reference in the repository, for the sidebar.
 #[derive(Debug, Clone)]
 pub struct RefEntry {
-    /// Nombre corto: `main`, `origin/main`, `v1.0`.
+    /// The short name: `main`, `origin/main`, `v1.0`.
     pub name: String,
     pub kind: RefKind,
     pub target: Oid,
-    /// Si es la rama en la que está HEAD.
+    /// Whether this is the branch HEAD is on.
     pub is_head: bool,
 }
 
 impl RefEntry {
-    /// La carpeta del nombre, para agrupar como hace el árbol de ramas:
-    /// `feat/login` vive bajo `feat`, y `main` en la raíz.
+    /// The folder in the name, to group the way the branch tree does:
+    /// `feat/login` lives under `feat`, and `main` at the root.
     pub fn folder(&self) -> Option<&str> {
         let name = match self.kind {
-            // En una remota el primer segmento es el remoto, no una carpeta.
+            // On a remote the first segment is the remote, not a folder.
             RefKind::RemoteBranch => self.name.split_once('/').map(|(_, rest)| rest)?,
             _ => self.name.as_str(),
         };
         name.rsplit_once('/').map(|(folder, _)| folder)
     }
 
-    /// El nombre sin la carpeta.
+    /// The name without the folder.
     pub fn leaf(&self) -> &str {
         self.name.rsplit_once('/').map_or(self.name.as_str(), |(_, leaf)| leaf)
     }

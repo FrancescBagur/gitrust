@@ -1,7 +1,7 @@
-//! Núcleo de gitrust: lectura del repositorio y cálculo del grafo de commits.
+//! gitrust's core: reading the repository and working out the commit graph.
 //!
-//! Este crate no sabe nada de interfaz gráfica. Todo lo que expone son datos
-//! planos, de modo que la UI se pueda sustituir sin tocar la lógica Git.
+//! This crate knows nothing about the user interface. Everything it exposes is
+//! plain data, so the UI could be replaced without touching the Git logic.
 
 pub mod board;
 pub mod branch;

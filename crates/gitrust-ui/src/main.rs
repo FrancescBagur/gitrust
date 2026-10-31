@@ -1,9 +1,9 @@
-//! gitrust: cliente Git de escritorio.
+//! gitrust: a desktop Git client.
 //!
-//! La ventana sigue el reparto de los clientes gráficos al uso: referencias a
-//! la izquierda, grafo en el centro y el detalle de lo seleccionado a la
-//! derecha, de modo que pinchar en el grafo enseña el diff sin cambiar de
-//! pantalla.
+//! The window follows the layout of the usual graphical clients: references
+//! on the left, the graph in the middle and the detail of what is picked on
+//! the right, so that clicking in the graph shows the diff without changing
+//! screen.
 
 mod action_bar;
 mod board_view;
@@ -49,74 +49,75 @@ enum Tab {
 struct App {
     path: String,
     head: String,
-    /// Lo que hay en el repositorio: se queda fijo en la barra de abajo.
+    /// What is in the repository: it stays put in the bottom bar.
     summary: String,
-    /// Lo último que ha pasado. Se vacía al recargar.
+    /// The last thing that happened. It is cleared on a reload.
     status: String,
     status_failed: bool,
     tab: Tab,
 
     graph: Graph,
     limit: usize,
-    /// Lo que se busca en la historia, y dónde está.
+    /// What is being looked for in the history, and where it is.
     needle: String,
     found: Vec<usize>,
     at: usize,
-    /// La fila que hay que traer a la vista en el próximo fotograma.
+    /// The row to bring into view on the next frame.
     bring: Option<usize>,
     refs: Vec<RefEntry>,
     ref_filter: String,
 
-    /// El trabajo repartido en columnas, y por qué proyecto se filtra.
+    /// The work laid out in columns, and which project it is filtered by.
     board: Option<Board>,
     project: Option<String>,
-    /// La postura del botón de traer: repite lo último que se pidió.
+    /// The fetch button's position: it repeats the last thing asked for.
     pull_mode: PullMode,
 
-    // La barra de acciones y lo que necesita saber.
+    // The action bar and what it needs to know.
     tracking: Option<Tracking>,
     stashes: Vec<StashEntry>,
     draft: action_bar::Draft,
     job: Option<Job>,
 
-    // Commit seleccionado en el grafo.
+    // The commit picked in the graph.
     selected_commit: Option<Oid>,
     detail: Option<CommitDetail>,
     detail_file: Option<String>,
     detail_diff: Option<FileDiff>,
 
-    // Árbol de trabajo.
+    // The working tree.
     work: WorkingState,
     selected: Option<(String, bool)>,
     diff: Option<FileDiff>,
     subject: String,
     body: String,
-    /// Si lo escrito va a rehacer el último commit.
+    /// Whether what is written will redo the last commit.
     amend: bool,
-    /// Lo que se estaba escribiendo antes de poner el interruptor, para
-    /// devolverlo si se quita.
+    /// What was being written before the switch went on, so it can be given
+    /// back if the switch goes off.
     saved: Option<(String, String)>,
-    /// La etiqueta que se esté escribiendo en el panel de detalle.
+    /// The tag being written in the detail panel, if any.
     tag: detail_view::TagDraft,
-    /// Lo que está esperando un sí antes de destruir nada.
+    /// What is waiting for a yes before anything is destroyed.
     confirm: Option<Confirm>,
 }
 
-/// Una operación que tarda, corriendo aparte.
+/// A slow operation, running off to one side.
 ///
-/// Traer o llevar tarda lo que tarde la red, y hacerlo en el hilo que pinta
-/// dejaría la ventana colgada sin explicar por qué. El hilo abre su propio
-/// repositorio —`git2::Repository` no viaja entre hilos— y manda de vuelta
-/// una sola cosa: la frase que toque poner en la barra de abajo.
+/// Fetching or pushing takes as long as the network takes, and doing it on
+/// the painting thread would leave the window hung with no word of why. The
+/// thread opens its own repository -- `git2::Repository` does not travel
+/// between threads -- and sends back one single thing: the sentence to put in
+/// the bottom bar.
 struct Job {
     done: std::sync::mpsc::Receiver<Result<String>>,
 }
 
-/// Algo que destruye y que está esperando un sí.
+/// Something destructive that is waiting for a yes.
 ///
-/// Todo lo que no se puede deshacer pasa por aquí. La vista pide la acción
-/// como cualquier otra; es la aplicación la que se para a preguntar, de modo
-/// que ninguna vista tenga que acordarse de hacerlo.
+/// Everything that cannot be undone comes through here. The view asks for the
+/// action like any other; it is the app that stops to ask, so that no view
+/// has to remember to.
 struct Confirm {
     title: String,
     detail: String,
@@ -124,8 +125,8 @@ struct Confirm {
     deed: Deed,
 }
 
-/// Lo que se hará si se contesta que sí. Es un tipo aparte de las acciones
-/// de las vistas aposta: así no hay manera de volver a preguntar en bucle.
+/// What will be done if the answer is yes. It is deliberately a different
+/// type from the views' actions: that way there is no looping back to asking.
 enum Deed {
     Discard(String),
     DiscardHunk { path: String, hunk: HunkId },
@@ -182,11 +183,11 @@ impl App {
         Repo::open(&self.path)
     }
 
-    /// Recarga todo: historia, referencias y estado del árbol de trabajo.
+    /// Reloads everything: history, references and the working tree's state.
     fn load(&mut self) {
         let started = std::time::Instant::now();
-        // Una recarga cambia cuál es el último commit, así que el mensaje que
-        // se hubiera traído de él ya no vale para nada.
+        // A reload changes which commit is the last one, so a message brought
+        // in from it is no longer good for anything.
         self.drop_amend();
 
         let mut repo = match self.repo() {
@@ -201,8 +202,8 @@ impl App {
         self.board = repo.board().ok();
         self.stashes = repo.stashes().unwrap_or_default();
 
-        // El estado del árbol va antes que el grafo: de él depende que haya o
-        // no una fila de cambios sin confirmar encima de la historia.
+        // The tree's state goes before the graph: whether there is a row of
+        // uncommitted changes above the history depends on it.
         self.read_work(&repo);
         if let Err(err) = self.rebuild_graph(&repo) {
             return self.fail(err);
@@ -215,8 +216,8 @@ impl App {
         self.reload_detail(&repo);
     }
 
-    /// Traza el grafo, con la fila de cambios sin confirmar si el árbol de
-    /// trabajo tiene algo que contar.
+    /// Lays out the graph, with the uncommitted-changes row if the working
+    /// tree has something to say.
     fn rebuild_graph(&mut self, repo: &Repo) -> Result<()> {
         let commits = repo.commits(self.limit)?;
         let total = commits.len();
@@ -235,9 +236,9 @@ impl App {
         Ok(())
     }
 
-    /// Al abrir, el panel derecho enseña dónde está HEAD en vez de recibir con
-    /// un hueco: lo primero que uno quiere saber de un repositorio es qué fue
-    /// lo último que pasó en él.
+    /// On opening, the right panel shows where HEAD is instead of greeting you
+    /// with a gap: the first thing anyone wants to know about a repository is
+    /// what last happened in it.
     fn preselect(&mut self) {
         if self.selected_commit.is_some() {
             return;
@@ -251,10 +252,10 @@ impl App {
             .map(|row| row.commit.id);
     }
 
-    /// Vuelve a contar qué filas encajan con lo que se busca.
+    /// Counts again which rows match what is being looked for.
     ///
-    /// Se rehace al escribir y al recargar: los índices son posiciones en el
-    /// grafo, y un grafo nuevo los deja sin sentido.
+    /// It is redone on typing and on reloading: the indices are positions in
+    /// the graph, and a new graph leaves them meaningless.
     fn recount(&mut self) {
         let needle = self.needle.trim().to_lowercase();
         self.found = if needle.is_empty() {
@@ -271,7 +272,7 @@ impl App {
         self.at = 0;
     }
 
-    /// Salta a la coincidencia siguiente o anterior, dando la vuelta al final.
+    /// Jumps to the next or previous match, wrapping round at the end.
     fn jump(&mut self, forward: bool) {
         if self.found.is_empty() {
             return;
@@ -286,7 +287,7 @@ impl App {
         self.land();
     }
 
-    /// Trae la coincidencia actual a la vista y la elige.
+    /// Brings the current match into view and picks it.
     fn land(&mut self) {
         let Some(&index) = self.found.get(self.at) else {
             return;
@@ -302,7 +303,7 @@ impl App {
         self.graph.rows.first().is_some_and(|row| row.commit.is_working())
     }
 
-    /// Quita el modo enmienda y devuelve lo que se estuviera escribiendo.
+    /// Takes amend mode off and gives back whatever was being written.
     fn drop_amend(&mut self) {
         self.amend = false;
         if let Some((subject, body)) = self.saved.take() {
@@ -311,15 +312,15 @@ impl App {
         }
     }
 
-    /// Si hay un commit que enmendar, y el remoto que ya lo tiene.
+    /// Whether there is a commit to amend, and the remote that already has it.
     ///
-    /// El nombre del remoto vuelve en propiedad aposta. Prestado desde
-    /// `&self`, el préstamo duraría lo que durase el valor, y el cuadro de
-    /// commit no podría coger a la vez lo que se está escribiendo.
+    /// The remote's name comes back owned on purpose. Borrowed from `&self`,
+    /// the borrow would last as long as the value, and the commit box could
+    /// not take hold of what is being written at the same time.
     fn amend_state(&self) -> (bool, Option<String>) {
         let amendable = self.graph.rows.iter().any(|row| !row.commit.is_working());
 
-        // Sin nada por delante del remoto, el último commit ya está allí.
+        // With nothing ahead of the remote, the last commit is already there.
         let pushed = self
             .tracking
             .as_ref()
@@ -329,7 +330,7 @@ impl App {
         (amendable, pushed)
     }
 
-    /// Recarga solo lo que cambia al tocar el índice.
+    /// Reloads only what changes when the index is touched.
     fn refresh(&mut self) {
         let mut repo = match self.repo() {
             Ok(repo) => repo,
@@ -341,17 +342,17 @@ impl App {
         let had_working = self.has_working_row();
         self.read_work(&repo);
 
-        // La fila de cambios entra y sale del grafo con el árbol de trabajo:
-        // si el árbol acaba de ensuciarse, o de quedarse limpio, hay que
-        // volver a trazarlo para que la fila aparezca o se vaya.
+        // The changes row comes and goes from the graph with the working tree:
+        // if the tree has just got dirty, or just got clean, it has to be laid
+        // out again so the row appears or leaves.
         let wants_working = !self.work.is_clean();
         if had_working != wants_working {
             let _ = self.rebuild_graph(&repo);
             self.recount();
         }
 
-        // Y si lo elegido era esa fila y ya no existe, el cursor se va a HEAD
-        // en lugar de quedarse señalando a un hueco.
+        // And if what was picked was that row and it no longer exists, the
+        // cursor goes to HEAD instead of staying on a gap.
         if !wants_working && self.selected_commit.is_some_and(|oid| oid.is_zero()) {
             self.selected_commit = None;
             self.preselect();
@@ -365,7 +366,7 @@ impl App {
             Err(err) => return self.note_error(format!("could not read the status: {err}")),
         }
 
-        // Si el fichero seleccionado ya no está en su lado, soltamos la selección.
+        // If the picked file is no longer on its side, we let the pick go.
         if let Some((path, staged)) = self.selected.clone() {
             let list = if staged { &self.work.staged } else { &self.work.unstaged };
             if list.iter().any(|file| file.path == path) {
@@ -378,8 +379,8 @@ impl App {
     }
 
     fn reload_detail(&mut self, repo: &Repo) {
-        // La fila de cambios sin confirmar no tiene detalle que leer: el panel
-        // derecho le enseña el árbol de trabajo en su lugar.
+        // The uncommitted-changes row has no detail to read: the right panel
+        // shows it the working tree instead.
         let Some(oid) = self.selected_commit.filter(|oid| !oid.is_zero()) else {
             self.detail = None;
             self.detail_diff = None;
@@ -388,9 +389,9 @@ impl App {
 
         self.detail = repo.commit_detail(oid).ok();
 
-        // Si no hay fichero elegido, se abre el primero del commit. Un commit
-        // de un solo fichero no debería obligar a un clic más para ver lo
-        // único que trae.
+        // With no file picked, the commit's first one is opened. A commit of
+        // one single file should not force one more click to see the only
+        // thing it carries.
         if self.detail_file.is_none() {
             self.detail_file = self
                 .detail
@@ -405,10 +406,10 @@ impl App {
         };
     }
 
-    /// Elige un commit y lo trae a la vista del grafo.
+    /// Picks a commit and brings it into the graph's view.
     ///
-    /// Al pulsar una rama en la lateral o una tarjeta del tablero, lo que se
-    /// quiere es verla. Si cae fuera de la ventana, elegirla no se nota.
+    /// Pressing a branch in the sidebar or a card on the board means you want
+    /// to see it. If it falls outside the window, picking it goes unnoticed.
     fn reveal_commit(&mut self, oid: Oid) {
         self.bring = self.graph.rows.iter().position(|row| row.commit.id == oid);
         self.select_commit(oid);
@@ -436,7 +437,7 @@ impl App {
         self.detail_file = Some(path);
     }
 
-    /// Ejecuta una operación sobre el repositorio y recarga el estado.
+    /// Runs an operation on the repository and reloads the state.
     fn run(&mut self, op: impl FnOnce(&mut Repo) -> Result<()>) -> bool {
         match self.repo().and_then(|mut repo| op(&mut repo)) {
             Ok(()) => {
@@ -450,11 +451,11 @@ impl App {
         }
     }
 
-    /// Manda una operación lenta a su propio hilo.
+    /// Sends a slow operation off to a thread of its own.
     ///
-    /// Mientras dure, la barra de acciones se apaga entera: encolar un push
-    /// detrás de un pull cuando ninguno ha terminado es pedir un lío que
-    /// luego hay que explicar.
+    /// While it lasts the action bar goes dark altogether: queueing a push
+    /// behind a pull when neither has finished is asking for a mess somebody
+    /// then has to explain.
     fn spawn(
         &mut self,
         doing: &str,
@@ -472,11 +473,11 @@ impl App {
         self.job = Some(Job { done });
     }
 
-    /// Mira si la operación de fondo ha terminado.
+    /// Looks at whether the background operation has finished.
     ///
-    /// Mientras no lo haya hecho pide que se repinte: sin eso egui se duerme
-    /// en cuanto nadie toca el ratón, y el resultado se quedaría esperando a
-    /// que alguien moviera la ventana.
+    /// While it has not, it asks to be repainted: without that egui falls
+    /// asleep as soon as nobody touches the mouse, and the result would sit
+    /// there waiting for somebody to move the window.
     fn poll(&mut self, ctx: &egui::Context) {
         use std::sync::mpsc::TryRecvError;
 
@@ -506,7 +507,7 @@ impl App {
         }
     }
 
-    /// Deja algo esperando un sí en vez de hacerlo.
+    /// Leaves something waiting for a yes instead of doing it.
     fn ask(&mut self, title: String, detail: &str, verb: &str, deed: Deed) {
         self.confirm = Some(Confirm {
             title,
@@ -516,7 +517,7 @@ impl App {
         });
     }
 
-    /// Pregunta antes de borrar una rama, diciendo cuánto cuesta.
+    /// Asks before deleting a branch, saying what it costs.
     fn ask_delete_branch(&mut self, name: String, remote: bool) {
         if remote {
             let server = name.split_once('/').map(|(server, _)| server).unwrap_or("the remote");
@@ -531,7 +532,7 @@ impl App {
             );
         }
 
-        // Cuántos commits se van con ella es la única pregunta que importa.
+        // How many commits go with it is the only question that matters.
         let alone = self.repo().and_then(|repo| repo.unmerged(&name)).unwrap_or(0);
         let detail = match alone {
             0 => "Everything it has is somewhere else too, so nothing is lost."
@@ -551,8 +552,8 @@ impl App {
         );
     }
 
-    /// Pregunta antes de traer una rama a la principal, que puede empezar
-    /// por cambiarte de sitio.
+    /// Asks before bringing a branch into the main one, which may start by
+    /// moving you somewhere else.
     fn ask_land(&mut self, branch: String) {
         let trunk = match &self.board {
             Some(board) => board.trunk.clone(),
@@ -576,14 +577,14 @@ impl App {
         );
     }
 
-    /// Hace lo que ya se ha contestado que sí.
+    /// Does what has already been answered yes to.
     fn commit_deed(&mut self, deed: Deed) {
         let discarded = match deed {
             Deed::Discard(path) => self.run(|repo| repo.discard(&path)),
             Deed::DiscardHunk { path, hunk } => self.run(|repo| repo.discard_hunk(&path, hunk)),
             Deed::DiscardAll(paths) => self.run(|repo| repo.discard_all(&paths)),
 
-            // La del remoto sale a la red; la de aquí termina al instante.
+            // The remote one goes out on the network; the one here is instant.
             Deed::DeleteBranch { name, remote } if remote => {
                 let doing = format!("deleting {name}");
                 return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
@@ -595,8 +596,8 @@ impl App {
             Deed::DeleteBranch { name, .. } => {
                 return match self.repo().and_then(|repo| repo.delete_branch(&name)) {
                     Ok(()) => {
-                        // Cambian las referencias, así que el grafo y la
-                        // lateral tienen que volver a leerse.
+                        // The references change, so the graph and the sidebar
+                        // have to be read again.
                         self.load();
                         self.status = format!("branch {name} deleted");
                         self.status_failed = false;
@@ -612,11 +613,11 @@ impl App {
         }
     }
 
-    /// El aviso de lo que no se puede deshacer.
+    /// The warning about what cannot be undone.
     ///
-    /// Lo que destruye va a la derecha y en rojo, y lo que no hace nada a la
-    /// izquierda: el botón fácil de alcanzar sin leer tiene que ser el que no
-    /// rompe nada.
+    /// What destroys goes on the right and in red, and what does nothing on
+    /// the left: the button that is easy to reach without reading has to be
+    /// the one that breaks nothing.
     fn confirm_dialog(&mut self, ctx: &egui::Context) {
         let Some(confirm) = &self.confirm else {
             return;
@@ -627,7 +628,7 @@ impl App {
         let mut go = false;
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
-        let modal = egui::Modal::new(egui::Id::new("confirmar"))
+        let modal = egui::Modal::new(egui::Id::new("confirm"))
             .frame(
                 egui::Frame::NONE
                     .fill(theme::RAISED)
@@ -689,7 +690,7 @@ impl App {
         }
     }
 
-    /// Deja un aviso en la barra de abajo, marcado como fallo.
+    /// Leaves a note in the bottom bar, marked as a failure.
     fn note_error(&mut self, message: String) {
         self.status = message;
         self.status_failed = true;
@@ -773,9 +774,9 @@ impl App {
             }
             Action::AmendToggled => {
                 if self.amend {
-                    // Entra el mensaje del último commit, y lo que hubiera
-                    // escrito se guarda: quitar el interruptor tiene que
-                    // devolverlo, no haberlo perdido por el camino.
+                    // The last commit's message comes in, and whatever was
+                    // written is kept: taking the switch off has to give it
+                    // back, not have lost it along the way.
                     self.saved = Some((self.subject.clone(), self.body.clone()));
                     if let Some((subject, body)) =
                         self.repo().ok().and_then(|repo| repo.head_message())
@@ -794,8 +795,8 @@ impl App {
                         self.saved = None;
                         self.subject.clear();
                         self.body.clear();
-                        // El viejo ya no existe: el cursor va al que lo
-                        // sustituye, no a un hueco.
+                        // The old one no longer exists: the cursor goes to the
+                        // one replacing it, not to a gap.
                         self.selected_commit = Some(oid);
                         self.detail_file = None;
                         self.load();
@@ -811,11 +812,11 @@ impl App {
                     Ok(oid) => {
                         self.subject.clear();
                         self.body.clear();
-                        // El cursor se queda en lo recién escrito: la fila de
-                        // cambios donde estaba acaba de dejar de existir.
+                        // The cursor stays on what has just been written: the
+                        // changes row it was on has just stopped existing.
                         self.selected_commit = Some(oid);
                         self.detail_file = None;
-                        // El commit cambia la historia: hay que redibujar el grafo.
+                        // The commit changes the history: redraw the graph.
                         self.load();
                         self.status = format!("commit created on {}", self.head);
                         self.status_failed = false;
@@ -832,8 +833,8 @@ impl App {
         use action_bar::Action;
 
         match action {
-            // Las dos que salen a la red se van a un hilo aparte. El resto
-            // son locales y terminan antes de que se note.
+            // The two that go out on the network leave for a thread of their
+            // own. The rest are local and finish before anyone notices.
             Action::Pull(mode) => self.spawn("pulling", move |repo| repo.pull(mode)),
             Action::Fetch => self.spawn("fetching", |repo| repo.fetch_all()),
             Action::Push => self.spawn("pushing", |repo| repo.push()),
@@ -858,7 +859,7 @@ impl App {
         }
     }
 
-    /// Una operación local que deja dicho cómo fue.
+    /// A local operation that leaves word of how it went.
     fn local(&mut self, op: impl FnOnce(&mut Repo) -> Result<String>) {
         match self.repo().and_then(|mut repo| op(&mut repo)) {
             Ok(note) => {
@@ -884,12 +885,12 @@ impl eframe::App for App {
         }
 
         let frame = match self.tab {
-            // El grafo se pinta sobre el fondo más hondo de la ventana para
-            // que los carriles sean lo que más luz tiene en pantalla.
+            // The graph is painted on the deepest background in the window so
+            // that the lanes are the brightest thing on screen.
             Tab::History => egui::Frame::NONE.fill(theme::CANVAS),
             Tab::Changes => egui::Frame::NONE.fill(theme::PANEL),
-            // El tablero se pinta sobre el lienzo para que las tarjetas, que
-            // van del color de los paneles, se levanten del fondo.
+            // The board is painted on the canvas so that the cards, which wear
+            // the panels' color, lift off the background.
             Tab::Board => egui::Frame::NONE
                 .fill(theme::CANVAS)
                 .inner_margin(egui::Margin::symmetric(12, 0)),
@@ -985,7 +986,7 @@ impl eframe::App for App {
 
 impl App {
     fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("barra")
+        egui::TopBottomPanel::top("bar")
             .frame(
                 egui::Frame::NONE
                     .fill(theme::RAISED)
@@ -998,8 +999,8 @@ impl App {
                     self.tabs(ui);
                     theme::vrule(ui);
 
-                    // Dónde está HEAD, con el único ámbar de la ventana. Va
-                    // pegado a las acciones porque todas van a parar a él.
+                    // Where HEAD is, in the window's one and only amber. It
+                    // sits by the actions because they all end up there.
                     if !self.head.is_empty() {
                         ui.label(
                             egui::RichText::new(&self.head)
@@ -1007,9 +1008,9 @@ impl App {
                                 .color(theme::HEAD)
                                 .background_color(theme::tint(theme::HEAD, 28)),
                         );
-                        // Un respiro antes de las acciones: el ámbar de HEAD y
-                        // el de las cuentas son casi el mismo, y pegados se
-                        // leerían como una sola mancha de color.
+                        // A breath before the actions: HEAD's amber and the
+                        // counts' amber are almost the same, and side by side
+                        // they would read as one single stain of color.
                         ui.add_space(11.0);
                     }
 
@@ -1039,16 +1040,16 @@ impl App {
             });
     }
 
-    /// Qué repositorio está abierto, y cómo cambiarlo.
+    /// Which repository is open, and how to change it.
     ///
-    /// A diario basta con el nombre de la carpeta. La ruta entera, que se
-    /// comía un tercio de la barra para no decir casi nada, se ha ido al
-    /// desplegable donde de verdad se usa: al abrir otro repositorio.
+    /// Day to day the folder's name is enough. The whole path, which ate a
+    /// third of the bar to say almost nothing, has gone to the popup where it
+    /// really is used: when opening another repository.
     fn repo_menu(&mut self, ui: &mut egui::Ui) {
         let name = std::path::Path::new(self.path.trim_end_matches('/'))
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "repositorio".to_string());
+            .unwrap_or_else(|| "repo".to_string());
 
         let button =
             ui.button(egui::RichText::new(format!("{name}     ")).font(theme::medium(12.5)));
@@ -1102,7 +1103,7 @@ impl App {
         }
     }
 
-    /// Las dos vistas, pegadas como un mando de dos posiciones.
+    /// The two views, flush together like a two-position control.
     fn tabs(&mut self, ui: &mut egui::Ui) {
         let pending = self.work.staged.len() + self.work.unstaged.len();
 
@@ -1128,7 +1129,7 @@ impl App {
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("estado")
+        egui::TopBottomPanel::bottom("status")
             .frame(
                 egui::Frame::NONE
                     .fill(theme::RAISED)
@@ -1157,13 +1158,14 @@ impl App {
             });
     }
 
-    /// Las referencias acompañan siempre, se mire la historia o los cambios.
+    /// The references come along always, whether you look at the history or
+    /// at the changes.
     fn refs_panel(&mut self, ctx: &egui::Context) {
         let mut picked = None;
-        // Con HEAD desacoplado no hay rama a la que traerse nada.
+        // With a detached HEAD there is no branch to bring anything into.
         let on_branch = self.refs.iter().any(|entry| entry.is_head);
 
-        egui::SidePanel::left("referencias")
+        egui::SidePanel::left("refs-panel")
             .resizable(true)
             .default_width(222.0)
             .width_range(170.0..=360.0)
@@ -1190,7 +1192,7 @@ impl App {
             }
             Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
             Some(refs_view::Pick::Merge(name)) => {
-                // Puede reescribir el árbol entero, así que va aparte.
+                // It can rewrite the whole tree, so it goes apart.
                 let doing = format!("merging {name}");
                 self.spawn(&doing, move |repo| repo.merge(&name));
             }
@@ -1211,19 +1213,19 @@ impl App {
         }
     }
 
-    /// Se cambia de rama en un hilo aparte.
+    /// Switches branch on a thread of its own.
     ///
-    /// Es local, pero es la operación que más ficheros puede escribir de todas
-    /// las que hay aquí: entre dos ramas lejanas se reescribe medio árbol, y
-    /// eso con la ventana congelada se lee como que la aplicación ha muerto.
+    /// It is local, but it is the operation that can write the most files of
+    /// all the ones here: between two distant branches half the tree is
+    /// rewritten, and with the window frozen that reads as the app having died.
     fn switch(&mut self, name: String, remote: bool) {
-        // La pestaña se queda donde esté: si uno estaba en los cambios es que
-        // estaba trabajando en ficheros, y cambiar de rama no es motivo para
-        // mandarlo a otra pantalla.
+        // The tab stays where it is: if you were in the changes you were
+        // working on files, and switching branch is no reason to send you to
+        // another screen.
         //
-        // El cursor sí se suelta antes de salir: al llegar a la rama nueva lo
-        // que uno quiere ver es su último commit, no el sitio de la rama
-        // vieja donde se había quedado mirando.
+        // The cursor is let go before leaving, though: on reaching the new
+        // branch what you want to see is its last commit, not the place in the
+        // old branch where you had been looking.
         self.selected_commit = None;
         self.detail_file = None;
 
@@ -1238,20 +1240,20 @@ impl App {
     }
 
     fn detail_panel(&mut self, ctx: &egui::Context) {
-        // Con la fila de cambios elegida, el panel derecho pasa a ser el árbol
-        // de trabajo entero: listas, cuadro de commit y diff. Así se prepara y
-        // se commitea sin salir del grafo, que es lo que hace que las dos
-        // vistas se sientan una sola.
+        // With the changes row picked, the right panel becomes the whole
+        // working tree: lists, commit box and diff. That way you stage and
+        // commit without leaving the graph, which is what makes the two views
+        // feel like one.
         let working = self.selected_commit.is_some_and(|oid| oid.is_zero());
         let (amendable, pushed) = self.amend_state();
         let mut clicked = None;
         let mut action = None;
 
-        egui::SidePanel::right("detalle")
+        egui::SidePanel::right("detail")
             .resizable(true)
             .default_width(420.0)
-            // Con tope: sin él, un commit de mensaje largo ensancha el panel
-            // hasta dejar la columna del grafo en nada.
+            // Capped: without it, a commit with a long message widens the
+            // panel until the graph's column is nothing.
             .width_range(300.0..=520.0)
             .frame(
                 egui::Frame::NONE
@@ -1301,7 +1303,7 @@ impl App {
         }
     }
 
-    /// Etiqueta el commit que se está mirando.
+    /// Tags the commit being looked at.
     fn create_tag(&mut self, name: String, message: String) {
         let Some(oid) = self.selected_commit.filter(|oid| !oid.is_zero()) else {
             return self.note_error("no commit is selected".to_string());
@@ -1309,8 +1311,8 @@ impl App {
 
         match self.repo().and_then(|repo| repo.tag(&name, oid, &message)) {
             Ok(()) => {
-                // La etiqueta nueva tiene que salir en el grafo y en la
-                // lateral, y eso solo pasa releyendo las referencias.
+                // The new tag has to show up in the graph and in the sidebar,
+                // and that only happens by reading the references again.
                 self.load();
                 self.status = format!("tag {name} created");
                 self.status_failed = false;

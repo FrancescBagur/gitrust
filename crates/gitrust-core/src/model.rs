@@ -1,8 +1,8 @@
-//! Tipos de datos compartidos entre el lector del repositorio y la UI.
+//! The data types shared between the repository reader and the UI.
 
 use git2::Oid;
 
-/// Qué clase de referencia apunta a un commit.
+/// What kind of reference points at a commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
     Head,
@@ -11,14 +11,14 @@ pub enum RefKind {
     Tag,
 }
 
-/// Una etiqueta visible sobre un commit: una rama, un tag o HEAD.
+/// A label shown on a commit: a branch, a tag or HEAD.
 #[derive(Debug, Clone)]
 pub struct RefLabel {
     pub name: String,
     pub kind: RefKind,
 }
 
-/// Un commit, ya aplanado a los campos que la UI necesita pintar.
+/// A commit, flattened to the fields the UI needs in order to paint it.
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub id: Oid,
@@ -31,12 +31,12 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// El commit que todavía no existe: los cambios del árbol de trabajo.
+    /// The commit that does not exist yet: the working tree's changes.
     ///
-    /// Git no le da identificador al árbol de trabajo, así que esta fila lleva
-    /// el Oid nulo. Ningún commit real puede tenerlo, de modo que es lo que la
-    /// distingue de las demás sin necesidad de un campo aparte, y el trazado
-    /// del grafo la trata como a cualquier otra: cuelga de HEAD por su padre.
+    /// Git gives the working tree no identifier, so this row carries the null
+    /// Oid. No real commit can have it, so it is what tells this row from the
+    /// rest without needing a field of its own, and the graph's layout treats
+    /// it like any other: it hangs off HEAD by its parent.
     pub fn working(head: Oid) -> Self {
         Self {
             id: Oid::zero(),
@@ -49,20 +49,20 @@ impl Commit {
         }
     }
 
-    /// Si esta fila son los cambios sin confirmar en vez de un commit.
+    /// Whether this row is the uncommitted changes instead of a commit.
     pub fn is_working(&self) -> bool {
         self.id.is_zero()
     }
 
-    /// Si este commit encaja con lo que se está buscando.
+    /// Whether this commit matches what is being looked for.
     ///
-    /// Busca en lo que uno recuerda de un commit cuando lo busca: de qué iba,
-    /// quién lo hizo, o el principio de su hash si lo tiene copiado de algún
-    /// sitio. La aguja tiene que venir ya en minúsculas; se compara miles de
-    /// veces por fotograma y pasarla cada vez sería tirar el trabajo.
+    /// It looks in what one remembers of a commit when looking for it: what it
+    /// was about, who made it, or the start of its hash if it came copied from
+    /// somewhere. The needle has to arrive lowercased already; this runs
+    /// thousands of times a frame, and lowercasing it each time would be waste.
     pub fn matches(&self, needle: &str) -> bool {
-        // La fila de cambios sin confirmar no tiene nada que buscar, y su Oid
-        // nulo encajaría con cualquier aguja que empiece por cero.
+        // The uncommitted-changes row has nothing to look in, and its null Oid
+        // would match any needle that starts with a zero.
         if self.is_working() {
             return false;
         }
@@ -74,24 +74,24 @@ impl Commit {
             return true;
         }
 
-        // Un hash más largo que el corto solo puede venir pegado, así que se
-        // compara entero y solo cuando la aguja tiene pinta de serlo.
+        // A hash longer than the short one can only have been pasted, so it is
+        // compared whole, and only when the needle looks like one.
         needle.len() > self.short_id.len()
             && needle.chars().all(|c| c.is_ascii_hexdigit())
             && self.id.to_string().starts_with(needle)
     }
 
-    /// Las referencias que señalan aquí, de la que más importa a la que menos,
-    /// y cada una diciendo si es donde uno está.
+    /// The references that point here, from the one that matters most to the
+    /// one that matters least, each saying whether it is where you are.
     ///
-    /// La rama en la que estás va primera: es la respuesta a la pregunta que
-    /// uno se hace al mirar la historia. Detrás, las demás locales, luego las
-    /// etiquetas y al final las remotas, que casi siempre repiten a una local
-    /// y son las primeras que sobran cuando no cabe todo.
+    /// The branch you are on goes first: it is the answer to the question one
+    /// asks when looking at the history. Behind it the other local ones, then
+    /// the tags, and last the remotes, which nearly always repeat a local one
+    /// and are the first to go when it does not all fit.
     ///
-    /// La marca de HEAD no sale por su cuenta si hay una rama local con su
-    /// mismo nombre: es esa rama la que está puesta, y decirlo dos veces no
-    /// dice más. Solo con HEAD desacoplado se queda sola.
+    /// HEAD's own mark does not come out on its own if there is a local branch
+    /// with the same name: that branch is the one that is checked out, and
+    /// saying it twice says no more. Only a detached HEAD stands alone.
     pub fn ordered_refs(&self) -> Vec<(&RefLabel, bool)> {
         let head = self
             .refs
@@ -119,13 +119,13 @@ impl Commit {
             })
             .collect();
 
-        // Estable: dentro de un mismo rango se respeta el orden en que vinieron.
+        // Stable: within one rank, the order they came in is kept.
         out.sort_by_key(|(label, current)| rank(label.kind, *current));
         out
     }
 }
 
-/// Cuánto importa una referencia. Cero es la que no puede faltar.
+/// How much a reference matters. Zero is the one that cannot be missing.
 fn rank(kind: RefKind, current: bool) -> u8 {
     if current {
         return 0;
@@ -138,10 +138,10 @@ fn rank(kind: RefKind, current: bool) -> u8 {
     }
 }
 
-/// Una línea dibujada en la banda que va de una fila a la siguiente.
+/// A line drawn in the band that runs from one row to the next.
 ///
-/// `from` es el carril en la fila actual y `to` el carril en la fila de abajo.
-/// Cuando ambos coinciden la línea es vertical; si no, describe una curva.
+/// `from` is the lane in the current row and `to` the lane in the row below.
+/// When the two match the line is vertical; if not, it describes a curve.
 #[derive(Debug, Clone, Copy)]
 pub struct Link {
     pub from: usize,
@@ -149,8 +149,8 @@ pub struct Link {
     pub color: usize,
 }
 
-/// Una fila del grafo: el commit, el carril donde va su punto y las líneas
-/// que salen de ella hacia la fila siguiente.
+/// A row of the graph: the commit, the lane its dot goes in, and the lines
+/// that leave it towards the next row.
 #[derive(Debug, Clone)]
 pub struct Row {
     pub commit: Commit,
@@ -159,7 +159,7 @@ pub struct Row {
     pub links: Vec<Link>,
 }
 
-/// El grafo completo, listo para pintar.
+/// The whole graph, ready to paint.
 #[derive(Debug, Default)]
 pub struct Graph {
     pub rows: Vec<Row>,
@@ -193,7 +193,7 @@ mod tests {
             .collect()
     }
 
-    fn buscable(summary: &str, author: &str, id: Oid) -> Commit {
+    fn searchable(summary: &str, author: &str, id: Oid) -> Commit {
         Commit {
             id,
             short_id: id.to_string().chars().take(7).collect(),
@@ -206,11 +206,11 @@ mod tests {
     }
 
     #[test]
-    fn se_busca_por_mensaje_por_autor_y_por_hash() {
+    fn the_search_looks_at_message_author_and_hash() {
         let id = Oid::from_str("3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3").unwrap();
-        let commit = buscable("feat: la Paleta de carriles", "Francesc", id);
+        let commit = searchable("feat: la Paleta de carriles", "Francesc", id);
 
-        // Sin distinguir mayúsculas, y por cualquiera de los tres lados.
+        // Case blind, and on any of the three sides.
         assert!(commit.matches("paleta"));
         assert!(commit.matches("carriles"));
         assert!(commit.matches("franc"));
@@ -219,26 +219,26 @@ mod tests {
     }
 
     #[test]
-    fn un_hash_mas_largo_que_el_corto_se_compara_entero() {
+    fn a_hash_longer_than_the_short_one_is_compared_whole() {
         let id = Oid::from_str("3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3").unwrap();
-        let commit = buscable("feat: algo", "Quien sea", id);
+        let commit = searchable("feat: algo", "Quien sea", id);
 
         assert!(commit.matches("3f2a1b9c4d5e"));
         assert!(!commit.matches("3f2a1b9c4d5f"));
-        // Y lo que no es un hash no se compara como tal, aunque sea largo.
+        // And what is not a hash is not compared as one, however long it is.
         assert!(!commit.matches("zzzzzzzzzzzz"));
     }
 
     #[test]
-    fn la_fila_de_cambios_sin_confirmar_no_encaja_con_nada() {
+    fn the_uncommitted_changes_row_matches_nothing() {
         let commit = Commit::working(Oid::zero());
         assert!(!commit.matches("a"));
-        // Ni siquiera con una aguja que su Oid nulo cumpliría.
+        // Not even with a needle its null Oid would satisfy.
         assert!(!commit.matches("0000"));
     }
 
     #[test]
-    fn la_rama_puesta_absorbe_la_marca_de_head() {
+    fn the_checked_out_branch_absorbs_heads_mark() {
         let commit = commit(&[
             ("main", RefKind::Head),
             ("main", RefKind::LocalBranch),
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn entre_varias_locales_solo_una_es_la_puesta() {
+    fn among_several_locals_only_one_is_checked_out() {
         let commit = commit(&[
             ("arreglo", RefKind::Head),
             ("main", RefKind::LocalBranch),
@@ -258,13 +258,13 @@ mod tests {
     }
 
     #[test]
-    fn con_head_desacoplado_la_marca_se_queda_sola() {
+    fn with_a_detached_head_the_mark_stands_alone() {
         let commit = commit(&[("HEAD", RefKind::Head), ("v1.0", RefKind::Tag)]);
         assert_eq!(names(&commit), [("HEAD", true), ("v1.0", false)]);
     }
 
     #[test]
-    fn las_remotas_son_las_ultimas_y_las_etiquetas_van_antes() {
+    fn remotes_come_last_and_tags_come_before_them() {
         let commit = commit(&[
             ("origin/main", RefKind::RemoteBranch),
             ("v2", RefKind::Tag),
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn un_commit_sin_referencias_no_da_ninguna() {
+    fn a_commit_with_no_references_gives_none() {
         assert!(commit(&[]).ordered_refs().is_empty());
     }
 }

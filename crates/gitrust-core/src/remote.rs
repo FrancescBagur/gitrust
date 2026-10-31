@@ -1,9 +1,9 @@
-//! Hablar con el remoto: traer, llevar, y saber cuánto se debe de cada lado.
+//! Talking to the remote: fetching, pushing, and knowing what each side owes.
 //!
-//! Las tres operaciones devuelven la frase que hay que enseñar al terminar, en
-//! vez de un montón de datos que la interfaz tendría que redactar. Lo que
-//! cuenta de un `pull` no es cuántos objetos se han bajado, sino si la rama se
-//! movió y adónde.
+//! All three operations give back the sentence to show when they are done,
+//! instead of a pile of data the interface would have to write up. What counts
+//! about a `pull` is not how many objects came down, but whether the branch
+//! moved and where to.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -15,40 +15,40 @@ use git2::{
 
 use crate::repo::Repo;
 
-/// Qué hacer con lo que viene del remoto cuando no basta con avanzar.
+/// What to do with what comes from the remote when moving up is not enough.
 ///
-/// Son las mismas tres que ofrece `git pull`, y la de siempre es la primera:
-/// avanzar si se puede y, si no, juntar las dos historias con un commit que
-/// lo diga. Las otras dos existen porque hay quien no quiere ninguna de esas
-/// dos cosas, y es una preferencia legítima, no un detalle.
+/// They are the same three `git pull` offers, and the usual one is the first:
+/// move up if you can and, if not, join the two histories with a commit that
+/// says so. The other two exist because some people want neither of those
+/// things, and that is a fair preference, not a detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullMode {
-    /// Avanza si puede; si no, escribe un commit de fusión.
+    /// Moves up if it can; if not, writes a merge commit.
     Merge,
-    /// Solo avanza. Con las historias divergidas, se para y lo dice.
+    /// Only moves up. With the histories diverged, it stops and says so.
     FastForward,
-    /// Rehace tus commits encima de lo que viene, dejando la historia recta.
+    /// Replays your commits on top of what comes, leaving the history straight.
     Rebase,
 }
 
-/// Cuánto se aparta la rama actual de la que sigue en el remoto.
+/// How far the current branch has drifted from the one it tracks on the remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tracking {
-    /// El nombre corto de la rama remota: «origin/main».
+    /// The remote branch's short name: "origin/main".
     pub remote: String,
-    /// Commits que hay aquí y no allí.
+    /// Commits that are here and not there.
     pub ahead: usize,
-    /// Commits que hay allí y no aquí.
+    /// Commits that are there and not here.
     pub behind: usize,
 }
 
 impl Repo {
-    /// La rama remota que sigue la actual, y la distancia a ella.
+    /// The remote branch the current one tracks, and the distance to it.
     ///
-    /// Es `None` cuando la rama no sigue a ninguna, que es lo normal mientras
-    /// no se ha hecho el primer `push`. No distingue ese caso de un fallo al
-    /// leer: para lo único que sirve esto es para pintar dos cuentas, y si no
-    /// se pueden saber no se pintan.
+    /// It is `None` when the branch tracks nothing, which is the normal state
+    /// until the first `push`. It does not tell that case from a failure to
+    /// read: the only thing this is for is painting two counts, and if they
+    /// cannot be known they are not painted.
     pub fn tracking(&self) -> Option<Tracking> {
         let head = self.inner.head().ok()?;
         let upstream = self.inner.branch_upstream_name(head.name()?).ok()?;
@@ -71,7 +71,7 @@ impl Repo {
         })
     }
 
-    /// Trae lo que haya en el remoto sin tocar el árbol de trabajo.
+    /// Brings down whatever is on the remote without touching the working tree.
     pub fn fetch(&self) -> Result<String> {
         let (remote, _) = self.upstream()?;
         self.fetch_from(&remote)?;
@@ -82,7 +82,7 @@ impl Repo {
         }
     }
 
-    /// Trae de todos los remotos, siga la rama actual a alguno o a ninguno.
+    /// Fetches from every remote, whether the current branch tracks one or not.
     pub fn fetch_all(&self) -> Result<String> {
         let remotes: Vec<String> =
             self.inner.remotes()?.iter().flatten().map(str::to_string).collect();
@@ -99,11 +99,11 @@ impl Repo {
         }
     }
 
-    /// Trae del remoto y junta lo que venga con lo que hay, como se le pida.
+    /// Fetches from the remote and joins what comes with what is here, as asked.
     ///
-    /// Lo de traer es igual en los tres modos; lo que cambia es qué se hace
-    /// cuando las dos historias se han separado. Avanzar, cuando se puede, se
-    /// hace siempre: no hay nada que juntar si una va por delante de la otra.
+    /// The fetching is the same in all three modes; what changes is what is done
+    /// when the two histories have parted. Moving up, when it can be done, is
+    /// always done: there is nothing to join if one is ahead of the other.
     pub fn pull(&self, mode: PullMode) -> Result<String> {
         let (remote, branch) = self.upstream()?;
         self.fetch_from(&remote)?;
@@ -116,7 +116,7 @@ impl Repo {
         }
     }
 
-    /// Adelanta la rama solo si se puede hacer sin fusionar nada.
+    /// Moves the branch up, but only if it can be done without merging anything.
     fn fast_forward(&self, remote: &str, branch: &str) -> Result<String> {
         let head = self.inner.head()?;
         let refname = head.name().context("HEAD has no name")?.to_string();
@@ -137,9 +137,9 @@ impl Repo {
 
         let behind = self.tracking().map(|t| t.behind).unwrap_or(0);
 
-        // El orden importa: primero el árbol, después la referencia. Si el
-        // árbol falla —porque hay cambios sin guardar que estorban—, la rama
-        // se queda donde estaba y no hay nada que deshacer.
+        // The order matters: the tree first, the reference after. If the tree
+        // fails -- because unsaved changes are in the way -- the branch stays
+        // where it was and there is nothing to undo.
         let commit = self.inner.find_commit(theirs.id())?;
         self.inner
             .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
@@ -151,7 +151,7 @@ impl Repo {
         Ok(format!("{} from {remote}/{branch}", commits(behind)))
     }
 
-    /// Lleva la rama actual al remoto, y la deja siguiéndolo si no lo hacía.
+    /// Pushes the current branch, and leaves it tracking the remote if it was not.
     pub fn push(&self) -> Result<String> {
         let head = self.inner.head()?;
         let branch = head
@@ -163,10 +163,10 @@ impl Repo {
         self.push_branch(&branch)
     }
 
-    /// Lo mismo, pero con la rama dicha por su nombre.
+    /// The same, but for the branch named outright.
     ///
-    /// Hace falta para llevar al remoto una rama en la que no estás, que es
-    /// lo que pide arrastrar su tarjeta en el tablero.
+    /// It is needed to push a branch you are not on, which is what dragging its
+    /// card on the board asks for.
     pub fn push_branch(&self, branch: &str) -> Result<String> {
         let refname = format!("refs/heads/{branch}");
         anyhow::ensure!(
@@ -174,8 +174,8 @@ impl Repo {
             "no branch called '{branch}'"
         );
 
-        // Sin remoto configurado se prueba «origin», que es como se llama en
-        // la inmensa mayoría de los repositorios.
+        // With no remote configured it tries "origin", which is what it is
+        // called in the vast majority of repositories.
         let remote_name = self.remote_of(&refname);
 
         let ahead = self.tracking().map(|t| t.ahead).unwrap_or(0);
@@ -184,8 +184,8 @@ impl Repo {
             .find_remote(&remote_name)
             .with_context(|| format!("no remote called '{remote_name}'"))?;
 
-        // El rechazo del servidor no llega como error de `push`: llega por
-        // esta llamada, y sin recogerlo un push rechazado parecería ir bien.
+        // The server's refusal does not arrive as an error from `push`: it
+        // arrives here, and without catching it a rejected push would look fine.
         let refused = std::cell::RefCell::new(None);
         {
             let mut callbacks = RemoteCallbacks::new();
@@ -208,8 +208,8 @@ impl Repo {
             anyhow::bail!("{remote_name} rejected {branch}: {reason}");
         }
 
-        // Una rama recién creada no sigue a nada: después del primer envío ya
-        // hay a quién seguir, y dejarlo hecho ahorra el `--set-upstream`.
+        // A brand-new branch tracks nothing: after the first push there is
+        // something to track, and doing it now saves the `--set-upstream`.
         if self.inner.branch_upstream_name(&refname).is_err() {
             let mut local = self.inner.find_branch(branch, git2::BranchType::Local)?;
             let _ = local.set_upstream(Some(&format!("{remote_name}/{branch}")));
@@ -218,13 +218,13 @@ impl Repo {
         Ok(format!("{} to {remote_name}/{branch}", commits(ahead)))
     }
 
-    /// Lleva la rama al remoto pisando lo que haya, pero solo si lo que hay
-    /// sigue siendo lo que viste la última vez.
+    /// Pushes the branch over whatever is there, but only if what is there is
+    /// still what you last saw.
     ///
-    /// Eso es el «with lease» de `git push --force-with-lease`, y es lo que
-    /// separa rehacer tu propia historia de borrarle el trabajo a otro sin
-    /// que se entere nadie. Se pregunta al remoto antes de escribir: si ha
-    /// cambiado desde tu última visita, no se fuerza y se dice por qué.
+    /// That is the "with lease" of `git push --force-with-lease`, and it is what
+    /// separates redoing your own history from wiping out someone else's work
+    /// without anyone noticing. The remote is asked before anything is written:
+    /// if it has changed since your last visit, nothing is forced and it says why.
     pub fn push_force(&self) -> Result<String> {
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?.to_string();
@@ -239,7 +239,7 @@ impl Repo {
             .find_remote(&remote_name)
             .with_context(|| format!("no remote called '{remote_name}'"))?;
 
-        // Lo que vimos la última vez que trajimos.
+        // What we saw the last time we fetched.
         let seen = self
             .inner
             .find_branch(&format!("{remote_name}/{branch}"), BranchType::Remote)
@@ -253,16 +253,16 @@ impl Repo {
              fetch and look at what is there before overwriting it"
         );
 
-        // El «+» delante del refspec es lo que autoriza a no avanzar.
+        // The "+" in front of the refspec is what allows not moving up.
         self.send(&mut remote, &[format!("+{refname}:{refname}")])?;
         Ok(format!("{branch} forced onto {remote_name}"))
     }
 
-    /// Manda al remoto las etiquetas que no tenga.
+    /// Sends the remote the tags it does not have.
     ///
-    /// Las que ya están no se vuelven a enviar, y una que haya cambiado de
-    /// sitio se queda aquí: el remoto la rechaza y eso está bien, porque una
-    /// etiqueta que se mueve deja de valer para lo único que sirve.
+    /// The ones already there are not sent again, and one that has moved stays
+    /// here: the remote turns it down, and that is right, because a tag that
+    /// moves stops being good for the one thing it is for.
     pub fn push_tags(&self) -> Result<String> {
         let remote_name = self
             .inner
@@ -305,7 +305,7 @@ impl Repo {
         ))
     }
 
-    /// Qué referencias tiene el remoto ahora mismo.
+    /// What references the remote has right now.
     fn heads_of(&self, remote: &mut Remote<'_>) -> Result<HashMap<String, Oid>> {
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(credentials(self.inner.config()?));
@@ -323,7 +323,7 @@ impl Repo {
         Ok(heads)
     }
 
-    /// Manda unos refspecs y se entera de si el servidor dice que no.
+    /// Sends some refspecs and finds out whether the server says no.
     fn send(&self, remote: &mut Remote<'_>, refspecs: &[String]) -> Result<()> {
         let refused = std::cell::RefCell::new(None);
         {
@@ -347,7 +347,7 @@ impl Repo {
         }
     }
 
-    /// El remoto de una rama, o «origin», que es como se llama casi siempre.
+    /// A branch's remote, or "origin", which is what it is called nearly always.
     fn remote_of(&self, refname: &str) -> String {
         self.inner
             .branch_upstream_remote(refname)
@@ -356,12 +356,12 @@ impl Repo {
             .unwrap_or_else(|| "origin".to_string())
     }
 
-    /// Borra una rama en el remoto, y de paso su rastro aquí.
+    /// Deletes a branch on the remote, and its trace here along with it.
     ///
-    /// Un refspec sin nada a la izquierda es cómo se le dice a Git que la
-    /// referencia del otro lado sobra. Es lo mismo que `git push origin :rama`.
+    /// A refspec with nothing on the left is how you tell Git the reference on
+    /// the other side is surplus. It is the same as `git push origin :branch`.
     ///
-    /// Esto se ve desde todas las máquinas, no solo desde esta.
+    /// This is seen from every machine, not just this one.
     pub fn delete_remote_branch(&self, name: &str) -> Result<String> {
         let (remote_name, branch) = name
             .split_once('/')
@@ -394,8 +394,8 @@ impl Repo {
             anyhow::bail!("{remote_name} refused: {reason}");
         }
 
-        // Y la copia local de esa rama remota, que si no se queda señalando a
-        // algo que ya no está.
+        // And the local copy of that remote branch, which otherwise is left
+        // pointing at something that is no longer there.
         if let Ok(mut local) = self.inner.find_branch(name, git2::BranchType::Remote) {
             let _ = local.delete();
         }
@@ -403,7 +403,7 @@ impl Repo {
         Ok(format!("{name} deleted on the remote"))
     }
 
-    /// El remoto al que mira la rama actual, y su nombre.
+    /// The remote the current branch looks at, and its name.
     fn upstream(&self) -> Result<(String, String)> {
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?;
@@ -434,20 +434,20 @@ impl Repo {
         let mut options = FetchOptions::new();
         options.remote_callbacks(callbacks);
 
-        // Sin refspecs usa las del remoto, que es lo que hace `git fetch`.
+        // With no refspecs it uses the remote's own, which is what `git fetch` does.
         let empty: [&str; 0] = [];
         remote.fetch(&empty, Some(&mut options), None).context("could not fetch from the remote")?;
         Ok(())
     }
 }
 
-/// Las credenciales, en el mismo orden que las prueba `git`: el agente SSH, el
-/// ayudante que haya configurado, y el usuario a secas para los remotos SSH
-/// que lo piden antes que nada.
+/// The credentials, in the same order `git` tries them: the SSH agent, whatever
+/// helper is configured, and the bare username for the SSH remotes that ask for
+/// it before anything else.
 ///
-/// Cada vía se prueba una sola vez. libgit2 vuelve a llamar mientras no se le
-/// dé algo que sirva, así que sin llevar la cuenta esto daría vueltas para
-/// siempre contra un servidor que rechace la primera clave.
+/// Each route is tried once only. libgit2 calls back as long as it is not given
+/// something that works, so without keeping count this would go round for ever
+/// against a server that turns down the first key.
 pub(crate) fn credentials(
     config: Config,
 ) -> impl FnMut(&str, Option<&str>, CredentialType) -> Result<Cred, git2::Error> {
@@ -482,7 +482,7 @@ pub(crate) fn credentials(
     }
 }
 
-/// «1 commit», «4 commits».
+/// "1 commit", "4 commits".
 fn commits(count: usize) -> String {
     if count == 1 {
         "1 commit".to_string()

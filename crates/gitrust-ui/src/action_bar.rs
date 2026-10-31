@@ -1,9 +1,9 @@
-//! Lo que se le hace al repositorio entero, en una sola fila.
+//! What gets done to the whole repository, in a single row.
 //!
-//! Son cuatro cosas y las cuatro miran a la rama actual: traer lo que falta,
-//! llevar lo que sobra, abrir una rama nueva donde uno está, y apartar lo que
-//! estorba. Las dos primeras llevan su cuenta al lado, porque saber cuánto se
-//! debe es la mitad de decidir si pulsar.
+//! Four things, and all four look at the current branch: bring down what is
+//! missing, send up what is surplus, open a new branch where you are, and set
+//! aside what is in the way. The first two carry their count beside them,
+//! because knowing what you owe is half of deciding whether to press.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{
@@ -15,14 +15,14 @@ use gitrust_core::{PullMode, StashEntry, Tracking};
 
 use crate::theme;
 
-/// Lo que ocupa un apartado en la lista, con su holgura. Se usa para darle
-/// el alto a la lista, que no sabe medirse sola ahí dentro.
+/// How much room one stash takes in the list, with its padding. It is used to
+/// give the list its height, as it cannot measure itself in there.
 const STASH_ROW: f32 = 52.0;
 
 pub enum Action {
-    /// Traer y juntar, de la manera que se diga.
+    /// Fetch and join, in whichever way is asked for.
     Pull(PullMode),
-    /// Traer de todos los remotos y no juntar nada.
+    /// Fetch from every remote and join nothing.
     Fetch,
     Push,
     PushForce,
@@ -34,19 +34,19 @@ pub enum Action {
     StashDrop(usize),
 }
 
-/// Lo que se está escribiendo en los desplegables. Vive en la aplicación
-/// porque tiene que seguir ahí al fotograma siguiente.
+/// What is being typed in the popups. It lives in the app because it has to
+/// still be there on the next frame.
 #[derive(Default)]
 pub struct Draft {
     branch: String,
     stash: String,
 }
 
-/// Pinta el grupo y devuelve lo que se haya pulsado.
+/// Paints the group and gives back whatever was pressed.
 ///
-/// Con `busy` en cierto hay una operación en marcha: los botones se apagan
-/// enteros en lugar de dejar encolar una segunda mientras la primera va por
-/// la red.
+/// With `busy` set there is an operation under way: the buttons go dark
+/// altogether rather than letting a second one queue up while the first is
+/// out on the network.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -64,8 +64,8 @@ pub fn show(
         let behind = tracking.map(|t| t.behind).unwrap_or(0);
         let ahead = tracking.map(|t| t.ahead).unwrap_or(0);
 
-        // Sin rama remota a la que mirar no hay de dónde traer; llevar sí se
-        // puede, y es justamente así como se crea.
+        // With no remote branch to look at there is nowhere to fetch from;
+        // pushing you can do, and that is exactly how one gets created.
         let pull = count_button(ui, "↓ Pull", behind, tracking.is_some() && !busy);
         if pull.on_hover_text(pull_hint(tracking, *mode)).clicked() {
             action = Some(Action::Pull(*mode));
@@ -82,8 +82,8 @@ pub fn show(
             action = Some(Action::Push);
         }
 
-        // La punta va pegada al botón: es el mismo mando con dos posturas,
-        // y lo que hay detrás no se pulsa de pasada.
+        // The caret sits flush against the button: it is one control with two
+        // positions, and what is behind it is not pressed in passing.
         ui.spacing_mut().item_spacing.x = 1.0;
         if let Some(other) = push_menu(ui, busy) {
             action = Some(other);
@@ -101,8 +101,8 @@ pub fn show(
     action
 }
 
-/// Un botón con su cuenta pegada, en la misma pastilla ámbar que lleva la
-/// pestaña de cambios: significa lo mismo, que hay algo tuyo pendiente.
+/// A button with its count flush against it, in the same amber chip the
+/// changes tab wears: it means the same thing, that something of yours is due.
 fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> egui::Response {
     let ink = if enabled { theme::TEXT } else { theme::FAINT };
 
@@ -142,11 +142,11 @@ fn pull_hint(tracking: Option<&Tracking>, mode: PullMode) -> String {
     }
 }
 
-/// Las otras maneras de traer.
+/// The other ways of fetching.
 ///
-/// Lo que se elige aquí se hace al momento y se queda de postura del botón:
-/// el botón repite lo último que pediste, que es lo que uno espera de un
-/// mando con memoria y no hay que explicarlo en ninguna parte.
+/// What you pick here happens at once and stays as the button's position: the
+/// button repeats the last thing you asked for, which is what one expects of
+/// a control with a memory, and needs explaining nowhere.
 fn pull_menu(ui: &mut egui::Ui, busy: bool, mode: &mut PullMode) -> Option<Action> {
     let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
     theme::caret(ui, &button);
@@ -160,7 +160,7 @@ fn pull_menu(ui: &mut egui::Ui, busy: bool, mode: &mut PullMode) -> Option<Actio
         ui.set_min_width(248.0);
         let mut action = None;
 
-        // Traer no junta nada, así que no cambia lo que hace el botón.
+        // Fetching joins nothing, so it does not change what the button does.
         if ui
             .button("Fetch all")
             .on_hover_text("from every remote, touching nothing here")
@@ -198,10 +198,10 @@ fn push_hint(tracking: Option<&Tracking>) -> String {
     }
 }
 
-/// Las dos maneras de llevar que no son la de todos los días.
+/// The two ways of pushing that are not the everyday one.
 fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
-    // Sin texto: el ancho sale del relleno del botón, y así la punta cae en
-    // su centro en vez de dejar medio botón vacío a la izquierda.
+    // No text: the width comes from the button's own padding, so the caret
+    // lands in its middle instead of leaving half a button empty on the left.
     let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
     theme::caret(ui, &button);
     let id = ui.make_persistent_id("menu-push");
@@ -237,11 +237,11 @@ fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
     .flatten()
 }
 
-/// El desplegable de rama: solo crea, y crea donde uno está.
+/// The branch popup: it only creates, and it creates where you are.
 ///
-/// Cambiar a una rama que ya existe reescribe ficheros en disco, y eso merece
-/// su propio sitio con su aviso. Esto no toca nada: la rama nueva apunta al
-/// mismo commit, así que lo que haya a medias sigue exactamente igual.
+/// Switching to a branch that already exists rewrites files on disk, and that
+/// deserves its own place with its own warning. This touches nothing: the new
+/// branch points at the same commit, so whatever is half-done stays as it is.
 fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<String> {
     let button = ui.add_enabled(!busy, egui::Button::new(label("Branch")));
     theme::caret(ui, &button);
@@ -346,12 +346,12 @@ fn stash_menu(
         } else {
             theme::rule(ui);
 
-            // El alto va dicho, no pedido. Dentro de un desplegable que se
-            // dimensiona solo, un ScrollArea que pregunta cuánto sitio hay
-            // recibe menos del que hay y recorta la última fila.
+            // The height is told, not asked for. Inside a popup that sizes
+            // itself, a ScrollArea that asks how much room there is gets less
+            // than there is and clips the last row.
             let height = stashes.len().min(6) as f32 * STASH_ROW;
             egui::ScrollArea::vertical()
-                .id_salt("pila-stash")
+                .id_salt("stash-stack")
                 .max_height(height)
                 .min_scrolled_height(height)
                 .show(ui, |ui| {
@@ -371,7 +371,7 @@ fn stash_menu(
     .flatten()
 }
 
-/// Un apartado: de qué es, de dónde y de cuándo, y lo que se le puede hacer.
+/// One stash: what it is, where from and when, and what can be done to it.
 fn stash_row(ui: &mut egui::Ui, entry: &StashEntry) -> Option<Action> {
     let mut action = None;
     let (branch, text) = parts(&entry.message);
@@ -383,8 +383,8 @@ fn stash_row(ui: &mut egui::Ui, entry: &StashEntry) -> Option<Action> {
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        // De qué rama salió: apartar en una y sacar en otra es fácil de
-        // hacer sin querer, y esto es lo único que avisa.
+        // Which branch it came off: stashing on one and popping on another is
+        // easy to do by accident, and this is the only thing that warns you.
         ui.label(RichText::new(branch).font(theme::body(11.0)).color(theme::MUTED));
         if let Some(when) = when(entry.time) {
             ui.label(RichText::new("·").font(theme::body(11.0)).color(theme::FAINT));
@@ -413,18 +413,18 @@ fn stash_row(ui: &mut egui::Ui, entry: &StashEntry) -> Option<Action> {
     action
 }
 
-/// Parte «On master: medir el carril» en la rama y lo que uno escribió.
+/// Splits "On master: measuring the lane" into the branch and what you wrote.
 ///
-/// El prefijo que pone Git es la misma frase en todos, así que leído en una
-/// lista no distingue nada: lo que separa a un apartado de otro va detrás.
+/// The prefix Git puts there is the same phrase on every one, so read down a
+/// list it tells nothing apart: what separates one stash from another is behind it.
 fn parts(message: &str) -> (&str, &str) {
     let Some((head, text)) = message.split_once(": ") else {
         return ("", message);
     };
     let branch = head.rsplit(' ').next().unwrap_or("");
 
-    // El mensaje automático trae el hash delante del asunto del commit, que
-    // sobra: lo que interesa es de qué iba lo apartado.
+    // The automatic message carries the hash in front of the commit's subject,
+    // which is surplus: what matters is what the stashed work was about.
     let text = text
         .split_once(' ')
         .filter(|(first, _)| first.len() >= 7 && first.chars().all(|c| c.is_ascii_hexdigit()))
@@ -438,8 +438,8 @@ fn small(text: &str, color: Color32) -> RichText {
     RichText::new(text).font(theme::body(11.0)).color(color)
 }
 
-/// El texto de un botón que abre un desplegable, con hueco al final para la
-/// punta que pinta `theme::caret`.
+/// The text of a button that opens a popup, with room at the end for the
+/// caret `theme::caret` paints.
 fn label(text: &str) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.append(text, 0.0, TextFormat::simple(theme::medium(12.5), theme::TEXT));

@@ -1,7 +1,7 @@
-//! Panel derecho: el detalle del commit seleccionado en el grafo.
+//! The right-hand panel: the detail of the commit picked in the graph.
 //!
-//! Se lee de arriba abajo en tres tramos —qué se hizo, en qué ficheros, y el
-//! cambio línea a línea—, separados por un pelo en vez de por cajas.
+//! It reads top to bottom in three stretches -- what was done, in which files,
+//! and the change line by line -- parted by a hair instead of by boxes.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Color32, PopupCloseBehavior, RichText};
@@ -9,16 +9,15 @@ use gitrust_core::{Block, ChangeKind, CommitDetail, FileDiff};
 
 use crate::{diff_view, theme};
 
-/// Lo que se ha pedido sobre el commit que se está mirando.
+/// What has been asked about the commit being looked at.
 pub enum Pick {
-    /// Enseñar el cambio de ese fichero.
+    /// Show that file's change.
     File(String),
-    /// Ponerle esta etiqueta.
+    /// Put this tag on it.
     Tag { name: String, message: String },
 }
 
-/// La etiqueta que se está escribiendo, que tiene que seguir ahí al
-/// fotograma siguiente.
+/// The tag being written, which has to still be there on the next frame.
 #[derive(Default)]
 pub struct TagDraft {
     name: String,
@@ -36,7 +35,7 @@ fn kind_color(kind: ChangeKind) -> Color32 {
     }
 }
 
-/// Devuelve lo que se haya pedido sobre este commit.
+/// Gives back whatever has been asked about this commit.
 pub fn show(
     ui: &mut egui::Ui,
     detail: Option<&CommitDetail>,
@@ -53,7 +52,7 @@ pub fn show(
 
     ui.add_space(12.0);
 
-    // El asunto manda: es lo único a tamaño de titular en toda la ventana.
+    // The subject rules: it is the only thing at headline size in the window.
     ui.label(
         RichText::new(&detail.summary)
             .font(theme::strong(15.0))
@@ -68,9 +67,9 @@ pub fn show(
         .unwrap_or_default();
 
     ui.horizontal(|ui| {
-        // El correo se guarda para el aviso del ratón: identifica a quien
-        // firma, pero repite lo que el nombre ya dice y no cabe al lado de la
-        // fecha.
+        // The email is kept for the hover: it identifies whoever signed, but
+        // it repeats what the name already says and does not fit beside the
+        // date.
         ui.label(
             RichText::new(&detail.author)
                 .font(theme::medium(12.0))
@@ -99,10 +98,9 @@ pub fn show(
         });
     });
 
-    // El cuerpo se reparte en bloques antes de pintarlo: la prosa se vuelve a
-    // plegar al ancho del panel, y las listas, el código y los trailers se
-    // quedan como estaban, en mono, porque ahí el salto de línea significa
-    // algo.
+    // The body is cut into blocks before it is painted: the prose is wrapped
+    // again to the panel's width, and the lists, the code and the trailers are
+    // left as they were, in mono, because there a line break means something.
     if !detail.body.is_empty() {
         ui.add_space(10.0);
         for block in gitrust_core::blocks(&detail.body) {
@@ -115,8 +113,8 @@ pub fn show(
         }
     }
 
-    // Lo que se le puede hacer a este commit. De momento una cosa, pero la
-    // fila está puesta para las que vengan.
+    // What can be done to this commit. One thing for now, but the row is set
+    // up for the ones to come.
     ui.add_space(9.0);
     if let Some(action) = tag_menu(ui, tag) {
         picked = Some(action);
@@ -150,11 +148,11 @@ pub fn show(
     });
     ui.add_space(4.0);
 
-    // La lista de ficheros ocupa como mucho un tercio del panel; el resto es
-    // para el diff, que es lo que se lee de verdad.
+    // The file list takes up a third of the panel at most; the rest is for
+    // the diff, which is what actually gets read.
     let list_height = (ui.available_height() * 0.35).clamp(80.0, 260.0);
     egui::ScrollArea::vertical()
-        .id_salt("ficheros-commit")
+        .id_salt("commit-files")
         .max_height(list_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -189,17 +187,17 @@ pub fn show(
     picked
 }
 
-/// El desplegable de etiquetar, con el nombre y el para qué.
+/// The tagging popup, with the name and what it is for.
 ///
-/// Escribir el mensaje o no es lo que decide la clase de etiqueta, igual que
-/// en `git tag`. No hay interruptor porque no hace falta: el que quiere una
-/// etiqueta anotada es exactamente el que tiene algo que contar sobre ella.
+/// Writing the message or not is what decides the kind of tag, just as in
+/// `git tag`. There is no switch because none is needed: whoever wants an
+/// annotated tag is exactly whoever has something to say about it.
 fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
     let button = ui.add(egui::Button::new(
         RichText::new("Tag          ").font(theme::body(11.5)).color(theme::MUTED),
     ));
     theme::caret(ui, &button);
-    let id = ui.make_persistent_id("menu-etiqueta");
+    let id = ui.make_persistent_id("menu-tag");
 
     if button.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
@@ -254,8 +252,8 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
     .flatten()
 }
 
-/// Una fila de la lista de ficheros: la letra de estado en su canal, y la ruta
-/// con la carpeta apagada para que el nombre del fichero salte a la vista.
+/// A row of the file list: the status letter in its gutter, and the path with
+/// the folder muted so that the file's name stands out.
 fn file_row(ui: &mut egui::Ui, path: &str, kind: ChangeKind, selected: bool) -> bool {
     let mut clicked = false;
 

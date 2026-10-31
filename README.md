@@ -1,86 +1,83 @@
 # gitrust
 
-Cliente Git de escritorio en Rust. El objetivo es cubrir el flujo diario sin
-depender de una licencia comercial, empezando por lo que más cuesta encontrar
-gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
+A desktop Git client in Rust. The aim is to cover the day-to-day flow without
+depending on a commercial licence, starting with what is hardest to find free
+and well made: **the commit graph with every branch woven through it**.
 
-## Estado
+## State
 
-- [x] Abrir un repositorio y recorrer todas las referencias
-- [x] Trazado del grafo en carriles, con fusiones y colores por rama
-- [x] Pintado virtualizado (solo las filas visibles)
-- [x] Lista de cambios separada entre índice y árbol de trabajo
-- [x] Diff por fichero, stage y unstage, y commit con título y descripción
-- [x] Stage y unstage por hunk suelto
-- [x] Descartar cambios: por fichero, por hunk o todos, con aviso
-- [x] Tres paneles: ramas, grafo y detalle del commit
-- [x] Tema propio: una sola familia de color saturado, la de los carriles
-- [x] Los cambios sin confirmar, como una fila más arriba del grafo
-- [x] Barra de acciones: pull, push, rama nueva y stash
-- [x] Push forzado con lease, y envío de etiquetas
-- [x] Pull de cuatro maneras: fetch, fusión, solo avance y rebase
-- [x] Columna de ramas y etiquetas a la izquierda del grafo
-- [x] Buscar en la historia por mensaje, autor o hash
-- [x] Tablero de columnas, deducido del grafo sin guardar nada
-- [x] Arrastrar una tarjeta ejecuta la operación que la movería de columna
-- [x] Toda la interfaz en inglés
-- [x] Cambiar de rama, también a una que solo existe en el remoto
-- [x] Borrar ramas, aquí o en el remoto, diciendo qué se pierde
-- [x] Fusionar una rama en la actual, parándose en seco si choca
-- [x] Enmendar el último commit, con aviso si ya salió al remoto
-- [x] Etiquetas: crear ligeras o anotadas, y borrarlas
-- [ ] Editor de conflictos, rebase interactivo, worktrees
+- [x] Open a repository and walk every reference
+- [x] Graph layout in lanes, with merges and a color per branch
+- [x] Virtualised painting (only the visible rows)
+- [x] A change list split between index and working tree
+- [x] Per-file diff, stage and unstage, and commit with subject and description
+- [x] Stage and unstage a single hunk
+- [x] Discard changes: by file, by hunk or all of them, with a warning
+- [x] Three panels: branches, graph and commit detail
+- [x] A theme of its own: one single saturated family, the lanes'
+- [x] The uncommitted changes, as one more row above the graph
+- [x] An action bar: pull, push, new branch and stash
+- [x] Force push with lease, and sending tags
+- [x] Pull four ways: fetch, merge, fast-forward only and rebase
+- [x] A column of branches and tags to the left of the graph
+- [x] Search the history by message, author or hash
+- [x] A board of columns, worked out from the graph and storing nothing
+- [x] Dragging a card runs the operation that would have moved it
+- [x] Everything in English, interface and code alike
+- [x] Switch branch, including to one that only exists on the remote
+- [x] Delete branches, here or on the remote, saying what is lost
+- [x] Merge a branch into the current one, stopping dead if it clashes
+- [x] Amend the last commit, with a warning if it already went to the remote
+- [x] Tags: make them lightweight or annotated, and delete them
+- [ ] Conflict editor, interactive rebase, worktrees
 
-## Arquitectura
+## Architecture
 
 ```
 crates/
-  gitrust-core/     lógica Git, sin dependencias de UI
-    repo.rs         repositorio, commits, índice y diffs (libgit2)
-    branch.rs       crear ramas, cambiar de una a otra y borrarlas
-    merge.rs        juntar dos ramas o rebasar una, o negarse sin tocar nada
-    tag.rs          etiquetas ligeras y anotadas
-    remote.rs       traer, llevar, y la distancia con la rama remota
-    stash.rs        la pila de cambios apartados
-    graph.rs        algoritmo de carriles, y la fila de cambios sin confirmar
-    board.rs        en qué columna cae cada rama
-    status.rs       estado del árbol de trabajo
-    diff.rs         diff troceado en hunks
-    detail.rs       detalle de un commit y referencias
-    message.rs      composición del mensaje de commit
-    model.rs        tipos compartidos, y qué referencia manda en un commit
-  gitrust-ui/       aplicación egui
-    main.rs         ventana, estado y ejecución de acciones
-    theme.rs        color, tipografía y espaciado
-    action_bar.rs   pull, push, rama y stash
-    refs_view.rs    barra lateral de ramas y etiquetas
-    graph_view.rs   pintado del grafo y de la columna de referencias
-    board_view.rs   las ramas repartidas en columnas
-    detail_view.rs  panel de detalle del commit
-    changes_view.rs listas de cambios, diff y cuadro de commit
-    diff_view.rs    pintado compartido de líneas de diff
+  gitrust-core/     Git logic, with no UI dependencies
+    repo.rs         repository, commits, index and diffs (libgit2)
+    branch.rs       making branches, switching between them and deleting them
+    merge.rs        joining two branches or rebasing one, or refusing untouched
+    tag.rs          lightweight and annotated tags
+    remote.rs       fetching, pushing, and the distance to the remote branch
+    stash.rs        the pile of changes set aside
+    graph.rs        the lane algorithm, and the uncommitted-changes row
+    board.rs        which column each branch falls in
+    status.rs       the working tree's state
+    diff.rs         a diff cut into hunks
+    detail.rs       a commit's detail, and the references
+    message.rs      putting the commit message together
+    model.rs        the shared types, and which reference rules a commit
+  gitrust-ui/       the egui application
+    main.rs         window, state and carrying actions out
+    theme.rs        color, typography and spacing
+    action_bar.rs   pull, push, branch and stash
+    refs_view.rs    the sidebar of branches and tags
+    graph_view.rs   painting the graph and the references column
+    board_view.rs   the branches laid out in columns
+    detail_view.rs  the commit detail panel
+    changes_view.rs the change lists, the diff and the commit box
+    diff_view.rs    the shared painting of diff lines
 ```
 
-Las vistas no tocan el repositorio: devuelven una `Action` y `main.rs` la
-ejecuta. Eso mantiene el pintado libre de efectos secundarios.
+The views do not touch the repository: they give back an `Action` and `main.rs`
+carries it out. That keeps the painting free of side effects.
 
-Los textos que ve el usuario están en inglés; los comentarios del código y los
-nombres de las pruebas siguen en castellano.
+The core knows nothing of the UI. If egui ever stops fitting, `gitrust-ui` is
+replaced and the Git logic is left intact.
 
-El núcleo no conoce la UI. Si en algún momento egui deja de encajar, se
-sustituye `gitrust-ui` y la lógica Git sigue intacta.
+What goes out on the network — fetching and pushing — leaves for a thread of
+its own, which opens its own repository and sends back a sentence over a
+channel. The painting thread waits for nobody.
 
-Lo que sale a la red —traer y llevar— se va a un hilo suyo, que abre su propio
-repositorio y devuelve una frase por un canal. El hilo que pinta no espera a
-nadie.
+**Git backend:** `git2` (libgit2) for the bulk of the operations. For
+credential helpers, LFS and hooks the plan is to delegate to the real `git`
+binary, as the commercial clients do, because libgit2 does not cover them well.
 
-**Backend Git:** `git2` (libgit2) para el grueso de las operaciones. Para
-credential helpers, LFS y hooks el plan es delegar en el binario `git` real,
-igual que hacen los clientes comerciales, porque libgit2 no los cubre bien.
+## Building
 
-## Compilar
-
-Dependencias del sistema en Debian/Ubuntu/Pop!_OS:
+System dependencies on Debian/Ubuntu/Pop!_OS:
 
 ```bash
 sudo apt install -y rustc cargo cmake libssl-dev libxkbcommon-dev \
@@ -88,13 +85,13 @@ sudo apt install -y rustc cargo cmake libssl-dev libxkbcommon-dev \
   libgl1-mesa-dev
 ```
 
-Luego:
+Then:
 
 ```bash
-cargo run --release -- /ruta/a/un/repositorio
+cargo run --release -- /path/to/a/repository
 ```
 
-Sin argumento abre el repositorio del directorio actual.
+With no argument it opens the repository in the current directory.
 
 ## Tests
 
@@ -102,21 +99,20 @@ Sin argumento abre el repositorio del directorio actual.
 cargo test -p gitrust-core
 ```
 
-El algoritmo del grafo es la pieza con más riesgo de regresión, y las
-operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: noventa y nueve pruebas, setenta y seis de
-ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
+The graph algorithm is the piece most at risk of regression, and the operations
+that write — index, stash, branches and remote — are the ones that touch your
+files. Those are the ones that carry cover: ninety-nine tests, seventy-six of
+them against real repositories made in `/tmp` and deleted when they finish.
 
-Las del remoto hablan con un repositorio bare en otro directorio temporal. Por
-una ruta de disco se recorre el mismo camino que con un remoto de verdad —los
-refspecs, el avance rápido, la rama que pasa a seguir a otra— sin depender de
-que haya red ni credenciales.
+The remote ones talk to a bare repository in another temporary directory. Over
+a disk path they walk the same road as a real remote — the refspecs, the fast
+forward, the branch that starts tracking another — without depending on there
+being a network or credentials.
 
-## Licencia
+## Licence
 
-GPL-3.0-only. El texto completo está en [LICENSE](LICENSE).
+GPL-3.0-only. The full text is in [LICENSE](LICENSE).
 
-libgit2 es GPLv2 con excepción de enlazado y los crates de Rust son
-`MIT OR Apache-2.0`, así que ninguna dependencia obligaba a esta elección: una
-herramienta hecha para dejar de pagar una licencia no debería poder cerrarla
-nadie más.
+libgit2 is GPLv2 with a linking exception and the Rust crates are
+`MIT OR Apache-2.0`, so no dependency forced this choice: a tool made to stop
+paying for a licence should not be something anyone else can close.

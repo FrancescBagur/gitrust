@@ -1,54 +1,54 @@
-//! Pruebas de lo que hace la barra de acciones: rama, stash y remoto.
+//! Tests of what the action bar does: branch, stash and remote.
 //!
-//! El remoto es un repositorio bare en otro directorio temporal. Hablar con él
-//! por una ruta de disco recorre el mismo camino que con uno de verdad —los
-//! refspecs, el avance rápido, la rama que pasa a seguir a otra— sin depender
-//! de que haya red ni credenciales.
+//! The remote is a bare repository in another temporary directory. Talking to
+//! it over a disk path walks the same road as a real one -- the refspecs, the
+//! fast forward, the branch that starts tracking another -- without depending
+//! on there being a network or credentials.
 
 mod common;
 
 use common::{temp_dir, TempRepo};
 use gitrust_core::{layout, Lane, PullMode, RefKind, Repo};
 
-/// Deja el repositorio con un commit y devuelve el nombre de su rama.
-fn primer_commit(temp: &TempRepo) -> String {
-    temp.write("a.txt", "uno\n");
+/// Leaves the repository with one commit and gives back its branch's name.
+fn first_commit(temp: &TempRepo) -> String {
+    temp.write("a.txt", "one\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    repo.commit("feat: uno").unwrap();
+    repo.commit("feat: one").unwrap();
     repo.head_name()
 }
 
-// ---------------------------------------------------------------- ramas
+// ------------------------------------------------------------- branches
 
 #[test]
-fn la_rama_nueva_se_lleva_consigo_lo_que_habia_a_medias() {
-    let temp = TempRepo::new("rama");
-    primer_commit(&temp);
+fn the_new_branch_takes_what_was_half_done_with_it() {
+    let temp = TempRepo::new("branch");
+    first_commit(&temp);
 
-    temp.write("a.txt", "uno\ndos\n");
-    temp.write("b.txt", "nuevo\n");
-
-    let repo = temp.open();
-    let antes = repo.head_id().unwrap();
-    repo.branch_here("arreglo").unwrap();
+    temp.write("a.txt", "one\ntwo\n");
+    temp.write("b.txt", "new\n");
 
     let repo = temp.open();
-    assert_eq!(repo.head_name(), "arreglo");
-    // La rama nueva apunta al mismo sitio: no se ha escrito historia.
-    assert_eq!(repo.head_id().unwrap(), antes);
+    let before = repo.head_id().unwrap();
+    repo.branch_here("fix").unwrap();
 
-    // Y lo que estaba a medias sigue a medias, que es el único motivo de
-    // crear una rama a mitad de faena.
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), "fix");
+    // The new branch points at the same place: no history has been written.
+    assert_eq!(repo.head_id().unwrap(), before);
+
+    // And what was half-done is still half-done, which is the only reason to
+    // make a branch in the middle of a job.
     let state = repo.status().unwrap();
-    let pendientes: Vec<&str> = state.unstaged.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(pendientes, ["a.txt", "b.txt"]);
+    let pending: Vec<&str> = state.unstaged.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(pending, ["a.txt", "b.txt"]);
 }
 
 #[test]
-fn una_rama_sin_nombre_no_se_crea() {
-    let temp = TempRepo::new("rama-sin-nombre");
-    primer_commit(&temp);
+fn a_branch_with_no_name_is_not_made() {
+    let temp = TempRepo::new("branch-no-name");
+    first_commit(&temp);
 
     let repo = temp.open();
     let err = repo.branch_here("   ").unwrap_err().to_string();
@@ -56,60 +56,60 @@ fn una_rama_sin_nombre_no_se_crea() {
 }
 
 #[test]
-fn dos_ramas_con_el_mismo_nombre_no_caben() {
-    let temp = TempRepo::new("rama-repetida");
-    primer_commit(&temp);
+fn two_branches_with_the_same_name_do_not_fit() {
+    let temp = TempRepo::new("branch-duplicate");
+    first_commit(&temp);
 
     let repo = temp.open();
-    repo.branch_here("dos").unwrap();
-    let err = temp.open().branch_here("dos").unwrap_err().to_string();
-    assert!(err.contains("dos"), "{err}");
+    repo.branch_here("two").unwrap();
+    let err = temp.open().branch_here("two").unwrap_err().to_string();
+    assert!(err.contains("two"), "{err}");
 }
 
 #[test]
-fn cambiar_de_rama_trae_los_ficheros_de_la_otra() {
-    let temp = TempRepo::new("cambiar");
-    let vieja = primer_commit(&temp);
+fn switching_branch_brings_the_other_ones_files() {
+    let temp = TempRepo::new("switch");
+    let old = first_commit(&temp);
 
-    temp.open().branch_here("otra").unwrap();
-    temp.write("b.txt", "solo en otra\n");
+    temp.open().branch_here("other").unwrap();
+    temp.write("b.txt", "only on the other\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
     assert!(temp.path().join("b.txt").exists());
 
-    let nota = temp.open().checkout_branch(&vieja).unwrap();
-    assert_eq!(nota, format!("you are now on {vieja}"));
+    let note = temp.open().checkout_branch(&old).unwrap();
+    assert_eq!(note, format!("you are now on {old}"));
 
     let repo = temp.open();
-    assert_eq!(repo.head_name(), vieja);
-    // El fichero que solo existía en la otra rama se ha ido del disco, y el
-    // árbol queda limpio: el índice también se enteró del cambio.
+    assert_eq!(repo.head_name(), old);
+    // The file that only existed on the other branch is gone from disk, and
+    // the tree is clean: the index heard about the change too.
     assert!(!temp.path().join("b.txt").exists());
     assert!(repo.status().unwrap().is_clean());
 }
 
 #[test]
-fn lo_cambiado_que_no_estorba_viaja_contigo() {
-    let temp = TempRepo::new("cambiar-con-faena");
-    let vieja = primer_commit(&temp);
+fn changes_that_are_not_in_the_way_travel_with_you() {
+    let temp = TempRepo::new("switch-with-work");
+    let old = first_commit(&temp);
 
-    temp.open().branch_here("otra").unwrap();
-    temp.write("b.txt", "solo en otra\n");
+    temp.open().branch_here("other").unwrap();
+    temp.write("b.txt", "only on the other\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
 
-    // a.txt es igual en las dos ramas, así que lo que uno le haya hecho no
-    // choca con nada y tiene que sobrevivir al cambio.
-    temp.write("a.txt", "uno\na medias\n");
-    temp.open().checkout_branch(&vieja).unwrap();
+    // a.txt is the same on both branches, so whatever anyone did to it clashes
+    // with nothing and has to survive the switch.
+    temp.write("a.txt", "one\nhalf-done\n");
+    temp.open().checkout_branch(&old).unwrap();
 
     let repo = temp.open();
-    assert_eq!(repo.head_name(), vieja);
+    assert_eq!(repo.head_name(), old);
     assert_eq!(
         std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
-        "uno\na medias\n"
+        "one\nhalf-done\n"
     );
     let state = repo.status().unwrap();
     assert_eq!(state.unstaged.len(), 1);
@@ -117,58 +117,58 @@ fn lo_cambiado_que_no_estorba_viaja_contigo() {
 }
 
 #[test]
-fn con_cambios_que_chocan_no_se_cambia_ni_a_medias() {
-    let temp = TempRepo::new("cambiar-choque");
-    let vieja = primer_commit(&temp);
+fn with_clashing_changes_nothing_switches_not_even_halfway() {
+    let temp = TempRepo::new("switch-clash");
+    let old = first_commit(&temp);
 
-    temp.open().branch_here("otra").unwrap();
-    temp.write("a.txt", "lo que dice otra\n");
+    temp.open().branch_here("other").unwrap();
+    temp.write("a.txt", "what another says\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    repo.commit("feat: a distinto").unwrap();
+    repo.commit("feat: a different").unwrap();
 
-    // Ahora a.txt difiere entre las dos ramas y además está a medias aquí.
-    temp.write("a.txt", "lo que estoy escribiendo\n");
+    // Now a.txt differs between the two branches and is half-done here as well.
+    temp.write("a.txt", "what I am writing\n");
 
-    let err = temp.open().checkout_branch(&vieja).unwrap_err().to_string();
+    let err = temp.open().checkout_branch(&old).unwrap_err().to_string();
     assert!(err.contains("clash with") && err.contains("Stash"), "{err}");
 
-    // Y nada se ha movido: ni HEAD ni el fichero.
+    // And nothing has moved: neither HEAD nor the file.
     let repo = temp.open();
-    assert_eq!(repo.head_name(), "otra");
+    assert_eq!(repo.head_name(), "other");
     assert_eq!(
         std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
-        "lo que estoy escribiendo\n"
+        "what I am writing\n"
     );
 }
 
 #[test]
-fn cambiar_a_una_rama_que_no_existe_lo_dice() {
-    let temp = TempRepo::new("cambiar-fantasma");
-    primer_commit(&temp);
+fn switching_to_a_branch_that_does_not_exist_says_so() {
+    let temp = TempRepo::new("switch-ghost");
+    first_commit(&temp);
 
-    let err = temp.open().checkout_branch("fantasma").unwrap_err().to_string();
-    assert!(err.contains("fantasma"), "{err}");
+    let err = temp.open().checkout_branch("ghost").unwrap_err().to_string();
+    assert!(err.contains("ghost"), "{err}");
 }
 
 // ---------------------------------------------------------------- stash
 
 #[test]
-fn apartar_deja_el_arbol_limpio_y_sacar_lo_devuelve() {
+fn stashing_leaves_the_tree_clean_and_popping_gives_it_back() {
     let temp = TempRepo::new("stash");
-    primer_commit(&temp);
-    temp.write("a.txt", "uno\ndos\n");
+    first_commit(&temp);
+    temp.write("a.txt", "one\ntwo\n");
 
     let mut repo = temp.open();
     assert!(!repo.status().unwrap().is_clean());
 
-    repo.stash_save("a medias").unwrap();
+    repo.stash_save("half-done").unwrap();
     assert!(repo.status().unwrap().is_clean());
 
-    let pila = repo.stashes().unwrap();
-    assert_eq!(pila.len(), 1);
-    assert!(pila[0].message.contains("a medias"));
-    assert!(pila[0].time > 0);
+    let pile = repo.stashes().unwrap();
+    assert_eq!(pile.len(), 1);
+    assert!(pile[0].message.contains("half-done"));
+    assert!(pile[0].time > 0);
 
     repo.stash_pop(0).unwrap();
     assert!(!repo.status().unwrap().is_clean());
@@ -176,10 +176,10 @@ fn apartar_deja_el_arbol_limpio_y_sacar_lo_devuelve() {
 }
 
 #[test]
-fn aplicar_devuelve_los_cambios_sin_vaciar_la_pila() {
-    let temp = TempRepo::new("stash-aplicar");
-    primer_commit(&temp);
-    temp.write("a.txt", "uno\ndos\n");
+fn applying_gives_the_changes_back_without_emptying_the_pile() {
+    let temp = TempRepo::new("stash-apply");
+    first_commit(&temp);
+    temp.write("a.txt", "one\ntwo\n");
 
     let mut repo = temp.open();
     repo.stash_save("").unwrap();
@@ -190,13 +190,13 @@ fn aplicar_devuelve_los_cambios_sin_vaciar_la_pila() {
 }
 
 #[test]
-fn tirar_un_apartado_lo_saca_de_la_pila_sin_tocar_el_arbol() {
-    let temp = TempRepo::new("stash-tirar");
-    primer_commit(&temp);
-    temp.write("a.txt", "uno\ndos\n");
+fn dropping_a_stash_takes_it_off_the_pile_without_touching_the_tree() {
+    let temp = TempRepo::new("stash-drop");
+    first_commit(&temp);
+    temp.write("a.txt", "one\ntwo\n");
 
     let mut repo = temp.open();
-    repo.stash_save("sobra").unwrap();
+    repo.stash_save("surplus").unwrap();
     repo.stash_drop(0).unwrap();
 
     assert!(repo.stashes().unwrap().is_empty());
@@ -204,19 +204,19 @@ fn tirar_un_apartado_lo_saca_de_la_pila_sin_tocar_el_arbol() {
 }
 
 #[test]
-fn apartar_con_el_arbol_limpio_lo_dice_en_vez_de_fallar_raro() {
-    let temp = TempRepo::new("stash-limpio");
-    primer_commit(&temp);
+fn stashing_a_clean_tree_says_so_instead_of_failing_oddly() {
+    let temp = TempRepo::new("stash-clean");
+    first_commit(&temp);
 
     let mut repo = temp.open();
-    let err = repo.stash_save("nada").unwrap_err().to_string();
+    let err = repo.stash_save("nothing").unwrap_err().to_string();
     assert_eq!(err, "there is nothing to stash");
 }
 
-// --------------------------------------------------------------- remoto
+// --------------------------------------------------------------- remote
 
-/// Un repositorio bare al que llevar cosas, montado como «origin».
-fn con_remoto(temp: &TempRepo, tag: &str) -> std::path::PathBuf {
+/// A bare repository to push things to, set up as "origin".
+fn with_remote(temp: &TempRepo, tag: &str) -> std::path::PathBuf {
     let bare = temp_dir(tag);
     git2::Repository::init_bare(&bare).unwrap();
 
@@ -226,30 +226,30 @@ fn con_remoto(temp: &TempRepo, tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn sin_rama_remota_no_hay_cuentas_que_dar() {
-    let temp = TempRepo::new("sin-remoto");
-    primer_commit(&temp);
+fn with_no_remote_branch_there_are_no_counts_to_give() {
+    let temp = TempRepo::new("no-remote");
+    first_commit(&temp);
     assert!(temp.open().tracking().is_none());
 }
 
 #[test]
-fn el_primer_envio_deja_la_rama_siguiendo_al_remoto() {
+fn the_first_push_leaves_the_branch_tracking_the_remote() {
     let temp = TempRepo::new("push");
-    let rama = primer_commit(&temp);
-    let bare = con_remoto(&temp, "push-bare");
+    let branch = first_commit(&temp);
+    let bare = with_remote(&temp, "push-bare");
 
     let repo = temp.open();
     assert!(repo.tracking().is_none());
     repo.push().unwrap();
 
-    let seguimiento = temp.open().tracking().expect("ya debería seguir a origin");
-    assert_eq!(seguimiento.remote, format!("origin/{rama}"));
-    assert_eq!((seguimiento.ahead, seguimiento.behind), (0, 0));
+    let tracked = temp.open().tracking().expect("it should already track origin");
+    assert_eq!(tracked.remote, format!("origin/{branch}"));
+    assert_eq!((tracked.ahead, tracked.behind), (0, 0));
 
-    // Y el commit está de verdad al otro lado.
-    let remoto = git2::Repository::open(&bare).unwrap();
+    // And the commit really is on the other side.
+    let remote = git2::Repository::open(&bare).unwrap();
     assert_eq!(
-        remoto.find_reference(&format!("refs/heads/{rama}")).unwrap().target(),
+        remote.find_reference(&format!("refs/heads/{branch}")).unwrap().target(),
         Some(repo.head_id().unwrap()),
     );
 
@@ -257,181 +257,181 @@ fn el_primer_envio_deja_la_rama_siguiendo_al_remoto() {
 }
 
 #[test]
-fn traer_adelanta_la_rama_y_las_cuentas_lo_cantan_antes() {
-    let origen = TempRepo::new("pull-origen");
-    primer_commit(&origen);
-    let bare = con_remoto(&origen, "pull-bare");
-    origen.open().push().unwrap();
+fn fetching_moves_the_branch_up_and_the_counts_say_so_first() {
+    let origin = TempRepo::new("pull-origin");
+    first_commit(&origin);
+    let bare = with_remote(&origin, "pull-bare");
+    origin.open().push().unwrap();
 
-    // El otro lado: una copia que todavía no sabe nada de lo que viene.
-    let copia = temp_dir("pull-copia");
-    git2::Repository::clone(&bare.display().to_string(), &copia).unwrap();
+    // The other side: a copy that knows nothing yet of what is coming.
+    let copy = temp_dir("pull-copy");
+    git2::Repository::clone(&bare.display().to_string(), &copy).unwrap();
 
-    origen.write("a.txt", "uno\ndos\n");
-    let repo = origen.open();
+    origin.write("a.txt", "one\ntwo\n");
+    let repo = origin.open();
     repo.stage("a.txt").unwrap();
-    repo.commit("feat: dos").unwrap();
+    repo.commit("feat: two").unwrap();
     repo.push().unwrap();
-    let esperado = repo.head_id().unwrap();
+    let expected = repo.head_id().unwrap();
 
-    let aqui = Repo::open(&copia).unwrap();
-    // Antes de traer, las cuentas son las de la última vez que se habló.
-    assert_eq!(aqui.tracking().map(|t| t.behind), Some(0));
+    let here = Repo::open(&copy).unwrap();
+    // Before fetching, the counts are those of the last time they spoke.
+    assert_eq!(here.tracking().map(|t| t.behind), Some(0));
 
-    let nota = aqui.fetch().unwrap();
-    assert!(nota.contains("1 commit"), "{nota}");
-    assert_eq!(Repo::open(&copia).unwrap().tracking().map(|t| t.behind), Some(1));
+    let note = here.fetch().unwrap();
+    assert!(note.contains("1 commit"), "{note}");
+    assert_eq!(Repo::open(&copy).unwrap().tracking().map(|t| t.behind), Some(1));
 
-    let aqui = Repo::open(&copia).unwrap();
-    aqui.pull(PullMode::FastForward).unwrap();
-    assert_eq!(Repo::open(&copia).unwrap().head_id(), Some(esperado));
+    let here = Repo::open(&copy).unwrap();
+    here.pull(PullMode::FastForward).unwrap();
+    assert_eq!(Repo::open(&copy).unwrap().head_id(), Some(expected));
 
-    // Y el fichero ha llegado al árbol de trabajo, no solo a la referencia.
-    assert_eq!(std::fs::read_to_string(copia.join("a.txt")).unwrap(), "uno\ndos\n");
+    // And the file has reached the working tree, not just the reference.
+    assert_eq!(std::fs::read_to_string(copy.join("a.txt")).unwrap(), "one\ntwo\n");
 
     let _ = std::fs::remove_dir_all(&bare);
-    let _ = std::fs::remove_dir_all(&copia);
+    let _ = std::fs::remove_dir_all(&copy);
 }
 
 #[test]
-fn traer_cuando_no_hay_nada_nuevo_no_miente() {
-    let temp = TempRepo::new("pull-aldia");
-    let rama = primer_commit(&temp);
-    let bare = con_remoto(&temp, "pull-aldia-bare");
+fn fetching_when_there_is_nothing_new_does_not_lie() {
+    let temp = TempRepo::new("pull-uptodate");
+    let branch = first_commit(&temp);
+    let bare = with_remote(&temp, "pull-uptodate-bare");
     temp.open().push().unwrap();
 
-    let nota = temp.open().pull(PullMode::FastForward).unwrap();
-    assert_eq!(nota, format!("{rama} was already up to date"));
+    let note = temp.open().pull(PullMode::FastForward).unwrap();
+    assert_eq!(note, format!("{branch} was already up to date"));
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn sin_remoto_configurado_traer_lo_dice_claro() {
-    let temp = TempRepo::new("pull-sin-remoto");
-    primer_commit(&temp);
+fn with_no_remote_configured_fetching_says_so_plainly() {
+    let temp = TempRepo::new("pull-no-remote");
+    first_commit(&temp);
 
     let err = temp.open().pull(PullMode::FastForward).unwrap_err().to_string();
     assert!(err.contains("does not track any remote branch"), "{err}");
 }
 
 #[test]
-fn cambiar_a_una_remota_crea_la_local_y_la_deja_siguiendo() {
-    let temp = TempRepo::new("remota");
-    let vieja = primer_commit(&temp);
-    let bare = con_remoto(&temp, "remota-bare");
+fn switching_to_a_remote_makes_the_local_one_and_leaves_it_tracking() {
+    let temp = TempRepo::new("remote-branch");
+    let old = first_commit(&temp);
+    let bare = with_remote(&temp, "remote-bare");
     temp.open().push().unwrap();
 
-    // Una rama que solo vive en el remoto para quien venga después.
-    temp.open().branch_here("entrega").unwrap();
-    temp.write("c.txt", "de la entrega\n");
+    // A branch that lives only on the remote, for whoever comes next.
+    temp.open().branch_here("release").unwrap();
+    temp.write("c.txt", "from the release\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
     repo.push().unwrap();
 
-    let copia = temp_dir("remota-copia");
-    git2::Repository::clone(&bare.display().to_string(), &copia).unwrap();
-    assert_eq!(Repo::open(&copia).unwrap().head_name(), vieja);
+    let copy = temp_dir("remote-copy");
+    git2::Repository::clone(&bare.display().to_string(), &copy).unwrap();
+    assert_eq!(Repo::open(&copy).unwrap().head_name(), old);
 
-    let nota = Repo::open(&copia).unwrap().checkout_remote("origin/entrega").unwrap();
-    assert_eq!(nota, "you are now on entrega");
+    let note = Repo::open(&copy).unwrap().checkout_remote("origin/release").unwrap();
+    assert_eq!(note, "you are now on release");
 
-    let repo = Repo::open(&copia).unwrap();
-    assert_eq!(repo.head_name(), "entrega");
-    assert_eq!(repo.tracking().map(|t| t.remote), Some("origin/entrega".to_string()));
-    assert!(copia.join("c.txt").exists());
+    let repo = Repo::open(&copy).unwrap();
+    assert_eq!(repo.head_name(), "release");
+    assert_eq!(repo.tracking().map(|t| t.remote), Some("origin/release".to_string()));
+    assert!(copy.join("c.txt").exists());
 
     let _ = std::fs::remove_dir_all(&bare);
-    let _ = std::fs::remove_dir_all(&copia);
+    let _ = std::fs::remove_dir_all(&copy);
 }
 
 #[test]
-fn si_la_local_ya_existe_se_va_a_ella_sin_tocarla() {
-    let temp = TempRepo::new("remota-existente");
-    let vieja = primer_commit(&temp);
-    let bare = con_remoto(&temp, "remota-existente-bare");
+fn if_the_local_one_exists_you_go_to_it_untouched() {
+    let temp = TempRepo::new("remote-existing");
+    let old = first_commit(&temp);
+    let bare = with_remote(&temp, "remote-existing-bare");
     temp.open().push().unwrap();
 
-    temp.open().branch_here("entrega").unwrap();
-    temp.write("c.txt", "de la entrega\n");
+    temp.open().branch_here("release").unwrap();
+    temp.write("c.txt", "from the release\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
-    let suyo = repo.commit("feat: c").unwrap();
+    let theirs = repo.commit("feat: c").unwrap();
     repo.push().unwrap();
-    temp.open().checkout_branch(&vieja).unwrap();
+    temp.open().checkout_branch(&old).unwrap();
 
-    // La local existe y apunta a donde apunta: ir a la remota es ir a ella.
-    temp.open().checkout_remote("origin/entrega").unwrap();
+    // The local one exists and points where it points: going to the remote is going to it.
+    temp.open().checkout_remote("origin/release").unwrap();
     let repo = temp.open();
-    assert_eq!(repo.head_name(), "entrega");
-    assert_eq!(repo.head_id(), Some(suyo));
+    assert_eq!(repo.head_name(), "release");
+    assert_eq!(repo.head_id(), Some(theirs));
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
-// ------------------------------------------------------------- etiquetas
+// ------------------------------------------------------------------ tags
 
 #[test]
-fn una_etiqueta_sin_mensaje_sale_ligera_y_con_mensaje_anotada() {
-    let temp = TempRepo::new("etiquetas");
-    primer_commit(&temp);
+fn a_tag_with_no_message_comes_out_lightweight_and_with_one_annotated() {
+    let temp = TempRepo::new("tags");
+    first_commit(&temp);
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
 
     repo.tag("v1.0", commit, "").unwrap();
-    repo.tag("v2.0", commit, "La primera entrega de verdad").unwrap();
+    repo.tag("v2.0", commit, "The first real release").unwrap();
 
     let raw = git2::Repository::open(temp.path()).unwrap();
 
-    // La ligera es una referencia a secas: apunta al commit.
-    let ligera = raw.find_reference("refs/tags/v1.0").unwrap();
-    assert_eq!(ligera.target(), Some(commit));
-    assert!(raw.find_tag(ligera.target().unwrap()).is_err());
+    // The lightweight one is a plain reference: it points at the commit.
+    let lightweight = raw.find_reference("refs/tags/v1.0").unwrap();
+    assert_eq!(lightweight.target(), Some(commit));
+    assert!(raw.find_tag(lightweight.target().unwrap()).is_err());
 
-    // La anotada es un objeto propio, con su mensaje y quien la puso.
-    let anotada = raw.find_reference("refs/tags/v2.0").unwrap();
-    let objeto = raw.find_tag(anotada.target().unwrap()).unwrap();
-    assert_eq!(objeto.message(), Some("La primera entrega de verdad"));
-    assert_eq!(objeto.tagger().unwrap().name(), Some("gitrust test"));
-    assert_eq!(objeto.target_id(), commit);
+    // The annotated one is an object of its own, with its message and who put it there.
+    let annotated = raw.find_reference("refs/tags/v2.0").unwrap();
+    let object = raw.find_tag(annotated.target().unwrap()).unwrap();
+    assert_eq!(object.message(), Some("The first real release"));
+    assert_eq!(object.tagger().unwrap().name(), Some("gitrust test"));
+    assert_eq!(object.target_id(), commit);
 }
 
 #[test]
-fn las_dos_clases_salen_en_las_referencias_y_sobre_su_commit() {
-    let temp = TempRepo::new("etiquetas-refs");
-    primer_commit(&temp);
+fn both_kinds_show_in_the_references_and_on_their_commit() {
+    let temp = TempRepo::new("tags-refs");
+    first_commit(&temp);
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
     repo.tag("v1.0", commit, "").unwrap();
-    repo.tag("v2.0", commit, "anotada").unwrap();
+    repo.tag("v2.0", commit, "annotated").unwrap();
 
     let repo = temp.open();
     let refs = repo.references().unwrap();
-    let etiquetas: Vec<&str> = refs
+    let tags: Vec<&str> = refs
         .iter()
         .filter(|entry| entry.kind == RefKind::Tag)
         .map(|entry| entry.name.as_str())
         .collect();
-    assert_eq!(etiquetas, ["v1.0", "v2.0"]);
+    assert_eq!(tags, ["v1.0", "v2.0"]);
 
-    // Y en el grafo cuelgan del commit, anotada incluida: pelarla es lo que
-    // hace que no se quede flotando en su propio objeto.
+    // And in the graph they hang off the commit, the annotated one included:
+    // peeling it is what keeps it from floating in its own object.
     let graph = layout(repo.commits(10).unwrap());
-    let nombres: Vec<&str> = graph.rows[0]
+    let names: Vec<&str> = graph.rows[0]
         .commit
         .refs
         .iter()
         .filter(|label| label.kind == RefKind::Tag)
         .map(|label| label.name.as_str())
         .collect();
-    assert_eq!(nombres, ["v1.0", "v2.0"]);
+    assert_eq!(names, ["v1.0", "v2.0"]);
 }
 
 #[test]
-fn una_etiqueta_no_pisa_a_otra_con_su_nombre() {
-    let temp = TempRepo::new("etiquetas-repetida");
-    primer_commit(&temp);
+fn a_tag_does_not_walk_over_another_with_its_name() {
+    let temp = TempRepo::new("tags-duplicate");
+    first_commit(&temp);
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
 
@@ -441,12 +441,12 @@ fn una_etiqueta_no_pisa_a_otra_con_su_nombre() {
 }
 
 #[test]
-fn borrar_una_etiqueta_no_toca_al_commit() {
-    let temp = TempRepo::new("etiquetas-borrar");
-    primer_commit(&temp);
+fn deleting_a_tag_does_not_touch_the_commit() {
+    let temp = TempRepo::new("tags-delete");
+    first_commit(&temp);
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
-    repo.tag("v1.0", commit, "con mensaje").unwrap();
+    repo.tag("v1.0", commit, "with a message").unwrap();
 
     repo.delete_tag("v1.0").unwrap();
 
@@ -456,9 +456,9 @@ fn borrar_una_etiqueta_no_toca_al_commit() {
 }
 
 #[test]
-fn una_etiqueta_sin_nombre_no_se_crea() {
-    let temp = TempRepo::new("etiquetas-sin-nombre");
-    primer_commit(&temp);
+fn a_tag_with_no_name_is_not_made() {
+    let temp = TempRepo::new("tags-no-name");
+    first_commit(&temp);
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
 
@@ -466,663 +466,663 @@ fn una_etiqueta_sin_nombre_no_se_crea() {
     assert!(err.contains("needs a name"), "{err}");
 }
 
-// -------------------------------------------------------- borrar ramas
+// --------------------------------------------------- deleting branches
 
 #[test]
-fn borrar_una_rama_no_toca_a_los_commits_que_comparte() {
-    let temp = TempRepo::new("borrar-rama");
-    let vieja = primer_commit(&temp);
-    let antes = temp.open().head_id().unwrap();
+fn deleting_a_branch_does_not_touch_the_commits_it_shares() {
+    let temp = TempRepo::new("delete-branch");
+    let old = first_commit(&temp);
+    let before = temp.open().head_id().unwrap();
 
-    temp.open().branch_here("sobra").unwrap();
-    temp.open().checkout_branch(&vieja).unwrap();
+    temp.open().branch_here("surplus").unwrap();
+    temp.open().checkout_branch(&old).unwrap();
 
-    // No tiene nada suyo: nació donde estaba todo lo demás.
-    assert_eq!(temp.open().unmerged("sobra").unwrap(), 0);
-    temp.open().delete_branch("sobra").unwrap();
+    // It has nothing of its own: it was born where everything else was.
+    assert_eq!(temp.open().unmerged("surplus").unwrap(), 0);
+    temp.open().delete_branch("surplus").unwrap();
 
     let repo = temp.open();
-    assert!(!repo.references().unwrap().iter().any(|e| e.name == "sobra"));
-    assert_eq!(repo.head_id(), Some(antes));
+    assert!(!repo.references().unwrap().iter().any(|e| e.name == "surplus"));
+    assert_eq!(repo.head_id(), Some(before));
 }
 
 #[test]
-fn la_cuenta_dice_lo_que_se_perderia() {
-    let temp = TempRepo::new("borrar-cuenta");
-    let vieja = primer_commit(&temp);
+fn the_count_says_what_would_be_lost() {
+    let temp = TempRepo::new("delete-count");
+    let old = first_commit(&temp);
 
-    temp.open().branch_here("suya").unwrap();
+    temp.open().branch_here("theirs").unwrap();
     for n in 1..=2 {
         temp.write("b.txt", &format!("version {n}\n"));
         let repo = temp.open();
         repo.stage("b.txt").unwrap();
         repo.commit(&format!("feat: b{n}")).unwrap();
     }
-    temp.open().checkout_branch(&vieja).unwrap();
+    temp.open().checkout_branch(&old).unwrap();
 
-    // Dos commits que no están en ningún otro sitio.
-    assert_eq!(temp.open().unmerged("suya").unwrap(), 2);
+    // Two commits that are nowhere else.
+    assert_eq!(temp.open().unmerged("theirs").unwrap(), 2);
 
-    // Y en cuanto una etiqueta los alcanza, dejan de estar solos.
+    // And as soon as a tag reaches them, they are no longer alone.
     let repo = temp.open();
-    let punta = repo
+    let tip = repo
         .references()
         .unwrap()
         .iter()
-        .find(|e| e.name == "suya")
+        .find(|e| e.name == "theirs")
         .unwrap()
         .target;
-    repo.tag("guardada", punta, "").unwrap();
-    assert_eq!(temp.open().unmerged("suya").unwrap(), 0);
+    repo.tag("saved", tip, "").unwrap();
+    assert_eq!(temp.open().unmerged("theirs").unwrap(), 0);
 }
 
 #[test]
-fn la_rama_en_la_que_estas_no_se_borra() {
-    let temp = TempRepo::new("borrar-actual");
-    let actual = primer_commit(&temp);
+fn the_branch_you_are_on_is_not_deleted() {
+    let temp = TempRepo::new("delete-current");
+    let actual = first_commit(&temp);
 
     let err = temp.open().delete_branch(&actual).unwrap_err().to_string();
     assert!(err.contains("branch you are on"), "{err}");
 }
 
 #[test]
-fn borrar_una_rama_que_no_existe_lo_dice() {
-    let temp = TempRepo::new("borrar-fantasma");
-    primer_commit(&temp);
-    let err = temp.open().delete_branch("fantasma").unwrap_err().to_string();
-    assert!(err.contains("fantasma"), "{err}");
+fn deleting_a_branch_that_does_not_exist_says_so() {
+    let temp = TempRepo::new("delete-ghost");
+    first_commit(&temp);
+    let err = temp.open().delete_branch("ghost").unwrap_err().to_string();
+    assert!(err.contains("ghost"), "{err}");
 }
 
 #[test]
-fn borrar_en_el_remoto_la_quita_de_alli_y_de_aqui() {
-    let temp = TempRepo::new("borrar-remota");
-    let vieja = primer_commit(&temp);
-    let bare = con_remoto(&temp, "borrar-remota-bare");
+fn deleting_on_the_remote_takes_it_off_there_and_here() {
+    let temp = TempRepo::new("delete-remote");
+    let old = first_commit(&temp);
+    let bare = with_remote(&temp, "delete-remote-bare");
     temp.open().push().unwrap();
 
-    temp.open().branch_here("entrega").unwrap();
-    temp.write("c.txt", "de la entrega\n");
+    temp.open().branch_here("release").unwrap();
+    temp.write("c.txt", "from the release\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
     repo.push().unwrap();
-    temp.open().checkout_branch(&vieja).unwrap();
+    temp.open().checkout_branch(&old).unwrap();
 
-    let remoto = git2::Repository::open(&bare).unwrap();
-    assert!(remoto.find_reference("refs/heads/entrega").is_ok());
+    let remote = git2::Repository::open(&bare).unwrap();
+    assert!(remote.find_reference("refs/heads/release").is_ok());
 
-    temp.open().delete_remote_branch("origin/entrega").unwrap();
+    temp.open().delete_remote_branch("origin/release").unwrap();
 
-    // Ya no está allí, ni queda el rastro de aquí.
-    let remoto = git2::Repository::open(&bare).unwrap();
-    assert!(remoto.find_reference("refs/heads/entrega").is_err());
+    // It is no longer there, nor is the trace of it here.
+    let remote = git2::Repository::open(&bare).unwrap();
+    assert!(remote.find_reference("refs/heads/release").is_err());
 
     let repo = temp.open();
     let refs = repo.references().unwrap();
-    assert!(!refs.iter().any(|e| e.name == "origin/entrega"));
-    // Y la local sigue donde estaba: borrar allí no borra aquí.
-    assert!(refs.iter().any(|e| e.name == "entrega"));
+    assert!(!refs.iter().any(|e| e.name == "origin/release"));
+    // And the local one is still where it was: deleting there does not delete here.
+    assert!(refs.iter().any(|e| e.name == "release"));
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
-// ---------------------------------------------------------------- fusión
+// --------------------------------------------------------------- merging
 
-/// Deja `rama` con un commit propio que toca `file`, y vuelve a donde estaba.
-fn rama_con_trabajo(temp: &TempRepo, rama: &str, file: &str, texto: &str) -> String {
-    let vuelta = temp.open().head_name();
-    temp.open().branch_here(rama).unwrap();
-    temp.write(file, texto);
+/// Leaves `branch` with a commit of its own touching `file`, and goes back.
+fn branch_with_work(temp: &TempRepo, branch: &str, file: &str, text: &str) -> String {
+    let back = temp.open().head_name();
+    temp.open().branch_here(branch).unwrap();
+    temp.write(file, text);
     let repo = temp.open();
     repo.stage(file).unwrap();
-    repo.commit(&format!("feat: {file} en {rama}")).unwrap();
-    temp.open().checkout_branch(&vuelta).unwrap();
-    vuelta
+    repo.commit(&format!("feat: {file} on {branch}")).unwrap();
+    temp.open().checkout_branch(&back).unwrap();
+    back
 }
 
 #[test]
-fn sin_haberse_movido_la_rama_solo_avanza() {
-    let temp = TempRepo::new("fusion-rapida");
-    primer_commit(&temp);
-    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+fn having_not_moved_the_branch_only_moves_up() {
+    let temp = TempRepo::new("merge-fast");
+    first_commit(&temp);
+    branch_with_work(&temp, "theirs", "b.txt", "from the other\n");
 
-    let antes = temp.open().commits(50).unwrap().len();
-    let nota = temp.open().merge("suya").unwrap();
-    assert!(nota.contains("no merge to write"), "{nota}");
+    let before = temp.open().commits(50).unwrap().len();
+    let note = temp.open().merge("theirs").unwrap();
+    assert!(note.contains("no merge to write"), "{note}");
 
     let repo = temp.open();
-    // No hay commit de fusión: la historia es la misma, solo más larga.
-    assert_eq!(repo.commits(50).unwrap().len(), antes);
+    // There is no merge commit: the history is the same, only longer.
+    assert_eq!(repo.commits(50).unwrap().len(), before);
     assert!(temp.path().join("b.txt").exists());
     assert_eq!(repo.commit_detail(repo.head_id().unwrap()).unwrap().parents.len(), 1);
 }
 
 #[test]
-fn dos_historias_distintas_se_juntan_en_un_commit_de_dos_padres() {
-    let temp = TempRepo::new("fusion-real");
-    primer_commit(&temp);
-    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+fn two_different_histories_join_in_a_commit_with_two_parents() {
+    let temp = TempRepo::new("merge-real");
+    first_commit(&temp);
+    branch_with_work(&temp, "theirs", "b.txt", "from the other\n");
 
-    // Y aquí, mientras tanto, otra cosa en otro fichero.
-    temp.write("c.txt", "de la mia\n");
+    // And here, meanwhile, something else in another file.
+    temp.write("c.txt", "from mine\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
 
-    let nota = temp.open().merge("suya").unwrap();
-    assert!(nota.contains("merged into"), "{nota}");
+    let note = temp.open().merge("theirs").unwrap();
+    assert!(note.contains("merged into"), "{note}");
 
     let repo = temp.open();
     let head = repo.commit_detail(repo.head_id().unwrap()).unwrap();
     assert_eq!(head.parents.len(), 2);
-    assert!(head.summary.starts_with("Merge suya"));
+    assert!(head.summary.starts_with("Merge theirs"));
 
-    // Los dos ficheros están en el disco, y el árbol queda limpio.
+    // Both files are on disk, and the tree is clean.
     assert!(temp.path().join("b.txt").exists());
     assert!(temp.path().join("c.txt").exists());
     assert!(repo.status().unwrap().is_clean());
 }
 
 #[test]
-fn un_choque_deja_el_repositorio_exactamente_como_estaba() {
-    let temp = TempRepo::new("fusion-choque");
-    primer_commit(&temp);
-    rama_con_trabajo(&temp, "suya", "a.txt", "lo que dice la otra\n");
+fn a_clash_leaves_the_repository_exactly_as_it_was() {
+    let temp = TempRepo::new("merge-clash");
+    first_commit(&temp);
+    branch_with_work(&temp, "theirs", "a.txt", "what the other one says\n");
 
-    temp.write("a.txt", "lo que digo yo\n");
+    temp.write("a.txt", "what I say\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    let mio = repo.commit("feat: a a mi manera").unwrap();
+    let mine = repo.commit("feat: a my way").unwrap();
 
-    let err = temp.open().merge("suya").unwrap_err().to_string();
-    assert!(err.contains("a.txt"), "dice en qué choca: {err}");
+    let err = temp.open().merge("theirs").unwrap_err().to_string();
+    assert!(err.contains("a.txt"), "it says what it clashes in: {err}");
     assert!(err.contains("nothing has been touched"), "{err}");
 
-    // Ni commit de fusión, ni árbol revuelto, ni índice con conflictos.
+    // No merge commit, no churned tree, no index with conflicts.
     let repo = temp.open();
-    assert_eq!(repo.head_id(), Some(mio));
+    assert_eq!(repo.head_id(), Some(mine));
     assert!(repo.status().unwrap().is_clean());
     assert_eq!(
         std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
-        "lo que digo yo\n"
+        "what I say\n"
     );
 }
 
 #[test]
-fn fusionar_con_el_arbol_a_medias_se_para_antes_de_empezar() {
-    let temp = TempRepo::new("fusion-sucia");
-    primer_commit(&temp);
-    rama_con_trabajo(&temp, "suya", "b.txt", "de la otra\n");
+fn merging_with_a_half_done_tree_stops_before_it_starts() {
+    let temp = TempRepo::new("merge-dirty");
+    first_commit(&temp);
+    branch_with_work(&temp, "theirs", "b.txt", "from the other\n");
 
-    temp.write("c.txt", "de la mia\n");
+    temp.write("c.txt", "from mine\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
 
-    // Faena sin guardar encima de una fusión que sí hace falta escribir.
-    temp.write("a.txt", "uno\na medias\n");
+    // Unsaved work on top of a merge that does have to be written.
+    temp.write("a.txt", "one\nhalf-done\n");
 
-    let err = temp.open().merge("suya").unwrap_err().to_string();
+    let err = temp.open().merge("theirs").unwrap_err().to_string();
     assert!(err.contains("stash what you have"), "{err}");
-    assert!(!temp.open().status().unwrap().is_clean(), "sigue a medias");
+    assert!(!temp.open().status().unwrap().is_clean(), "still half-done");
 }
 
 #[test]
-fn fusionar_lo_que_ya_esta_dentro_no_escribe_nada() {
-    let temp = TempRepo::new("fusion-aldia");
-    let vieja = primer_commit(&temp);
-    temp.open().branch_here("suya").unwrap();
-    temp.open().checkout_branch(&vieja).unwrap();
+fn merging_what_is_already_inside_writes_nothing() {
+    let temp = TempRepo::new("merge-uptodate");
+    let old = first_commit(&temp);
+    temp.open().branch_here("theirs").unwrap();
+    temp.open().checkout_branch(&old).unwrap();
 
-    let nota = temp.open().merge("suya").unwrap();
-    assert!(nota.contains("already inside"), "{nota}");
+    let note = temp.open().merge("theirs").unwrap();
+    assert!(note.contains("already inside"), "{note}");
     assert_eq!(temp.open().commits(50).unwrap().len(), 1);
 }
 
 #[test]
-fn una_rama_no_se_fusiona_consigo_misma() {
-    let temp = TempRepo::new("fusion-misma");
-    let actual = primer_commit(&temp);
+fn a_branch_is_not_merged_with_itself() {
+    let temp = TempRepo::new("merge-same");
+    let actual = first_commit(&temp);
     let err = temp.open().merge(&actual).unwrap_err().to_string();
     assert!(err.contains("branch you are on"), "{err}");
 }
 
-// -------------------------------------------------- forzar y etiquetas
+// ---------------------------------------------------- forcing and tags
 
 #[test]
-fn forzar_lleva_la_historia_rehecha_al_remoto() {
-    let temp = TempRepo::new("forzar");
-    let rama = primer_commit(&temp);
-    let bare = con_remoto(&temp, "forzar-bare");
+fn forcing_takes_the_redone_history_to_the_remote() {
+    let temp = TempRepo::new("force");
+    let branch = first_commit(&temp);
+    let bare = with_remote(&temp, "force-bare");
     temp.open().push().unwrap();
 
-    // Se rehace lo que ya había salido: el remoto y esto dejan de cuadrar.
-    let rehecho = temp.open().amend("feat: uno, mejor contado").unwrap();
-    assert!(temp.open().push().is_err(), "sin forzar no debería poder");
+    // What had already gone out is redone: the remote and this stop lining up.
+    let redone = temp.open().amend("feat: one, better told").unwrap();
+    assert!(temp.open().push().is_err(), "without forcing it should not be able to");
 
-    let nota = temp.open().push_force().unwrap();
-    assert!(nota.contains("forced onto"), "{nota}");
+    let note = temp.open().push_force().unwrap();
+    assert!(note.contains("forced onto"), "{note}");
 
-    let remoto = git2::Repository::open(&bare).unwrap();
+    let remote = git2::Repository::open(&bare).unwrap();
     assert_eq!(
-        remoto.find_reference(&format!("refs/heads/{rama}")).unwrap().target(),
-        Some(rehecho),
+        remote.find_reference(&format!("refs/heads/{branch}")).unwrap().target(),
+        Some(redone),
     );
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn forzar_se_niega_si_el_remoto_ha_cambiado_desde_la_ultima_visita() {
-    let temp = TempRepo::new("forzar-ajeno");
-    primer_commit(&temp);
-    let bare = con_remoto(&temp, "forzar-ajeno-bare");
+fn forcing_refuses_if_the_remote_changed_since_the_last_visit() {
+    let temp = TempRepo::new("force-foreign");
+    first_commit(&temp);
+    let bare = with_remote(&temp, "force-foreign-bare");
     temp.open().push().unwrap();
 
-    // Otra persona escribe en el remoto sin que aquí nos enteremos.
-    let otro = temp_dir("forzar-ajeno-otro");
-    git2::Repository::clone(&bare.display().to_string(), &otro).unwrap();
+    // Somebody else writes to the remote without us hearing about it.
+    let other = temp_dir("force-foreign-other");
+    git2::Repository::clone(&bare.display().to_string(), &other).unwrap();
     {
-        let raw = git2::Repository::open(&otro).unwrap();
+        let raw = git2::Repository::open(&other).unwrap();
         let mut config = raw.config().unwrap();
-        config.set_str("user.name", "Otra").unwrap();
-        config.set_str("user.email", "otra@example.invalid").unwrap();
+        config.set_str("user.name", "Other").unwrap();
+        config.set_str("user.email", "other@example.invalid").unwrap();
     }
-    std::fs::write(otro.join("suyo.txt"), "lo mio\n").unwrap();
-    let repo = Repo::open(&otro).unwrap();
-    repo.stage("suyo.txt").unwrap();
-    repo.commit("feat: lo suyo").unwrap();
+    std::fs::write(other.join("theirs.txt"), "mine\n").unwrap();
+    let repo = Repo::open(&other).unwrap();
+    repo.stage("theirs.txt").unwrap();
+    repo.commit("feat: theirs").unwrap();
     repo.push().unwrap();
 
-    temp.open().amend("feat: uno, a mi manera").unwrap();
+    temp.open().amend("feat: one, my way").unwrap();
     let err = temp.open().push_force().unwrap_err().to_string();
     assert!(err.contains("has changed since"), "{err}");
 
     let _ = std::fs::remove_dir_all(&bare);
-    let _ = std::fs::remove_dir_all(&otro);
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 #[test]
-fn las_etiquetas_salen_una_vez_y_no_se_repiten() {
-    let temp = TempRepo::new("etiquetas-push");
-    primer_commit(&temp);
-    let bare = con_remoto(&temp, "etiquetas-push-bare");
+fn tags_go_out_once_and_are_not_sent_again() {
+    let temp = TempRepo::new("tags-push");
+    first_commit(&temp);
+    let bare = with_remote(&temp, "tags-push-bare");
     temp.open().push().unwrap();
 
     let repo = temp.open();
     let commit = repo.head_id().unwrap();
     repo.tag("v1.0", commit, "").unwrap();
-    repo.tag("v1.1", commit, "anotada").unwrap();
+    repo.tag("v1.1", commit, "annotated").unwrap();
 
-    let nota = temp.open().push_tags().unwrap();
-    assert!(nota.contains("2 tags sent"), "{nota}");
+    let note = temp.open().push_tags().unwrap();
+    assert!(note.contains("2 tags sent"), "{note}");
 
-    let remoto = git2::Repository::open(&bare).unwrap();
-    assert!(remoto.find_reference("refs/tags/v1.0").is_ok());
-    assert!(remoto.find_reference("refs/tags/v1.1").is_ok());
+    let remote = git2::Repository::open(&bare).unwrap();
+    assert!(remote.find_reference("refs/tags/v1.0").is_ok());
+    assert!(remote.find_reference("refs/tags/v1.1").is_ok());
 
-    // La segunda vez no hay nada que mandar, y lo dice.
-    let nota = temp.open().push_tags().unwrap();
-    assert!(nota.contains("already has every tag"), "{nota}");
+    // The second time there is nothing to send, and it says so.
+    let note = temp.open().push_tags().unwrap();
+    assert!(note.contains("already has every tag"), "{note}");
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn sin_etiquetas_no_se_inventa_un_envio() {
-    let temp = TempRepo::new("etiquetas-push-vacio");
-    primer_commit(&temp);
-    let bare = con_remoto(&temp, "etiquetas-push-vacio-bare");
+fn with_no_tags_no_push_is_invented() {
+    let temp = TempRepo::new("tags-push-empty");
+    first_commit(&temp);
+    let bare = with_remote(&temp, "tags-push-empty-bare");
     temp.open().push().unwrap();
 
-    let nota = temp.open().push_tags().unwrap();
-    assert!(nota.contains("already has every tag"), "{nota}");
+    let note = temp.open().push_tags().unwrap();
+    assert!(note.contains("already has every tag"), "{note}");
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
-// --------------------------------------------------------------- tablero
+// ------------------------------------------------------------- the board
 
-/// La tarjeta de esa rama, o el pánico de la prueba.
-fn carta<'a>(board: &'a gitrust_core::Board, branch: &str) -> &'a gitrust_core::Card {
+/// That branch's card, or the test's panic.
+fn card<'a>(board: &'a gitrust_core::Board, branch: &str) -> &'a gitrust_core::Card {
     board
         .cards
         .iter()
         .find(|card| card.branch == branch)
-        .unwrap_or_else(|| panic!("no hay tarjeta de {branch} en {:?}", board.cards))
+        .unwrap_or_else(|| panic!("no card for {branch} in {:?}", board.cards))
 }
 
 #[test]
-fn una_rama_recien_hecha_esta_por_hacer_y_con_commits_en_marcha() {
-    let temp = TempRepo::new("tablero");
-    let principal = primer_commit(&temp);
+fn a_brand_new_branch_is_to_do_and_with_commits_in_progress() {
+    let temp = TempRepo::new("board");
+    let trunk = first_commit(&temp);
 
-    temp.open().branch_here("sin-empezar").unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().branch_here("not-started").unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
 
     let board = temp.open().board().unwrap();
-    assert_eq!(board.trunk, principal);
-    assert_eq!(carta(&board, "sin-empezar").lane, Lane::Todo);
-    assert_eq!(carta(&board, "sin-empezar").ahead, 0);
+    assert_eq!(board.trunk, trunk);
+    assert_eq!(card(&board, "not-started").lane, Lane::Todo);
+    assert_eq!(card(&board, "not-started").ahead, 0);
 
-    // En cuanto tiene algo suyo, cambia de columna sola.
-    temp.open().checkout_branch("sin-empezar").unwrap();
-    temp.write("b.txt", "ya hay algo\n");
+    // The moment it has something of its own, it changes column on its own.
+    temp.open().checkout_branch("not-started").unwrap();
+    temp.write("b.txt", "something already\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
 
     let board = temp.open().board().unwrap();
-    let card = carta(&board, "sin-empezar");
+    let card = card(&board, "not-started");
     assert_eq!(card.lane, Lane::InProgress);
     assert_eq!(card.ahead, 1);
-    assert!(card.current, "es la que está puesta");
+    assert!(card.current, "it is the one checked out");
     assert!(card.time > 0);
 }
 
 #[test]
-fn empujada_y_sin_fusionar_pasa_a_en_revision() {
-    let temp = TempRepo::new("tablero-revision");
-    let principal = primer_commit(&temp);
-    let bare = con_remoto(&temp, "tablero-revision-bare");
+fn pushed_and_unmerged_it_moves_to_in_review() {
+    let temp = TempRepo::new("board-review");
+    let trunk = first_commit(&temp);
+    let bare = with_remote(&temp, "board-review-bare");
     temp.open().push().unwrap();
 
-    temp.open().branch_here("propuesta").unwrap();
-    temp.write("b.txt", "para que lo miren\n");
+    temp.open().branch_here("proposal").unwrap();
+    temp.write("b.txt", "for somebody to look at\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
 
-    // Antes de salir de aquí, está en marcha.
-    assert_eq!(carta(&temp.open().board().unwrap(), "propuesta").lane, Lane::InProgress);
+    // Before it leaves here, it is in progress.
+    assert_eq!(card(&temp.open().board().unwrap(), "proposal").lane, Lane::InProgress);
 
     temp.open().push().unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
 
-    assert_eq!(carta(&temp.open().board().unwrap(), "propuesta").lane, Lane::InReview);
+    assert_eq!(card(&temp.open().board().unwrap(), "proposal").lane, Lane::InReview);
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn fusionada_en_la_principal_queda_hecha() {
-    let temp = TempRepo::new("tablero-hecho");
-    let principal = primer_commit(&temp);
+fn merged_into_the_main_branch_it_is_done() {
+    let temp = TempRepo::new("board-done");
+    let trunk = first_commit(&temp);
 
-    temp.open().branch_here("terminada").unwrap();
-    temp.write("b.txt", "lo que hacía falta\n");
+    temp.open().branch_here("finished").unwrap();
+    temp.write("b.txt", "what was needed\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
 
-    // La principal avanza por su cuenta, para que la fusión sea de verdad.
-    temp.write("c.txt", "mientras tanto\n");
+    // The main branch moves on by itself, so that the merge is a real one.
+    temp.write("c.txt", "meanwhile\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
 
-    temp.open().merge("terminada").unwrap();
+    temp.open().merge("finished").unwrap();
 
     let board = temp.open().board().unwrap();
-    let card = carta(&board, "terminada");
+    let card = card(&board, "finished");
     assert_eq!(card.lane, Lane::Done);
     assert_eq!(card.ahead, 0);
     assert!(card.behind > 0);
 }
 
 #[test]
-fn la_principal_no_es_una_tarjeta() {
-    let temp = TempRepo::new("tablero-principal");
-    let principal = primer_commit(&temp);
+fn the_main_branch_is_not_a_card() {
+    let temp = TempRepo::new("board-trunk");
+    let trunk = first_commit(&temp);
 
     let board = temp.open().board().unwrap();
-    assert_eq!(board.trunk, principal);
-    assert!(!board.cards.iter().any(|card| card.branch == principal));
+    assert_eq!(board.trunk, trunk);
+    assert!(!board.cards.iter().any(|card| card.branch == trunk));
 }
 
 #[test]
-fn el_proyecto_sale_de_la_carpeta_del_nombre() {
-    let temp = TempRepo::new("tablero-proyecto");
-    let principal = primer_commit(&temp);
+fn the_project_comes_from_the_folder_in_the_name() {
+    let temp = TempRepo::new("board-project");
+    let trunk = first_commit(&temp);
 
-    for rama in ["tema/colores", "tema/tipografia", "suelta"] {
-        temp.open().branch_here(rama).unwrap();
-        temp.open().checkout_branch(&principal).unwrap();
+    for branch in ["theme/colors", "theme/typography", "loose"] {
+        temp.open().branch_here(branch).unwrap();
+        temp.open().checkout_branch(&trunk).unwrap();
     }
 
     let board = temp.open().board().unwrap();
-    assert_eq!(carta(&board, "tema/colores").project.as_deref(), Some("tema"));
-    assert_eq!(carta(&board, "tema/colores").leaf(), "colores");
-    assert_eq!(carta(&board, "suelta").project, None);
-    assert_eq!(board.projects(), ["tema"]);
+    assert_eq!(card(&board, "theme/colors").project.as_deref(), Some("theme"));
+    assert_eq!(card(&board, "theme/colors").leaf(), "colors");
+    assert_eq!(card(&board, "loose").project, None);
+    assert_eq!(board.projects(), ["theme"]);
 }
 
 #[test]
-fn las_columnas_reparten_todas_las_tarjetas_y_ninguna_dos_veces() {
-    let temp = TempRepo::new("tablero-columnas");
-    let principal = primer_commit(&temp);
+fn the_columns_hold_every_card_and_none_of_them_twice() {
+    let temp = TempRepo::new("board-columns");
+    let trunk = first_commit(&temp);
 
     temp.open().branch_here("a").unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
     temp.open().branch_here("b").unwrap();
-    temp.write("b.txt", "algo\n");
+    temp.write("b.txt", "something\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
 
     let board = temp.open().board().unwrap();
-    let repartidas: usize = Lane::ALL.iter().map(|lane| board.lane(*lane).count()).sum();
-    assert_eq!(repartidas, board.cards.len());
+    let spread: usize = Lane::ALL.iter().map(|lane| board.lane(*lane).count()).sum();
+    assert_eq!(spread, board.cards.len());
     assert_eq!(board.lane(Lane::Todo).count(), 1);
     assert_eq!(board.lane(Lane::InProgress).count(), 1);
 }
 
 #[test]
-fn una_rama_vacia_que_se_queda_atras_sigue_por_hacer() {
-    let temp = TempRepo::new("tablero-olvidada");
-    let principal = primer_commit(&temp);
+fn an_empty_branch_left_behind_is_still_to_do() {
+    let temp = TempRepo::new("board-forgotten");
+    let trunk = first_commit(&temp);
 
-    temp.open().branch_here("algun-dia").unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().branch_here("someday").unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
 
-    // La principal avanza sin ella. Nunca hizo nada, así que no ha terminado
-    // nada: quedarse atrás no es haber acabado.
-    temp.write("c.txt", "mientras tanto\n");
+    // The main branch moves on without it. It never did anything, so it has
+    // finished nothing: being left behind is not being done.
+    temp.write("c.txt", "meanwhile\n");
     let repo = temp.open();
     repo.stage("c.txt").unwrap();
     repo.commit("feat: c").unwrap();
 
     let board = temp.open().board().unwrap();
-    let card = carta(&board, "algun-dia");
+    let card = card(&board, "someday");
     assert_eq!(card.lane, Lane::Todo);
     assert_eq!(card.ahead, 0);
-    assert!(card.behind > 0, "se ha quedado atrás, pero no hecha");
+    assert!(card.behind > 0, "left behind, but not done");
 }
 
-// ------------------------------------------------- las variantes del pull
+// --------------------------------------------------------- the pull modes
 
-/// Deja el remoto con un commit que aquí no está, y aquí otro que no está
-/// allí: las dos historias separadas, que es cuando el modo importa.
-fn historias_separadas(temp: &TempRepo, tag: &str) -> std::path::PathBuf {
-    let bare = con_remoto(temp, tag);
+/// Leaves the remote with a commit that is not here, and here one that is not
+/// there: the two histories parted, which is when the mode matters.
+fn parted_histories(temp: &TempRepo, tag: &str) -> std::path::PathBuf {
+    let bare = with_remote(temp, tag);
     temp.open().push().unwrap();
 
-    let otro = temp_dir(&format!("{tag}-otro"));
-    git2::Repository::clone(&bare.display().to_string(), &otro).unwrap();
+    let other = temp_dir(&format!("{tag}-other"));
+    git2::Repository::clone(&bare.display().to_string(), &other).unwrap();
     {
-        let raw = git2::Repository::open(&otro).unwrap();
+        let raw = git2::Repository::open(&other).unwrap();
         let mut config = raw.config().unwrap();
-        config.set_str("user.name", "Otra").unwrap();
-        config.set_str("user.email", "otra@example.invalid").unwrap();
+        config.set_str("user.name", "Other").unwrap();
+        config.set_str("user.email", "other@example.invalid").unwrap();
     }
-    std::fs::write(otro.join("suyo.txt"), "lo de ella\n").unwrap();
-    let repo = Repo::open(&otro).unwrap();
-    repo.stage("suyo.txt").unwrap();
-    repo.commit("feat: lo suyo").unwrap();
+    std::fs::write(other.join("theirs.txt"), "their side\n").unwrap();
+    let repo = Repo::open(&other).unwrap();
+    repo.stage("theirs.txt").unwrap();
+    repo.commit("feat: theirs").unwrap();
     repo.push().unwrap();
-    let _ = std::fs::remove_dir_all(&otro);
+    let _ = std::fs::remove_dir_all(&other);
 
-    temp.write("mio.txt", "lo mio\n");
+    temp.write("mine.txt", "mine\n");
     let repo = temp.open();
-    repo.stage("mio.txt").unwrap();
-    repo.commit("feat: lo mio").unwrap();
+    repo.stage("mine.txt").unwrap();
+    repo.commit("feat: mine").unwrap();
 
     bare
 }
 
 #[test]
-fn con_las_historias_separadas_el_modo_fusion_escribe_el_commit_de_union() {
+fn with_the_histories_parted_merge_mode_writes_the_joining_commit() {
     let temp = TempRepo::new("pull-merge");
-    primer_commit(&temp);
-    let bare = historias_separadas(&temp, "pull-merge-bare");
+    first_commit(&temp);
+    let bare = parted_histories(&temp, "pull-merge-bare");
 
-    let nota = temp.open().pull(PullMode::Merge).unwrap();
-    assert!(nota.contains("merged into"), "{nota}");
+    let note = temp.open().pull(PullMode::Merge).unwrap();
+    assert!(note.contains("merged into"), "{note}");
 
     let repo = temp.open();
     let head = repo.commit_detail(repo.head_id().unwrap()).unwrap();
     assert_eq!(head.parents.len(), 2);
-    assert!(temp.path().join("suyo.txt").exists());
-    assert!(temp.path().join("mio.txt").exists());
+    assert!(temp.path().join("theirs.txt").exists());
+    assert!(temp.path().join("mine.txt").exists());
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn el_modo_rebase_deja_la_historia_recta() {
+fn rebase_mode_leaves_the_history_straight() {
     let temp = TempRepo::new("pull-rebase");
-    primer_commit(&temp);
-    let bare = historias_separadas(&temp, "pull-rebase-bare");
+    first_commit(&temp);
+    let bare = parted_histories(&temp, "pull-rebase-bare");
 
-    let nota = temp.open().pull(PullMode::Rebase).unwrap();
-    assert!(nota.contains("1 commit replayed"), "{nota}");
+    let note = temp.open().pull(PullMode::Rebase).unwrap();
+    assert!(note.contains("1 commit replayed"), "{note}");
 
     let repo = temp.open();
     let head = repo.commit_detail(repo.head_id().unwrap()).unwrap();
-    // Un solo padre: no hay commit de fusión, el mío se ha puesto encima.
+    // One single parent: there is no merge commit, mine went on top.
     assert_eq!(head.parents.len(), 1);
-    assert_eq!(head.summary, "feat: lo mio");
+    assert_eq!(head.summary, "feat: mine");
 
-    // Y el de ella está justo debajo.
-    let padre = repo.commit_detail(head.parents[0]).unwrap();
-    assert_eq!(padre.summary, "feat: lo suyo");
+    // And theirs is just below.
+    let parent = repo.commit_detail(head.parents[0]).unwrap();
+    assert_eq!(parent.summary, "feat: theirs");
     assert!(repo.status().unwrap().is_clean());
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn un_rebase_que_choca_se_deshace_entero() {
-    let temp = TempRepo::new("pull-rebase-choque");
-    primer_commit(&temp);
+fn a_rebase_that_clashes_is_undone_whole() {
+    let temp = TempRepo::new("pull-rebase-clash");
+    first_commit(&temp);
 
-    let bare = con_remoto(&temp, "pull-rebase-choque-bare");
+    let bare = with_remote(&temp, "pull-rebase-clash-bare");
     temp.open().push().unwrap();
 
-    // Las dos tocan el mismo fichero de maneras distintas.
-    let otro = temp_dir("pull-rebase-choque-otro");
-    git2::Repository::clone(&bare.display().to_string(), &otro).unwrap();
+    // The two touch the same file in different ways.
+    let other = temp_dir("pull-rebase-clash-other");
+    git2::Repository::clone(&bare.display().to_string(), &other).unwrap();
     {
-        let raw = git2::Repository::open(&otro).unwrap();
+        let raw = git2::Repository::open(&other).unwrap();
         let mut config = raw.config().unwrap();
-        config.set_str("user.name", "Otra").unwrap();
-        config.set_str("user.email", "otra@example.invalid").unwrap();
+        config.set_str("user.name", "Other").unwrap();
+        config.set_str("user.email", "other@example.invalid").unwrap();
     }
-    std::fs::write(otro.join("a.txt"), "lo que dice ella\n").unwrap();
-    let repo = Repo::open(&otro).unwrap();
+    std::fs::write(other.join("a.txt"), "what they say\n").unwrap();
+    let repo = Repo::open(&other).unwrap();
     repo.stage("a.txt").unwrap();
-    repo.commit("feat: a a su manera").unwrap();
+    repo.commit("feat: a their way").unwrap();
     repo.push().unwrap();
-    let _ = std::fs::remove_dir_all(&otro);
+    let _ = std::fs::remove_dir_all(&other);
 
-    temp.write("a.txt", "lo que digo yo\n");
+    temp.write("a.txt", "what I say\n");
     let repo = temp.open();
     repo.stage("a.txt").unwrap();
-    let mio = repo.commit("feat: a a mi manera").unwrap();
+    let mine = repo.commit("feat: a my way").unwrap();
 
     let err = temp.open().pull(PullMode::Rebase).unwrap_err().to_string();
-    assert!(err.contains("a.txt"), "dice en qué choca: {err}");
+    assert!(err.contains("a.txt"), "it says what it clashes in: {err}");
     assert!(err.contains("nothing changed"), "{err}");
 
-    // Y el repositorio ha vuelto a donde estaba, sin rebase a medias.
+    // And the repository is back where it was, with no half-done rebase.
     let repo = temp.open();
-    assert_eq!(repo.head_id(), Some(mio));
+    assert_eq!(repo.head_id(), Some(mine));
     assert!(repo.status().unwrap().is_clean());
     assert_eq!(
         std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
-        "lo que digo yo\n"
+        "what I say\n"
     );
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn traer_de_todos_los_remotos_no_necesita_que_la_rama_siga_a_ninguno() {
+fn fetching_from_every_remote_needs_the_branch_to_track_none() {
     let temp = TempRepo::new("fetch-all");
-    primer_commit(&temp);
-    let bare = con_remoto(&temp, "fetch-all-bare");
+    first_commit(&temp);
+    let bare = with_remote(&temp, "fetch-all-bare");
 
-    // Sin haber empujado nunca, la rama no sigue a nada y aun así se trae.
+    // Having never pushed, the branch tracks nothing and is fetched all the same.
     assert!(temp.open().fetch().is_err());
-    let nota = temp.open().fetch_all().unwrap();
-    assert!(nota.contains("origin"), "{nota}");
+    let note = temp.open().fetch_all().unwrap();
+    assert!(note.contains("origin"), "{note}");
 
     let _ = std::fs::remove_dir_all(&bare);
 }
 
 #[test]
-fn sin_remotos_no_hay_de_donde_traer() {
-    let temp = TempRepo::new("fetch-all-vacio");
-    primer_commit(&temp);
+fn with_no_remotes_there_is_nowhere_to_fetch_from() {
+    let temp = TempRepo::new("fetch-all-empty");
+    first_commit(&temp);
     let err = temp.open().fetch_all().unwrap_err().to_string();
     assert!(err.contains("no remotes"), "{err}");
 }
 
 #[test]
-fn traer_una_rama_a_la_principal_se_cambia_a_ella_primero() {
+fn bringing_a_branch_into_the_main_one_switches_to_it_first() {
     let temp = TempRepo::new("land");
-    let principal = primer_commit(&temp);
+    let trunk = first_commit(&temp);
 
-    temp.open().branch_here("suya").unwrap();
-    temp.write("b.txt", "lo suyo\n");
+    temp.open().branch_here("theirs").unwrap();
+    temp.write("b.txt", "theirs\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
     repo.commit("feat: b").unwrap();
 
-    // Estando en «suya», traerla a la principal implica cambiarse antes.
-    assert_eq!(temp.open().head_name(), "suya");
-    let nota = temp.open().land("suya").unwrap();
-    assert!(nota.contains(&format!("you are now on {principal}")), "{nota}");
+    // Standing on "theirs", bringing it into the main one means switching first.
+    assert_eq!(temp.open().head_name(), "theirs");
+    let note = temp.open().land("theirs").unwrap();
+    assert!(note.contains(&format!("you are now on {trunk}")), "{note}");
 
     let repo = temp.open();
-    assert_eq!(repo.head_name(), principal);
+    assert_eq!(repo.head_name(), trunk);
     assert!(temp.path().join("b.txt").exists());
 }
 
 #[test]
-fn llevar_al_remoto_una_rama_en_la_que_no_estas() {
+fn pushing_a_branch_you_are_not_on() {
     let temp = TempRepo::new("push-branch");
-    let principal = primer_commit(&temp);
-    let bare = con_remoto(&temp, "push-branch-bare");
+    let trunk = first_commit(&temp);
+    let bare = with_remote(&temp, "push-branch-bare");
     temp.open().push().unwrap();
 
-    temp.open().branch_here("otra").unwrap();
-    temp.write("b.txt", "lo suyo\n");
+    temp.open().branch_here("other").unwrap();
+    temp.write("b.txt", "theirs\n");
     let repo = temp.open();
     repo.stage("b.txt").unwrap();
-    let suyo = repo.commit("feat: b").unwrap();
-    temp.open().checkout_branch(&principal).unwrap();
+    let theirs = repo.commit("feat: b").unwrap();
+    temp.open().checkout_branch(&trunk).unwrap();
 
-    // Desde la principal, se lleva la otra sin moverse de sitio.
-    temp.open().push_branch("otra").unwrap();
-    assert_eq!(temp.open().head_name(), principal);
+    // From the main branch, the other is brought in without moving.
+    temp.open().push_branch("other").unwrap();
+    assert_eq!(temp.open().head_name(), trunk);
 
-    let remoto = git2::Repository::open(&bare).unwrap();
-    assert_eq!(remoto.find_reference("refs/heads/otra").unwrap().target(), Some(suyo));
+    let remote = git2::Repository::open(&bare).unwrap();
+    assert_eq!(remote.find_reference("refs/heads/other").unwrap().target(), Some(theirs));
 
-    let err = temp.open().push_branch("fantasma").unwrap_err().to_string();
-    assert!(err.contains("fantasma"), "{err}");
+    let err = temp.open().push_branch("ghost").unwrap_err().to_string();
+    assert!(err.contains("ghost"), "{err}");
 
     let _ = std::fs::remove_dir_all(&bare);
 }

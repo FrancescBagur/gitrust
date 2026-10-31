@@ -1,4 +1,4 @@
-//! Apertura del repositorio, lectura de commits y operaciones sobre el índice.
+//! Opening the repository, reading commits, and working on the index.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,8 +19,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Abre el repositorio que contiene `path`, subiendo por los directorios
-    /// padre igual que hace `git` desde una subcarpeta.
+    /// Opens the repository that holds `path`, climbing the parent directories
+    /// the way `git` does from a subfolder.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let inner = Repository::discover(path)
@@ -28,7 +28,7 @@ impl Repo {
         Ok(Self { inner })
     }
 
-    /// Ruta del árbol de trabajo, o del propio repositorio si es bare.
+    /// The path of the working tree, or of the repository itself if it is bare.
     pub fn workdir(&self) -> PathBuf {
         self.inner
             .workdir()
@@ -36,7 +36,7 @@ impl Repo {
             .to_path_buf()
     }
 
-    /// Nombre de la rama actual, o el hash corto si HEAD está desacoplado.
+    /// The current branch's name, or the short hash if HEAD is detached.
     pub fn head_name(&self) -> String {
         match self.inner.head() {
             Ok(head) => head
@@ -47,23 +47,23 @@ impl Repo {
         }
     }
 
-    /// El commit al que apunta HEAD, si el repositorio tiene alguno.
+    /// The commit HEAD points at, if the repository has any.
     pub fn head_id(&self) -> Option<Oid> {
         self.inner.head().ok()?.peel(ObjectType::Commit).ok().map(|object| object.id())
     }
 
-    // ---------------------------------------------------------------- historia
+    // ----------------------------------------------------------------- history
 
-    /// Recorre el historial de todas las referencias y devuelve hasta `limit`
-    /// commits en orden topológico y por fecha, del más reciente al más antiguo.
+    /// Walks the history of every reference and gives back up to `limit`
+    /// commits in topological and date order, newest first.
     pub fn commits(&self, limit: usize) -> Result<Vec<Commit>> {
         let labels = self.ref_labels()?;
 
         let mut walk = self.inner.revwalk()?;
         walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
 
-        // Un glob falla si no hay ninguna referencia que encaje, cosa normal en
-        // repositorios recién creados o sin remotos. No es un error para nosotros.
+        // A glob fails if no reference matches, which is normal in a freshly
+        // made repository or one with no remotes. For us that is no error.
         let _ = walk.push_glob("refs/heads/*");
         let _ = walk.push_glob("refs/remotes/*");
         let _ = walk.push_glob("refs/tags/*");
@@ -93,7 +93,7 @@ impl Repo {
         Ok(out)
     }
 
-    /// Mapa de commit a las referencias que lo señalan.
+    /// A map from commit to the references that point at it.
     fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
         let mut map: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
 
@@ -102,7 +102,7 @@ impl Repo {
             let Some(name) = reference.name() else {
                 continue;
             };
-            // Un tag anotado apunta a un objeto tag, no al commit: hay que pelarlo.
+            // An annotated tag points at a tag object, not the commit: peel it.
             let Ok(object) = reference.peel(ObjectType::Commit) else {
                 continue;
             };
@@ -120,11 +120,11 @@ impl Repo {
             map.entry(object.id()).or_default().push(label);
         }
 
-        // La marca de HEAD lleva el nombre de la rama en la que está, no la
-        // palabra «HEAD». Así se sabe cuál de las ramas que señalan a este
-        // commit es la que uno tiene puesta, que con dos o tres encima del
-        // mismo commit no se podría adivinar. Desacoplado, `shorthand` ya
-        // devuelve «HEAD» y la marca se queda sola, que es lo correcto.
+        // HEAD's mark carries the name of the branch it is on, not the word
+        // "HEAD". That is how you tell which of the branches pointing at this
+        // commit is the one you have checked out, which with two or three on
+        // the same commit could not be guessed. Detached, `shorthand` already
+        // gives back "HEAD" and the mark stands alone, which is right.
         if let Ok(head) = self.inner.head() {
             if let Ok(object) = head.peel(ObjectType::Commit) {
                 let name = head.shorthand().unwrap_or("HEAD").to_string();
@@ -137,10 +137,10 @@ impl Repo {
         Ok(map)
     }
 
-    // ------------------------------------------------------- árbol de trabajo
+    // ------------------------------------------------------------ working tree
 
-    /// Ficheros cambiados, separados entre índice y árbol de trabajo. Un mismo
-    /// fichero puede aparecer en ambos lados si tiene cambios a medio preparar.
+    /// The changed files, split between index and working tree. One file can
+    /// show up on both sides if it is half staged.
     pub fn status(&self) -> Result<WorkingState> {
         let mut options = StatusOptions::new();
         options
@@ -172,8 +172,8 @@ impl Repo {
         Ok(state)
     }
 
-    /// Diff de un fichero. Con `staged` compara HEAD contra el índice; sin él,
-    /// el índice contra el árbol de trabajo.
+    /// A file's diff. With `staged` it compares HEAD against the index; without
+    /// it, the index against the working tree.
     pub fn file_diff(&self, path: &str, staged: bool) -> Result<FileDiff> {
         let mut options = DiffOptions::new();
         options.pathspec(path).context_lines(3).include_untracked(true).recurse_untracked_dirs(true);
@@ -191,10 +191,10 @@ impl Repo {
         collect_file_diff(&diff, path)
     }
 
-    // ------------------------------------------------------------- un commit
+    // ---------------------------------------------------------------- a commit
 
-    /// Mensaje, autoría y ficheros tocados por un commit, comparándolo con su
-    /// primer padre. Un commit raíz se compara con el árbol vacío.
+    /// The message, the authorship and the files a commit touched, against its
+    /// first parent. A root commit is compared with the empty tree.
     pub fn commit_detail(&self, oid: Oid) -> Result<CommitDetail> {
         let commit = self.inner.find_commit(oid)?;
         let author = commit.author();
@@ -220,7 +220,7 @@ impl Repo {
             .collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));
 
-        // El mensaje es «asunto\n\ncuerpo»; guardamos las dos partes aparte.
+        // The message is "subject\n\nbody"; we keep the two parts apart.
         let message = commit.message().unwrap_or("");
         let body = message
             .split_once("\n\n")
@@ -240,7 +240,7 @@ impl Repo {
         })
     }
 
-    /// Diff de un fichero dentro de un commit, contra su primer padre.
+    /// A file's diff inside a commit, against its first parent.
     pub fn commit_file_diff(&self, oid: Oid, path: &str) -> Result<FileDiff> {
         let commit = self.inner.find_commit(oid)?;
         let tree = commit.tree()?;
@@ -260,8 +260,8 @@ impl Repo {
         collect_file_diff(&diff, path)
     }
 
-    /// Todas las referencias, para la barra lateral. Se omite el `HEAD` de
-    /// cada remoto, que es un alias y no una rama más.
+    /// Every reference, for the sidebar. Each remote's `HEAD` is left out: it
+    /// is an alias, not one more branch.
     pub fn references(&self) -> Result<Vec<RefEntry>> {
         let head = self
             .inner
@@ -300,7 +300,7 @@ impl Repo {
         Ok(out)
     }
 
-    /// Añade un fichero al índice. Si ya no existe en disco lo marca borrado.
+    /// Adds a file to the index. If it is gone from disk it is marked deleted.
     pub fn stage(&self, path: &str) -> Result<()> {
         let mut index = self.inner.index()?;
         let exists = self.inner.workdir().map(|dir| dir.join(path).exists()).unwrap_or(false);
@@ -314,14 +314,14 @@ impl Repo {
         Ok(())
     }
 
-    /// Devuelve un fichero del índice al estado que tiene en HEAD.
+    /// Puts a file in the index back to the state it has in HEAD.
     pub fn unstage(&self, path: &str) -> Result<()> {
         match self.inner.head() {
             Ok(head) => {
                 let object = head.peel(ObjectType::Commit)?;
                 self.inner.reset_default(Some(&object), [path])?;
             }
-            // Sin HEAD todavía no hay nada a lo que volver: basta con sacarlo.
+            // With no HEAD there is nothing to go back to: taking it out is enough.
             Err(_) => {
                 let mut index = self.inner.index()?;
                 index.remove_path(Path::new(path))?;
@@ -331,10 +331,10 @@ impl Repo {
         Ok(())
     }
 
-    /// Prepara un solo hunk, dejando el resto del fichero sin preparar.
+    /// Stages a single hunk, leaving the rest of the file unstaged.
     ///
-    /// Aplica al índice el diff del árbol de trabajo filtrado a ese hunk, que
-    /// es lo que hace `git add -p` por dentro.
+    /// It applies to the index the working tree's diff filtered down to that
+    /// hunk, which is what `git add -p` does underneath.
     pub fn stage_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
         let mut options = DiffOptions::new();
         options
@@ -347,11 +347,11 @@ impl Repo {
         self.apply_hunk(&diff, hunk, ApplyLocation::Index)
     }
 
-    /// Devuelve un solo hunk del índice al árbol de trabajo.
+    /// Puts a single hunk back from the index to the working tree.
     ///
-    /// El diff se calcula invertido, de modo que aplicarlo al índice deshace
-    /// el cambio. En un diff invertido los lados están intercambiados, así que
-    /// el hunk se busca con sus rangos también invertidos.
+    /// The diff is worked out inverted, so that applying it to the index undoes
+    /// the change. In an inverted diff the sides are swapped, so the hunk is
+    /// looked for with its ranges inverted too.
     pub fn unstage_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
         let mut options = DiffOptions::new();
         options.pathspec(path).context_lines(3).reverse(true);
@@ -377,7 +377,7 @@ impl Repo {
                     applied |= matches;
                     matches
                 }
-                // Sin hunk es la cabecera del fichero: debe pasar.
+                // With no hunk it is the file header: it has to go through.
                 None => true,
             });
 
@@ -402,19 +402,17 @@ impl Repo {
         Ok(())
     }
 
-    // ------------------------------------------------------------ descartar
+    // -------------------------------------------------------------- discarding
 
-    /// Tira los cambios de un fichero en el árbol de trabajo.
+    /// Throws away a file's changes in the working tree.
     ///
-    /// Vuelve a lo que diga el índice, no a lo que diga HEAD: si el fichero
-    /// tenía una parte preparada, esa parte se respeta. Es lo que hace
-    /// `git restore <fichero>`, y es lo que le corresponde a una lista que
-    /// separa los dos lados.
+    /// It goes back to what the index says, not to what HEAD says: if the file
+    /// had a part staged, that part is kept. It is what `git restore <file>`
+    /// does, and it is what belongs to a list that keeps the two sides apart.
     ///
-    /// Un fichero sin seguimiento no tiene índice al que volver: ahí el cambio
-    /// es el fichero entero, así que se borra. Eso no deja copia en ningún
-    /// sitio, y es la única operación de toda la aplicación de la que no se
-    /// puede volver.
+    /// An untracked file has no index to go back to: there the change is the
+    /// whole file, so it is deleted. That leaves no copy anywhere, and it is
+    /// the one operation in the whole app there is no coming back from.
     pub fn discard(&self, path: &str) -> Result<()> {
         if !self.in_index(path)? {
             let file = self.workdir().join(path);
@@ -434,10 +432,10 @@ impl Repo {
         Ok(())
     }
 
-    /// Tira un solo hunk del árbol de trabajo y deja el resto del fichero.
+    /// Throws away a single hunk from the working tree and leaves the rest.
     ///
-    /// El diff se calcula invertido, igual que para quitar del índice, pero se
-    /// aplica al árbol: así deshace ese trozo donde está escrito.
+    /// The diff is worked out inverted, as it is for unstaging, but applied to
+    /// the tree: that way it undoes that piece where it is written.
     pub fn discard_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
         anyhow::ensure!(
             self.in_index(path)?,
@@ -458,12 +456,12 @@ impl Repo {
         Ok(())
     }
 
-    /// Si Git sabe algo de ese fichero, o es nuevo del todo.
+    /// Whether Git knows anything about that file, or it is brand new.
     fn in_index(&self, path: &str) -> Result<bool> {
         Ok(self.inner.index()?.get_path(Path::new(path), 0).is_some())
     }
 
-    /// Crea un commit con lo que haya en el índice.
+    /// Writes a commit with whatever is in the index.
     pub fn commit(&self, message: &str) -> Result<Oid> {
         let message = message.trim();
         anyhow::ensure!(!message.is_empty(), "the commit message is empty");
@@ -489,16 +487,16 @@ impl Repo {
         Ok(oid)
     }
 
-    /// Rehace el último commit con lo que haya ahora en el índice.
+    /// Redoes the last commit with whatever is in the index now.
     ///
-    /// No edita nada: escribe un commit nuevo con el mismo padre y mueve la
-    /// rama a él. El viejo se queda sin nadie que lo señale. Por eso, si ya
-    /// había salido a un remoto, lo de allí y lo de aquí dejan de ser la misma
-    /// historia y el siguiente envío habrá que forzarlo.
+    /// It edits nothing: it writes a new commit with the same parent and moves
+    /// the branch onto it. The old one is left with nobody pointing at it. So
+    /// if it had already gone out to a remote, theirs and yours stop being the
+    /// same history and the next push will have to be forced.
     ///
-    /// El autor y su fecha se conservan: el trabajo sigue siendo de quien lo
-    /// hizo y de cuando lo hizo. Lo único que cambia es quién lo cierra, que
-    /// es lo que hace `git commit --amend`.
+    /// The author and their date are kept: the work is still by whoever did it
+    /// and from when they did it. The only thing that changes is who closes it,
+    /// which is what `git commit --amend` does.
     pub fn amend(&self, message: &str) -> Result<Oid> {
         let message = message.trim();
         anyhow::ensure!(!message.is_empty(), "the commit message is empty");
@@ -528,11 +526,11 @@ impl Repo {
         Ok(oid)
     }
 
-    /// El asunto y el cuerpo del último commit, separados como los pide el
-    /// cuadro de commit.
+    /// The subject and the body of the last commit, split the way the commit
+    /// box wants them.
     ///
-    /// Hace falta para enmendar: entrar a cambiar un mensaje sin ver lo que
-    /// decía es la manera de perder la mitad sin enterarse.
+    /// It is needed for amending: going in to change a message without seeing
+    /// what it said is how you lose half of it without noticing.
     pub fn head_message(&self) -> Option<(String, String)> {
         let commit = self.inner.head().ok()?.peel_to_commit().ok()?;
         let message = commit.message()?;
@@ -547,13 +545,13 @@ impl Repo {
     }
 }
 
-/// Recorre un diff ya calculado y lo trocea en hunks y líneas.
+/// Walks a diff already worked out and cuts it into hunks and lines.
 fn collect_file_diff(diff: &Diff<'_>, path: &str) -> Result<FileDiff> {
     let mut out = FileDiff { path: path.to_string(), ..Default::default() };
 
     diff.print(DiffFormat::Patch, |_delta, hunk, line| {
         match line.origin() {
-            // Cabecera del fichero: ya sabemos de qué fichero se trata.
+            // The file header: we already know which file this is.
             'F' => {}
             'B' => out.binary = true,
             'H' => {
@@ -562,7 +560,7 @@ fn collect_file_diff(diff: &Diff<'_>, path: &str) -> Result<FileDiff> {
                 out.hunks.push(Hunk { header, id, lines: Vec::new() });
             }
             origin => {
-                // Un fichero sin seguimiento no trae cabecera de hunk.
+                // An untracked file brings no hunk header.
                 if out.hunks.is_empty() {
                     let header = hunk
                         .as_ref()
@@ -589,7 +587,7 @@ fn collect_file_diff(diff: &Diff<'_>, path: &str) -> Result<FileDiff> {
     Ok(out)
 }
 
-/// Traduce el estado de un delta de libgit2 al nuestro.
+/// Turns libgit2's delta status into ours.
 fn delta_kind(status: Delta) -> ChangeKind {
     match status {
         Delta::Added | Delta::Copied | Delta::Untracked => ChangeKind::Added,
@@ -601,8 +599,8 @@ fn delta_kind(status: Delta) -> ChangeKind {
     }
 }
 
-/// Los cuatro rangos de la cabecera de un hunk, que lo identifican dentro de
-/// su diff.
+/// The four ranges in a hunk's header, which identify it inside its own
+/// diff.
 fn hunk_id(hunk: &DiffHunk<'_>) -> HunkId {
     HunkId {
         old_start: hunk.old_start(),

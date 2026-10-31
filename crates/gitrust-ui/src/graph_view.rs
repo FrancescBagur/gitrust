@@ -1,15 +1,15 @@
-//! Pintado del grafo de commits.
+//! Painting the commit graph.
 //!
-//! Dibuja solo las filas visibles. Con un repositorio de decenas de miles de
-//! commits el coste por fotograma depende del alto de la ventana, no del
-//! tamaño de la historia.
+//! It draws only the visible rows. In a repository of tens of thousands of
+//! commits the cost per frame depends on the height of the window, not on the
+//! size of the history.
 //!
-//! La fila es la unidad de lectura: las ramas y etiquetas en su columna a la
-//! izquierda del todo, luego los carriles, después el mensaje con todo el
-//! contraste, y autor, fecha y hash alineados a la derecha en columnas de
-//! ancho fijo. Son esas columnas las que dan la estructura, así que no hace
-//! falta ni una sola línea vertical. Cuando la ventana se estrecha las
-//! columnas se retiran por orden de importancia en vez de chocar entre sí.
+//! The row is the unit of reading: the branches and tags in their column at
+//! the far left, then the lanes, then the message at full contrast, and
+//! author, date and hash aligned right in fixed-width columns. It is those
+//! columns that give the structure, so not one vertical line is needed. As
+//! the window narrows the columns withdraw in order of importance instead of
+//! colliding with each other.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{
@@ -24,48 +24,48 @@ const DOT_R: f32 = 4.5;
 const LINE_W: f32 = 2.0;
 const GUTTER: f32 = 12.0;
 
-/// Columnas de la derecha, de fuera hacia dentro.
+/// The right-hand columns, from the outside in.
 const PAD_R: f32 = 14.0;
 const HASH_W: f32 = 58.0;
 const DATE_W: f32 = 100.0;
 const AUTHOR_W: f32 = 116.0;
 const COL_GAP: f32 = 16.0;
-/// Por debajo de esto el mensaje queda tan recortado que la columna estorba
-/// más de lo que informa, y se retira.
+/// Below this the message is cut so short that the column gets in the way
+/// more than it informs, and it withdraws.
 const SUMMARY_MIN: f32 = 200.0;
-/// Carriles que se reservan como mucho antes de la columna del mensaje.
+/// The most lanes that are set aside before the message's column.
 ///
-/// Un repositorio puede tener veinte ramas vivas a la vez en algún punto de su
-/// historia, pero reservar sitio para las veinte deja una franja vacía en las
-/// miles de filas donde solo hay dos. Ocho cubre lo que se ve en la práctica;
-/// lo que pase de ahí se recorta contra la columna del mensaje.
+/// A repository can have twenty live branches at once somewhere in its
+/// history, but setting room aside for all twenty leaves an empty strip in
+/// the thousands of rows where there are only two. Eight covers what is seen
+/// in practice; anything past that is clipped against the message's column.
 const MAX_LANES: usize = 8;
-/// Trazo de la línea que baja de los cambios sin confirmar: raya y hueco.
+/// The stroke of the line coming down from the uncommitted changes: dash and gap.
 const DASH: (f32, f32) = (3.0, 3.5);
 
-/// La columna de referencias: aire contra el borde, tope y hueco entre
-/// pastillas, y lo que se reserva para la cuenta de las que no caben.
+/// The references column: air against the border, a cap and a gap between
+/// chips, and what is set aside for the count of the ones that do not fit.
 const REFS_PAD: f32 = 10.0;
 const REFS_MAX: f32 = 236.0;
 const BADGE_PAD: f32 = 6.0;
 const BADGE_GAP: f32 = 5.0;
 const MORE_W: f32 = 26.0;
 
-/// Lo que ha pasado en la barra de buscar.
+/// What has happened in the search bar.
 pub enum Found {
-    /// La aguja ha cambiado: hay que volver a contar.
+    /// The needle has changed: everything has to be counted again.
     Changed,
     Next,
     Prev,
     Nothing,
 }
 
-/// La barra de buscar, encima del grafo.
+/// The search bar, above the graph.
 ///
-/// No filtra: deja la historia entera donde está y apaga lo que no encaja.
-/// Un grafo al que se le quitan filas deja de ser un grafo —los carriles no
-/// llevarían a ninguna parte—, y lo que uno busca casi siempre lo quiere ver
-/// en su sitio, con lo que tenía alrededor.
+/// It does not filter: it leaves the whole history where it is and dims what
+/// does not match. A graph with rows taken out stops being a graph -- the
+/// lanes would lead nowhere -- and what you are looking for you nearly always
+/// want to see in its place, with what was around it.
 pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -> Found {
     let mut event = Found::Nothing;
 
@@ -86,8 +86,8 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
             event = Found::Changed;
         }
 
-        // Enter salta a la siguiente; con Shift, a la de antes. Es lo que
-        // hacen todas las barras de buscar que uno ha usado.
+        // Enter jumps to the next one; with Shift, to the one before. It is
+        // what every search bar anyone has used does.
         if entry.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             event = if ui.input(|i| i.modifiers.shift) { Found::Prev } else { Found::Next };
         }
@@ -126,11 +126,11 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
     event
 }
 
-/// Devuelve el commit pulsado, si lo hay.
+/// Gives back the commit that was clicked, if any.
 ///
-/// El estado del árbol de trabajo hace falta para rotular la fila de cambios
-/// sin confirmar, cuando el grafo la trae. `needle` apaga lo que no encaja, y
-/// `bring` trae una fila a la vista de un salto.
+/// The working tree's state is needed to label the uncommitted-changes row,
+/// when the graph carries it. `needle` dims what does not match, and `bring`
+/// brings a row into view in one jump.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
@@ -144,9 +144,9 @@ pub fn show(
         return None;
     }
 
-    // Hasta dónde baja la línea de los cambios sin confirmar: de su fila a la
-    // de HEAD, que es su padre. Lo que pase por ese carril antes de llegar
-    // sigue siendo esa misma línea, y se dibuja a trazos.
+    // How far the uncommitted changes' line comes down: from its row to
+    // HEAD's, which is its parent. Whatever passes through that lane before
+    // it gets there is still that same line, and is drawn dashed.
     let pending = graph.rows.first().filter(|row| row.commit.is_working()).map(|row| {
         let head = row.commit.parents[0];
         let until = graph.rows.iter().position(|r| r.commit.id == head).unwrap_or(0);
@@ -154,14 +154,14 @@ pub fn show(
     });
     let pending_label = theme::pending_label(work.staged.len(), work.unstaged.len());
 
-    // Con una historia muy ramificada los carriles se comerían la columna
-    // del mensaje, así que a partir de cierto punto se dejan solapar.
+    // With a heavily branched history the lanes would eat the message's
+    // column, so past a certain point they are allowed to overlap.
     let lanes = graph.lane_count.clamp(1, MAX_LANES);
     let graph_w = GUTTER * 2.0 + lanes as f32 * LANE_W;
     let mut clicked = None;
 
     egui::ScrollArea::vertical()
-        .id_salt("grafo")
+        .id_salt("graph")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let row_h = theme::ROW_H;
@@ -173,20 +173,20 @@ pub fn show(
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 0.0, theme::CANVAS);
 
-            // La columna de ramas se mide antes que nada: de su ancho depende
-            // dónde empieza todo lo demás.
+            // The branch column is measured before anything else: where
+            // everything else starts depends on its width.
             let refs_w = refs_width(ui, graph, rect.width());
             let lanes_left = rect.left() + refs_w;
 
-            // Los carriles se pintan contra su propia franja: así una historia
-            // más ancha que el tope se recorta en seco en vez de cruzar por
-            // debajo de los mensajes.
+            // The lanes are painted against a strip of their own: that way a
+            // history wider than the cap is cut off sharply instead of running
+            // underneath the messages.
             let lanes_painter = painter.with_clip_rect(Rect::from_min_max(
                 egui::pos2(lanes_left, rect.min.y),
                 egui::pos2(lanes_left + graph_w, rect.max.y),
             ));
 
-            // Solo las filas que caen dentro del recorte visible.
+            // Only the rows that fall inside the visible clip.
             let clip = ui.clip_rect();
             let first = (((clip.top() - rect.top()) / row_h).floor() as isize).max(0) as usize;
             let last = ((((clip.bottom() - rect.top()) / row_h).ceil() as usize) + 1)
@@ -210,8 +210,8 @@ pub fn show(
             let text_left = lanes_left + graph_w;
             let columns = Columns::for_width(text_left, rect.right());
 
-            // Traer una fila a la vista se pide aquí dentro, que es donde se
-            // sabe en qué píxel cae.
+            // Bringing a row into view is asked for in here, which is where
+            // we know which pixel it falls on.
             if let Some(index) = bring.filter(|index| *index < graph.rows.len()) {
                 let band = Rect::from_min_size(
                     egui::pos2(rect.left(), rect.top() + index as f32 * row_h),
@@ -227,15 +227,15 @@ pub fn show(
                 )
             };
 
-            // Los fondos van todos primero. Si cada fila pintara el suyo justo
-            // antes de sus líneas, la banda de la fila elegida taparía la mitad
-            // de la línea que baja hasta ella desde la de arriba.
+            // The backgrounds all go first. If each row painted its own just
+            // before its lines, the band of the chosen row would cover half
+            // the line coming down to it from the one above.
             for index in first..last {
                 let row = &graph.rows[index];
 
-                // La fila elegida se marca con su propio color de carril en el
-                // canto izquierdo, no con un azul traído de fuera: así se ve de
-                // un vistazo a qué rama pertenece lo que se está mirando.
+                // The chosen row is marked with its own lane's color on the
+                // left edge, not with a blue brought in from outside: that way
+                // you see at a glance which branch what you are looking at is on.
                 if selected == Some(row.commit.id) {
                     let band = band_of(index);
                     let edge = if row.commit.is_working() {
@@ -258,12 +258,12 @@ pub fn show(
                 let row = &graph.rows[index];
                 let band = band_of(index);
 
-                // Las líneas de esta fila bajan hasta la siguiente.
+                // This row's lines come down to the next one.
                 for link in &row.links {
-                    // La que une los cambios con HEAD va a trazos y sin color:
-                    // todavía no es historia, y no debe leerse como una rama.
-                    // Solo la que baja recta por ese carril: una rama que se
-                    // fusione en HEAD también acaba ahí, y esa sí es historia.
+                    // The one joining the changes to HEAD is dashed and has no
+                    // color: it is not history yet, and must not read as a
+                    // branch. Only the one running straight down that lane: a
+                    // branch merging into HEAD also ends there, and that is history.
                     let dashed = pending.is_some_and(|(lane, until)| {
                         index < until && link.from == lane && link.to == lane
                     });
@@ -281,7 +281,7 @@ pub fn show(
                     } else if link.from == link.to {
                         lanes_painter.line_segment([top, bottom], stroke);
                     } else {
-                        // Curva en S para que el salto de carril se lea bien.
+                        // An S-curve so that the jump between lanes reads well.
                         let c1 = Pos2::new(top.x, top.y + row_h * 0.5);
                         let c2 = Pos2::new(bottom.x, bottom.y - row_h * 0.5);
                         lanes_painter.add(egui::Shape::CubicBezier(
@@ -299,15 +299,15 @@ pub fn show(
 
                 if row.commit.is_working() {
                     draw_working(&painter, text_left, row_y(index), &pending_label);
-                    // Un pelo deja claro dónde empieza lo que ya está escrito.
+                    // A hair makes clear where what is already written starts.
                     painter.hline(
                         band.x_range(),
                         band.bottom(),
                         Stroke::new(1.0, theme::HAIRLINE),
                     );
                 } else {
-                    // Lo que no encaja con lo que se busca se apaga, pero se
-                    // queda: su carril sigue haciendo falta para leer el resto.
+                    // What does not match the search is dimmed, but stays: its
+                    // lane is still needed in order to read the rest.
                     let dim = !needle.is_empty() && !row.commit.matches(needle);
                     draw_refs(&painter, ui, row, lanes_left, rect.left() + 8.0, row_y(index));
                     draw_row(&painter, ui, row, text_left, row_y(index), &columns, dim);
@@ -322,21 +322,21 @@ fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
     let color = theme::lane(row.color);
     let center = Pos2::new(x, y);
 
-    // Los cambios sin confirmar van huecos y en gris: no son un commit, y
-    // darles el color de la rama sería decir que ya forman parte de ella. El
-    // cerco se queda al ras del punto para no comerse los trazos de su línea,
-    // que es corta y tiene pocos que gastar.
+    // The uncommitted changes go hollow and grey: they are not a commit, and
+    // giving them the branch's color would be saying they are already part of
+    // it. The ring sits flush with the dot so as not to eat the dashes of its
+    // line, which is short and has few to spare.
     if row.commit.is_working() {
         painter.circle_filled(center, DOT_R + 1.0, theme::CANVAS);
         painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(1.6, theme::MUTED));
         return;
     }
 
-    // Un cerco del color del lienzo despega el punto de las líneas que pasan
-    // por detrás; sin él el grafo se emborrona en las confluencias.
+    // A ring in the canvas's color lifts the dot off the lines passing behind
+    // it; without one the graph smears at the junctions.
     painter.circle_filled(center, DOT_R + 2.5, theme::CANVAS);
 
-    // Un merge se marca con un punto hueco; un commit normal, macizo.
+    // A merge is marked with a hollow dot; an ordinary commit, solid.
     if row.commit.parents.len() > 1 {
         painter.circle_filled(center, DOT_R, theme::CANVAS);
         painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(2.0, color));
@@ -344,17 +344,17 @@ fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
         painter.circle_filled(center, DOT_R, color);
     }
 
-    // Donde está HEAD se ve desde lejos.
+    // Where HEAD is can be seen from across the room.
     if row.commit.refs.iter().any(|r| r.kind == RefKind::Head) {
         painter.circle_stroke(center, DOT_R + 3.5, Stroke::new(1.5, theme::HEAD));
     }
 }
 
-/// La fila de los cambios sin confirmar.
+/// The uncommitted-changes row.
 ///
-/// No lleva ni autor ni fecha ni hash, porque todavía no tiene ninguna de las
-/// tres cosas. En su lugar dice cuánto hay a cada lado del índice, que es lo
-/// único que se puede saber de ella.
+/// It carries no author, no date and no hash, because it has none of the
+/// three yet. Instead it says how much there is on each side of the index,
+/// which is the only thing that can be known about it.
 fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
     let title = painter.text(
         Pos2::new(left + 2.0, y),
@@ -375,7 +375,7 @@ fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
     }
 }
 
-/// Dónde cae cada columna de la derecha con el ancho que hay.
+/// Where each right-hand column falls at the width there is.
 struct Columns {
     author: Option<f32>,
     date: Option<f32>,
@@ -393,7 +393,7 @@ impl Columns {
             summary_right: right - PAD_R,
         };
 
-        // De fuera hacia dentro, y cada una solo si al mensaje le queda sitio.
+        // From the outside in, and each one only if the message has room left.
         for (width, slot) in [
             (HASH_W, &mut columns.hash),
             (DATE_W, &mut columns.date),
@@ -468,13 +468,13 @@ fn draw_row(
     }
 }
 
-/// El ancho de la columna de referencias: lo que pida la fila más cargada,
-/// con tope.
+/// The width of the references column: whatever the fullest row asks for,
+/// capped.
 ///
-/// Se mide cada fotograma, pero solo sobre las filas que llevan alguna, que en
-/// cualquier repositorio son unas pocas entre miles. El tope por el ancho
-/// disponible es para que en una ventana estrecha la columna ceda antes que el
-/// mensaje: el mensaje es lo que se viene a leer.
+/// It is measured every frame, but only over the rows that carry any, which
+/// in any repository are a few among thousands. The cap against the width
+/// available is so that in a narrow window the column gives way before the
+/// message does: the message is what people come to read.
 fn refs_width(ui: &egui::Ui, graph: &Graph, available: f32) -> f32 {
     let font = theme::medium(11.0);
 
@@ -500,13 +500,13 @@ fn refs_width(ui: &egui::Ui, graph: &Graph, available: f32) -> f32 {
     (widest + REFS_PAD).min(REFS_MAX).min(available * 0.28)
 }
 
-/// Las ramas y etiquetas de una fila, pegadas al grafo y creciendo hacia
-/// fuera.
+/// A row's branches and tags, flush against the graph and growing outwards.
 ///
-/// Lo que más importa queda junto a los carriles, que es adonde va la vista, y
-/// lo que no cabe se cae por el lado de fuera dejando dicho cuánto se calla.
-/// Los nombres se alinean contra el grafo en vez de contra el borde de la
-/// ventana: así forman columna aunque midan cosas distintas.
+/// What matters most stays next to the lanes, which is where the eye goes,
+/// and what does not fit falls off the outer side leaving word of how much it
+/// is keeping quiet about. The names line up against the graph rather than
+/// against the window's border: that way they form a column even though they
+/// measure different things.
 fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left: f32, y: f32) {
     let refs = row.commit.ordered_refs();
     if refs.is_empty() {
@@ -517,8 +517,8 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
     let widths: Vec<f32> =
         ui.fonts(|fonts| refs.iter().map(|(l, _)| badge_w(fonts, &l.name, &font)).collect());
 
-    // Cuántas caben. Si alguna se queda fuera hay que repetir la cuenta
-    // reservando sitio para decirlo, que también ocupa.
+    // How many fit. If any are left out the count has to be done again,
+    // setting room aside to say so, which takes room too.
     let fitting = |reserve: f32| {
         let mut x = right;
         let mut count = 0;
@@ -541,8 +541,8 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
     let mut x = right;
     let mut from = 0;
 
-    // Si no cabe ni la primera, se recorta en vez de desaparecer: media rama
-    // dice de qué va esta fila, y una cuenta a secas no dice nada.
+    // If not even the first one fits, it is clipped rather than dropped: half
+    // a branch says what this row is about, and a bare count says nothing.
     if shown == 0 {
         let reserve = if refs.len() > 1 { MORE_W } else { 0.0 };
         let room = right - left - reserve - BADGE_PAD * 2.0;
@@ -576,16 +576,16 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
     }
 }
 
-/// Una pastilla de referencia.
+/// A reference chip.
 ///
-/// La rama en la que uno está va maciza, y es la única de toda la ventana que
-/// lo está. El peso hace lo que el color no puede: uno de los ocho carriles
-/// es ámbar, así que una rama cualquiera que caiga en él se vestiría igual
-/// que HEAD y diría que estás donde no estás.
+/// The branch you are on goes solid, and it is the only one in the whole
+/// window that does. Weight does what color cannot: one of the eight lanes is
+/// amber, so any old branch landing in it would dress the same as HEAD and
+/// say you are where you are not.
 ///
-/// Las demás locales van teñidas de su carril, de modo que el nombre y su
-/// línea se lean como una misma hebra. Las remotas van en hueco porque casi
-/// siempre duplican a una local, y lo que interesa es que no compitan.
+/// The other locals are tinted with their lane, so that the name and its line
+/// read as one thread. The remotes go hollow because they nearly always
+/// duplicate a local one, and what matters is that they do not compete.
 fn draw_badge(
     painter: &egui::Painter,
     name: &str,
@@ -635,7 +635,7 @@ fn text_w(fonts: &egui::epaint::Fonts, text: &str, font: &FontId) -> f32 {
     text.chars().map(|c| fonts.glyph_width(font, c)).sum()
 }
 
-/// Recorta el texto con puntos suspensivos si no cabe en `max_w`.
+/// Clips the text with an ellipsis if it does not fit in `max_w`.
 fn elide(ui: &egui::Ui, text: &str, max_w: f32, font: &FontId) -> String {
     let width = |s: &str| ui.fonts(|fonts| text_w(fonts, s, font));
 

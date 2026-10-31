@@ -1,8 +1,8 @@
-//! Barra lateral de referencias: locales, remotas y etiquetas.
+//! The sidebar of references: locals, remotes and tags.
 //!
-//! Las ramas se agrupan por su carpeta (`feat/`, `fix/`…) igual que hace el
-//! árbol de ramas de los clientes gráficos, porque una convención de nombres
-//! con barras es lo normal en cuanto el repositorio crece.
+//! Branches are grouped by their folder (`feat/`, `fix/`...) the way the
+//! branch tree of the graphical clients does, because a naming convention
+//! with slashes is the norm as soon as a repository grows.
 
 use std::collections::BTreeMap;
 
@@ -11,25 +11,25 @@ use gitrust_core::{Oid, RefEntry, RefKind};
 
 use crate::theme;
 
-/// Lo que se ha pedido desde la barra lateral.
+/// What has been asked for from the sidebar.
 pub enum Pick {
-    /// Enseñar en el grafo el commit al que apunta la referencia.
+    /// Show in the graph the commit the reference points at.
     Show(Oid),
-    /// Cambiarse a esa rama.
+    /// Switch to that branch.
     Switch { name: String, remote: bool },
-    /// Quitar esa etiqueta de aquí.
+    /// Take that tag off here.
     DeleteTag(String),
-    /// Borrar esa rama: la de aquí, o la del remoto.
+    /// Delete that branch: the one here, or the one on the remote.
     DeleteBranch { name: String, remote: bool },
-    /// Traerse esa rama a la que se tiene puesta.
+    /// Bring that branch into the one you are on.
     Merge(String),
 }
 
-/// Devuelve lo que se haya pedido sobre una referencia.
+/// Gives back whatever has been asked about a reference.
 ///
-/// Con `busy` en cierto hay una operación en marcha y las ramas dejan de
-/// poder pulsarse: cambiar de rama mientras se está trayendo del remoto es
-/// pedir dos cosas a la vez sobre los mismos ficheros.
+/// With `busy` set there is an operation under way and branches stop being
+/// clickable: switching branches while something is coming down from the
+/// remote is asking two things at once of the same files.
 pub fn show(
     ui: &mut egui::Ui,
     refs: &[RefEntry],
@@ -101,8 +101,8 @@ fn section(
 
     theme::section(ui, title, entries.len());
 
-    // El gesto no se ve, así que se dice. Y solo donde sirve: con una sola
-    // rama local, la que tienes puesta, no hay adónde cambiar.
+    // The gesture cannot be seen, so it is said. And only where it is any
+    // use: with one local branch, the one you are on, there is nowhere to go.
     if kind == RefKind::LocalBranch && entries.len() > 1 {
         ui.horizontal(|ui| {
             ui.add_space(2.0);
@@ -116,7 +116,7 @@ fn section(
 
     ui.add_space(2.0);
 
-    // Las que no tienen carpeta van arriba; el resto, en su grupo.
+    // The ones with no folder go on top; the rest, in their group.
     let mut folders: BTreeMap<&str, Vec<&RefEntry>> = BTreeMap::new();
     for entry in &entries {
         match entry.folder() {
@@ -151,9 +151,9 @@ fn leaf(
     busy: bool,
     picked: &mut Option<Pick>,
 ) {
-    // El color dice qué clase de referencia es: las locales en el azur del
-    // grafo, las remotas apagadas porque suelen duplicar a una local, y las
-    // etiquetas en el violeta de su pastilla.
+    // The color says what kind of reference it is: locals in the graph's
+    // azure, remotes muted because they usually duplicate a local one, and
+    // tags in the violet of their chip.
     let color = match (entry.is_head, entry.kind) {
         (true, _) | (_, RefKind::Head) => theme::HEAD,
         (_, RefKind::LocalBranch) => theme::lane(0),
@@ -173,9 +173,9 @@ fn leaf(
         RichText::new(entry.leaf()).font(font).color(color),
     );
 
-    // A una rama se puede ir. A la que ya tienes puesta no hay adónde ir, y a
-    // una etiqueta todavía no: eso deja HEAD desacoplado, que es un sitio del
-    // que hay que saber salir y aquí no se enseña cómo.
+    // You can go to a branch. To the one you are already on there is nowhere
+    // to go, and to a tag not yet: that leaves HEAD detached, which is a
+    // place you have to know how to get out of and we do not show how here.
     let branch = matches!(entry.kind, RefKind::LocalBranch | RefKind::RemoteBranch);
     let switchable = branch && !entry.is_head && !busy;
 
@@ -185,7 +185,7 @@ fn leaf(
         entry.name.clone()
     });
 
-    // Una etiqueta no lleva a ningún sitio, pero se puede quitar de en medio.
+    // A tag leads nowhere, but it can be taken out of the way.
     let removable = entry.kind == RefKind::Tag && !busy;
 
     if switchable || removable {
@@ -204,8 +204,8 @@ fn leaf(
                 }
             }
 
-            // Traérsela a la que uno tiene puesta. Sin rama puesta no hay
-            // adónde traerla, así que entonces ni se ofrece.
+            // Bringing it into the one you are on. With no branch checked out
+            // there is nowhere to bring it, so then it is not even offered.
             if let Some(head) = head.filter(|_| switchable) {
                 if ui
                     .button(format!("Merge into {head}"))
