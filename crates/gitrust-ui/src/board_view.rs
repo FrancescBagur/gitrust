@@ -1,25 +1,41 @@
 //! The board: the branches laid out in columns by where they stand.
 //!
-//! Nothing here is stored. The columns come straight off the graph, so they
-//! cannot fall out of date: the moment you commit, the card changes column on
-//! its own. The one thing the graph cannot know is whether anybody is looking
-//! at a branch, so the forge is asked that, and its answer arrives later and
-//! moves the cards again.
+//! Almost nothing here is stored. The four columns on the right come straight
+//! off the graph, so they cannot fall out of date: the moment you commit, the
+//! card changes column on its own. The one thing the graph cannot know is
+//! whether anybody is looking at a branch, so the forge is asked that, and its
+//! answer arrives later and moves the cards again.
+//!
+//! The backlog is the exception, and it is kept at the far left where the
+//! reading starts. Work nobody has begun leaves no trace in a repository, so
+//! it is the one column that has to be written down. What keeps it from
+//! rotting is that you cannot do much with an item except start it, and
+//! starting it turns it into a branch, which is read off the graph like
+//! everything else.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Color32, RichText, Stroke};
-use gitrust_core::{Board, Card, Lane, PullRequestState};
+use gitrust_core::{Backlog, Board, Card, Item, Lane, PullRequestState};
 
 use crate::refs_view::Pick;
 use crate::theme;
 
-/// The card being dragged right now.
+/// What is in the air right now.
+///
+/// One type for both kinds, because a column can only take one kind of
+/// payload, and "To do" has to be able to take either: a branch dragged back
+/// from somewhere, or an item being started.
 #[derive(Clone)]
-struct Dragged {
-    branch: String,
-    lane: Lane,
-    /// Whether it already has a pull request, open or otherwise.
-    reviewed: bool,
+enum Dragged {
+    Card {
+        branch: String,
+        lane: Lane,
+        /// Whether it already has a pull request, open or otherwise.
+        reviewed: bool,
+    },
+    Item {
+        id: String,
+    },
 }
 
 /// How the asking of the forge is going, as far as the header is concerned.
@@ -30,10 +46,27 @@ pub struct Forge<'a> {
     pub note: Option<&'a str>,
 }
 
+/// The backlog, and what is being typed into it.
+///
+/// It is passed in rather than read here because it is the one thing on the
+/// board that is stored, and reading it means opening the repository.
+pub struct Waiting<'a> {
+    pub backlog: &'a Backlog,
+    pub draft: &'a mut String,
+}
+
 /// What has been asked for from the board.
 pub enum Act {
     /// The same as from the sidebar: see a commit, or switch branch.
     Pick(Pick),
+    /// Write something down in the backlog.
+    Note(String),
+    /// Make that item's branch and take it out of the backlog.
+    Start(String),
+    /// Take it out without starting it.
+    Drop(String),
+    /// Send the backlog to the remote.
+    Share,
     /// Push that branch to the remote.
     Publish(String),
     /// Open a pull request for it.
@@ -46,23 +79,27 @@ pub enum Act {
     Open(String),
 }
 
-/// Whether dropping a card from one column into another has an operation behind it.
+/// Whether dropping something into a column has an operation behind it.
 ///
-/// Only two moves do, and both for the same reason: they are the only ones
-/// where you can name the command that would do what the drag promises. A
-/// branch with no commits cannot be published, and you do not come back from
-/// "done" by dragging: that would undo a merge, which is another thing, and graver.
+/// Only three moves do, and all for the same reason: they are the only ones
+/// where you can name the command that would do what the drag promises. An
+/// item becomes a branch, which is `git branch`. A branch with no commits
+/// cannot be published, and you do not come back from "done" by dragging: that
+/// would undo a merge, which is another thing, and graver.
 ///
-/// Which command the first one is depends on who was asked. Unasked, a card
+/// Which command the review one is depends on who was asked. Unasked, a card
 /// reaches "in review" by being pushed, so the drop pushes. Asked, it gets
 /// there by having a pull request, so the drop opens one — and a branch that
 /// already has one is left alone, because turning a draft into a review is
 /// `gh pr ready`, a different thing that deserves its own place.
 fn allows(dragged: &Dragged, to: Lane, asked: bool) -> bool {
-    match (dragged.lane, to) {
-        (Lane::InProgress, Lane::InReview) => !(asked && dragged.reviewed),
-        (Lane::InProgress, Lane::Done) | (Lane::InReview, Lane::Done) => true,
-        _ => false,
+    match dragged {
+        Dragged::Item { .. } => to == Lane::Todo,
+        Dragged::Card { lane, reviewed, .. } => match (lane, to) {
+            (Lane::InProgress, Lane::InReview) => !(asked && *reviewed),
+            (Lane::InProgress, Lane::Done) | (Lane::InReview, Lane::Done) => true,
+            _ => false,
+        },
     }
 }
 
@@ -70,7 +107,10 @@ fn transition(dragged: &Dragged, to: Lane, asked: bool) -> Option<Act> {
     if !allows(dragged, to, asked) {
         return None;
     }
-    let branch = dragged.branch.clone();
+    let branch = match dragged {
+        Dragged::Item { id } => return Some(Act::Start(id.clone())),
+        Dragged::Card { branch, .. } => branch.clone(),
+    };
     Some(match (to, asked) {
         (Lane::InReview, true) => Act::Review(branch),
         (Lane::InReview, false) => Act::Publish(branch),
@@ -100,9 +140,13 @@ pub fn show(
     project: &mut Option<String>,
     busy: bool,
     forge: Forge<'_>,
+    waiting: Waiting<'_>,
 ) -> Option<Act> {
-    if board.cards.is_empty() {
-        theme::empty(ui, "Only the main branch so far: make a branch and it will show up here");
+    if board.cards.is_empty() && waiting.backlog.items.is_empty() {
+        theme::empty(
+            ui,
+            "Only the main branch so far: make a branch, or write something down in the backlog",
+        );
         return None;
     }
 
@@ -114,8 +158,16 @@ pub fn show(
     }
 
     // The projects are the folders in the branch names: `theme/colors` and
-    // `theme/typography` are the same job, and people already name them so.
-    let projects = board.projects();
+    // `theme/typography` are the same job, and people already name them so. An
+    // item waiting in the backlog counts as well: its folder is a project
+    // before it is a branch.
+    let mut projects = board.projects();
+    for name in waiting.backlog.items.iter().filter_map(|item| item.project.as_deref()) {
+        if !projects.contains(&name) {
+            projects.push(name);
+        }
+    }
+    projects.sort_unstable();
     if !projects.is_empty() {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -138,8 +190,17 @@ pub fn show(
 
     let filter = project.clone();
     let asked = board.asked;
-    ui.columns(Lane::ALL.len(), |columns| {
-        for (ui, lane) in columns.iter_mut().zip(Lane::ALL) {
+    let Waiting { backlog, draft } = waiting;
+
+    // The backlog goes first because that is where the reading starts, and
+    // because the work really does flow that way.
+    ui.columns(1 + Lane::ALL.len(), |columns| {
+        let (first, rest) = columns.split_at_mut(1);
+        if let Some(act) = backlog_column(&mut first[0], backlog, draft, filter.as_deref()) {
+            picked = Some(act);
+        }
+
+        for (ui, lane) in rest.iter_mut().zip(Lane::ALL) {
             let cards: Vec<&Card> = board
                 .lane(lane)
                 .filter(|card| match &filter {
@@ -148,7 +209,8 @@ pub fn show(
                 })
                 .collect();
 
-            header(ui, lane, cards.len());
+            let (title, color) = column(lane);
+            header(ui, title, color, cards.len());
 
             // The whole column takes whatever is dropped on it.
             let mut dropped = None;
@@ -255,9 +317,7 @@ fn chip(text: &str, on: bool) -> RichText {
 }
 
 /// A column's label, with its count and its rule of color.
-fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
-    let (title, color) = column(lane);
-
+fn header(ui: &mut egui::Ui, title: &str, color: Color32, count: usize) {
     ui.horizontal(|ui| {
         ui.add_space(2.0);
         ui.label(RichText::new(title).font(theme::medium(12.0)).color(color));
@@ -266,11 +326,177 @@ fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
         );
     });
     ui.add_space(4.0);
+    rule_of(ui, color);
+}
 
+/// The line of color under a column's label.
+fn rule_of(ui: &mut egui::Ui, color: Color32) {
     let width = ui.available_width() - 8.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 2.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 1.0, theme::tint(color, 110));
     ui.add_space(8.0);
+}
+
+/// The one column that is written rather than worked out.
+///
+/// It takes nothing dropped on it. You leave the backlog by starting
+/// something; you do not come back to it by dragging a branch here, because
+/// that would mean deleting the branch, which is a different thing and said
+/// somewhere it can be read.
+fn backlog_column(
+    ui: &mut egui::Ui,
+    backlog: &Backlog,
+    draft: &mut String,
+    project: Option<&str>,
+) -> Option<Act> {
+    let mut picked = None;
+
+    let items: Vec<&Item> = backlog
+        .items
+        .iter()
+        .filter(|item| match project {
+            Some(name) => item.project.as_deref() == Some(name),
+            None => true,
+        })
+        .collect();
+
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        ui.label(RichText::new("Backlog").font(theme::medium(12.0)).color(theme::FAINT));
+        ui.label(
+            RichText::new(items.len().to_string()).font(theme::mono(10.5)).color(theme::FAINT),
+        );
+
+        // What has not gone out yet is said here rather than left to be
+        // discovered, in the same quiet voice the board uses to admit when it
+        // is guessing. Amber would have been louder and would have been wrong:
+        // it is the branch you are on, and it says so everywhere else.
+        if backlog.unshared > 0 {
+            let label = egui::Label::new(
+                RichText::new(format!("· {} not shared", backlog.unshared))
+                    .font(theme::body(11.0))
+                    .color(theme::FAINT),
+            );
+            let response = ui
+                .add(label.sense(egui::Sense::click()))
+                .on_hover_text(
+                    "The whole backlog has that many nobody else has yet, \
+                     the ones a project filter is hiding included.\n\n\
+                     Click to send it to the remote",
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.clicked() {
+                picked = Some(Act::Share);
+            }
+        }
+    });
+    ui.add_space(4.0);
+    rule_of(ui, theme::FAINT);
+
+    // With a project picked, what is written down belongs to it: the chip is
+    // already saying which job this is, so saying it twice would be a field
+    // nobody needs to fill.
+    let hint = match project {
+        Some(name) => format!("Something to do in {name}"),
+        None => "Something to do".to_string(),
+    };
+    let typing = ui.add(
+        egui::TextEdit::singleline(draft)
+            .hint_text(RichText::new(hint).font(theme::body(11.5)).color(theme::FAINT))
+            .font(theme::body(12.0))
+            .desired_width(f32::INFINITY),
+    );
+    if typing.lost_focus()
+        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+        && !draft.trim().is_empty()
+    {
+        picked = Some(Act::Note(std::mem::take(draft)));
+    }
+    ui.add_space(8.0);
+
+    egui::ScrollArea::vertical()
+        .id_salt("Backlog")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if items.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Nothing waiting").font(theme::body(11.5)).color(theme::FAINT),
+                );
+                return;
+            }
+            for item in items {
+                if let Some(act) = draw_item(ui, item) {
+                    picked = Some(act);
+                }
+                ui.add_space(6.0);
+            }
+        });
+
+    picked
+}
+
+/// An item: what it says, and the branch it would turn into.
+///
+/// The branch name is on the card from the start so that starting one is never
+/// a surprise. It is worked out from the title, so changing the name means
+/// saying the thing differently, which is the right way round: the title is
+/// what somebody will read.
+fn draw_item(ui: &mut egui::Ui, item: &Item) -> Option<Act> {
+    let frame = egui::Frame::NONE
+        .fill(theme::PANEL)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .stroke(Stroke::new(1.0, theme::HAIRLINE));
+
+    let id = egui::Id::new(("item", &item.id));
+    let dragging = ui.ctx().is_being_dragged(id);
+
+    let inner = ui.dnd_drag_source(id, Dragged::Item { id: item.id.clone() }, |ui| {
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.label(RichText::new(&item.title).font(theme::medium(12.5)).color(theme::TEXT));
+            ui.label(RichText::new(item.branch()).font(theme::mono(10.5)).color(theme::FAINT));
+        });
+    });
+
+    if dragging {
+        return None;
+    }
+
+    let response = inner.response.interact(egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            response.rect,
+            egui::CornerRadius::same(theme::RADIUS),
+            Stroke::new(1.0, theme::EDGE),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    // Dropping an item lives in the right-click menu rather than on a button,
+    // which on a card you drag would be fighting the drag for the same press.
+    let mut dropped = None;
+    response.context_menu(|ui| {
+        if ui.button("Drop it").clicked() {
+            dropped = Some(Act::Drop(item.id.clone()));
+            ui.close_menu();
+        }
+    });
+    if dropped.is_some() {
+        return dropped;
+    }
+
+    let mut hint = "Drag it to To do and it becomes a branch".to_string();
+    if !item.by.is_empty() {
+        hint.push_str(&format!("\n\nWritten down by {}", item.by));
+    }
+    if let Some(when) = ago(item.added) {
+        hint.push_str(&format!(" · {when}"));
+    }
+    response.on_hover_text(hint);
+    None
 }
 
 /// Leaves the drop zone in the column's color, but only if what is being
@@ -302,7 +528,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
 
     let id = egui::Id::new(("card", &card.branch));
     let dragging = ui.ctx().is_being_dragged(id);
-    let payload = Dragged {
+    let payload = Dragged::Card {
         branch: card.branch.clone(),
         lane: card.lane,
         reviewed: card.pull.is_some(),
@@ -470,5 +696,71 @@ fn ago(seconds: i64) -> Option<String> {
         0..=1 => Some("yesterday".to_string()),
         2..=30 => Some(format!("{days} days ago")),
         _ => Some(when.format("%d/%m/%Y").to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(lane: Lane, reviewed: bool) -> Dragged {
+        Dragged::Card {
+            branch: "fix/footer".to_string(),
+            lane,
+            reviewed,
+        }
+    }
+
+    fn item() -> Dragged {
+        Dragged::Item {
+            id: "abc123".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_item_leaves_the_backlog_by_becoming_a_branch_and_no_other_way() {
+        assert!(matches!(
+            transition(&item(), Lane::Todo, true),
+            Some(Act::Start(_))
+        ));
+        for lane in [Lane::InProgress, Lane::InReview, Lane::Done] {
+            assert!(transition(&item(), lane, true).is_none(), "{lane:?}");
+        }
+    }
+
+    #[test]
+    fn unasked_a_card_reaches_review_by_being_pushed_and_asked_by_a_pull_request() {
+        assert!(matches!(
+            transition(&card(Lane::InProgress, false), Lane::InReview, false),
+            Some(Act::Publish(_))
+        ));
+        assert!(matches!(
+            transition(&card(Lane::InProgress, false), Lane::InReview, true),
+            Some(Act::Review(_))
+        ));
+    }
+
+    #[test]
+    fn a_branch_that_already_has_a_pull_request_is_left_alone() {
+        assert!(transition(&card(Lane::InProgress, true), Lane::InReview, true).is_none());
+        // Unasked there is nothing known about pull requests, so pushing it
+        // again is still a thing that can be named and done.
+        assert!(transition(&card(Lane::InProgress, true), Lane::InReview, false).is_some());
+    }
+
+    #[test]
+    fn nothing_comes_back_out_of_done_by_dragging() {
+        for from in [Lane::Todo, Lane::InProgress, Lane::InReview, Lane::Done] {
+            for to in [Lane::Todo, Lane::InProgress] {
+                assert!(transition(&card(from, false), to, true).is_none(), "{from:?} to {to:?}");
+            }
+        }
+        assert!(transition(&card(Lane::Done, false), Lane::InReview, true).is_none());
+    }
+
+    #[test]
+    fn a_branch_with_nothing_of_its_own_cannot_be_published() {
+        assert!(transition(&card(Lane::Todo, false), Lane::InReview, false).is_none());
+        assert!(transition(&card(Lane::Todo, false), Lane::Done, true).is_none());
     }
 }

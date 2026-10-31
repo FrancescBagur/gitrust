@@ -24,6 +24,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] A board of columns, worked out from the graph and storing nothing
 - [x] In review means a pull request is open, asked of the forge through `gh`
 - [x] Dragging a card runs the operation that would have moved it
+- [x] A backlog everyone with the repository shares, kept in a reference
 - [x] Everything in English, interface and code alike
 - [x] Switch branch, including to one that only exists on the remote
 - [x] Delete branches, here or on the remote, saying what is lost
@@ -45,6 +46,7 @@ crates/
     stash.rs        the pile of changes set aside
     graph.rs        the lane algorithm, and the uncommitted-changes row
     board.rs        which column each branch falls in
+    backlog.rs      the work with no branch yet, and how it travels
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
@@ -76,6 +78,17 @@ channel. The painting thread waits for nobody.
 **Git backend:** `git2` (libgit2) for the bulk of the operations. For
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
 binary, as the commercial clients do, because libgit2 does not cover them well.
+
+**The backlog:** the one column that is stored, because work nobody has begun
+leaves no trace in a repository. It is kept in `refs/gitrust/backlog`, a
+reference outside the branch namespace — the same trick `git notes` plays with
+`refs/notes/*` — so it is invisible to the graph, to the labels on the commits
+and to the sidebar without any of them knowing it exists, and it reaches
+everybody who has the repository by being pushed and fetched by name. One file
+per item, so two people writing down two different things merge without
+noticing. What keeps it from rotting is a rule rather than a mechanism: an item
+lives there only until it becomes a branch, and from that moment it is read off
+the graph like everything else.
 
 **The forge:** Git stores nothing about pull requests, so a branch that is
 merely pushed and one somebody is reviewing look alike from inside the
@@ -111,13 +124,13 @@ With no argument it opens the repository in the current directory.
 ## Tests
 
 ```bash
-cargo test -p gitrust-core
+cargo test
 ```
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and fifteen tests,
-seventy-nine of them against real repositories made in `/tmp` and deleted when
+files. Those are the ones that carry cover: a hundred and thirty-five tests,
+eighty-six of them against real repositories made in `/tmp` and deleted when
 they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

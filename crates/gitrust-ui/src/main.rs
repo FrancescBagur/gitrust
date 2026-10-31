@@ -17,8 +17,8 @@ mod theme;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, Board, CommitDetail, FileDiff, Graph, HunkId, Oid,
-    PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
+    compose, layout, layout_with_working, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
+    Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -70,6 +70,10 @@ struct App {
     /// The work laid out in columns, and which project it is filtered by.
     board: Option<Board>,
     project: Option<String>,
+    /// The one column that is stored rather than worked out, and what is being
+    /// typed into it.
+    backlog: Backlog,
+    backlog_draft: String,
     /// What the forge last said, and the asking of it.
     pulls: Option<PullRequests>,
     forge: Option<Forge>,
@@ -174,6 +178,8 @@ impl App {
             ref_filter: String::new(),
             board: None,
             project: None,
+            backlog: Backlog::default(),
+            backlog_draft: String::new(),
             pulls: None,
             forge: None,
             forge_note: None,
@@ -221,6 +227,7 @@ impl App {
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
         self.board = repo.board_with(self.pulls.as_ref()).ok();
+        self.backlog = repo.backlog().unwrap_or_default();
         self.stashes = repo.stashes().unwrap_or_default();
 
         // The tree's state goes before the graph: whether there is a row of
@@ -637,6 +644,23 @@ impl App {
                 self.status_failed = false;
             }
             Err(err) => self.note_error(format!("could not open a browser: {err}")),
+        }
+    }
+
+    /// Writes something in the backlog, or takes something out of it.
+    ///
+    /// All of it is local and finishes before anybody notices: the sharing is
+    /// a separate thing, asked for out loud. Everything is read again
+    /// afterwards because starting an item makes a branch and moves HEAD,
+    /// which changes the graph, the sidebar and the columns at once.
+    fn note_down(&mut self, op: impl FnOnce(&Repo) -> Result<String>) {
+        match self.repo().and_then(|repo| op(&repo)) {
+            Ok(note) => {
+                self.load();
+                self.status = note;
+                self.status_failed = false;
+            }
+            Err(err) => self.note_error(format!("{err:#}")),
         }
     }
 
@@ -1065,6 +1089,10 @@ impl eframe::App for App {
                             &mut self.project,
                             self.job.is_some(),
                             state,
+                            board_view::Waiting {
+                                backlog: &self.backlog,
+                                draft: &mut self.backlog_draft,
+                            },
                         ),
                         None => {
                             theme::empty(ui, "Open a repository to see its work");
@@ -1096,6 +1124,24 @@ impl eframe::App for App {
                             self.ask_forge();
                         }
                         Some(board_view::Act::Open(url)) => self.open_in_browser(&url),
+
+                        // The backlog. Writing is instant and local; sending
+                        // it out is the only part that goes near a network.
+                        Some(board_view::Act::Note(title)) => {
+                            let project = self.project.clone();
+                            self.note_down(move |repo| {
+                                repo.backlog_add(&title, project.as_deref())
+                            });
+                        }
+                        Some(board_view::Act::Start(id)) => {
+                            self.note_down(move |repo| repo.backlog_start(&id))
+                        }
+                        Some(board_view::Act::Drop(id)) => {
+                            self.note_down(move |repo| repo.backlog_remove(&id))
+                        }
+                        Some(board_view::Act::Share) => {
+                            self.spawn("sharing the backlog", |repo| repo.backlog_share())
+                        }
                         _ => {}
                     }
                 }

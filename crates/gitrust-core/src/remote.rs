@@ -324,7 +324,7 @@ impl Repo {
     }
 
     /// Sends some refspecs and finds out whether the server says no.
-    fn send(&self, remote: &mut Remote<'_>, refspecs: &[String]) -> Result<()> {
+    pub(crate) fn send(&self, remote: &mut Remote<'_>, refspecs: &[String]) -> Result<()> {
         let refused = std::cell::RefCell::new(None);
         {
             let mut callbacks = RemoteCallbacks::new();
@@ -422,11 +422,17 @@ impl Repo {
         Ok((remote, branch))
     }
 
-    fn fetch_from(&self, remote: &str) -> Result<()> {
+    /// Brings down the branches, and the backlog along with them.
+    ///
+    /// The remote's own refspecs are asked for by name rather than left to
+    /// default, because one more has to go with them: the backlog lives
+    /// outside the branch namespace, so nothing configured would ever bring it
+    /// down. It costs no second round trip -- it is the same fetch.
+    pub(crate) fn fetch_from(&self, name: &str) -> Result<()> {
         let mut remote = self
             .inner
-            .find_remote(remote)
-            .with_context(|| format!("no remote called '{remote}'"))?;
+            .find_remote(name)
+            .with_context(|| format!("no remote called '{name}'"))?;
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(credentials(self.inner.config()?));
@@ -434,9 +440,18 @@ impl Repo {
         let mut options = FetchOptions::new();
         options.remote_callbacks(callbacks);
 
-        // With no refspecs it uses the remote's own, which is what `git fetch` does.
-        let empty: [&str; 0] = [];
-        remote.fetch(&empty, Some(&mut options), None).context("could not fetch from the remote")?;
+        let mut refspecs: Vec<String> =
+            remote.fetch_refspecs()?.iter().flatten().map(str::to_string).collect();
+        refspecs.push(self.backlog_refspec(name));
+
+        remote
+            .fetch(&refspecs, Some(&mut options), None)
+            .context("could not fetch from the remote")?;
+
+        // A backlog that will not join is not a reason for the pull to fail:
+        // the branches are down and that is what was asked for. The column
+        // goes on saying the two sides differ, which is where it belongs.
+        let _ = self.absorb_backlog(name);
         Ok(())
     }
 }

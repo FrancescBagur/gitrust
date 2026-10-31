@@ -1212,3 +1212,152 @@ fn pushing_a_branch_you_are_not_on() {
 
     let _ = std::fs::remove_dir_all(&bare);
 }
+
+// ------------------------------------------------------------- the backlog
+
+#[test]
+fn an_item_written_down_comes_back_with_the_branch_it_would_become() {
+    let temp = TempRepo::new("backlog-add");
+    first_commit(&temp);
+
+    let repo = temp.open();
+    repo.backlog_add("The footer breaks at 320px", Some("fix")).unwrap();
+
+    let backlog = temp.open().backlog().unwrap();
+    assert_eq!(backlog.items.len(), 1);
+    assert_eq!(backlog.items[0].title, "The footer breaks at 320px");
+    assert_eq!(backlog.items[0].project.as_deref(), Some("fix"));
+    assert_eq!(backlog.items[0].branch(), "fix/the-footer-breaks-at-320px");
+}
+
+#[test]
+fn the_backlog_is_invisible_to_the_history_and_to_the_references() {
+    let temp = TempRepo::new("backlog-hidden");
+    first_commit(&temp);
+
+    let repo = temp.open();
+    repo.backlog_add("Dark mode", None).unwrap();
+    repo.backlog_add("Keyboard shortcuts", None).unwrap();
+
+    // Two commits were written on refs/gitrust/backlog, and the graph has to
+    // go on showing the one commit the repository actually has.
+    let repo = temp.open();
+    assert_eq!(repo.commits(100).unwrap().len(), 1);
+
+    let names: Vec<String> = repo.references().unwrap().into_iter().map(|r| r.name).collect();
+    assert!(
+        !names.iter().any(|name| name.contains("gitrust") || name.contains("backlog")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn starting_an_item_makes_its_branch_and_empties_its_place() {
+    let temp = TempRepo::new("backlog-start");
+    first_commit(&temp);
+
+    let repo = temp.open();
+    repo.backlog_add("Dark mode", Some("theme")).unwrap();
+    let id = temp.open().backlog().unwrap().items[0].id.clone();
+
+    let note = temp.open().backlog_start(&id).unwrap();
+    assert!(note.contains("theme/dark-mode"), "{note}");
+
+    let repo = temp.open();
+    assert_eq!(repo.head_name(), "theme/dark-mode");
+    assert!(repo.backlog().unwrap().items.is_empty());
+}
+
+#[test]
+fn an_item_whose_name_is_taken_is_not_thrown_away() {
+    let temp = TempRepo::new("backlog-clash");
+    first_commit(&temp);
+
+    let repo = temp.open();
+    repo.branch_here("dark-mode").unwrap();
+    temp.open().backlog_add("Dark mode", None).unwrap();
+
+    let id = temp.open().backlog().unwrap().items[0].id.clone();
+    let err = temp.open().backlog_start(&id).unwrap_err().to_string();
+    assert!(err.contains("dark-mode"), "{err}");
+
+    // The branch could not be made, so the note is still where it was.
+    assert_eq!(temp.open().backlog().unwrap().items.len(), 1);
+}
+
+#[test]
+fn a_title_a_branch_could_not_be_named_after_is_refused_outright() {
+    let temp = TempRepo::new("backlog-unnameable");
+    first_commit(&temp);
+
+    // Nothing in it a branch name can be built from, so it is turned down
+    // where it is typed rather than becoming a branch called nothing.
+    let err = temp.open().backlog_add("¿¡—…!?", None).unwrap_err().to_string();
+    assert!(err.contains("branch could be called"), "{err}");
+    assert!(temp.open().backlog().unwrap().items.is_empty());
+}
+
+#[test]
+fn the_backlog_travels_to_everyone_who_has_the_repository() {
+    let mine = TempRepo::new("backlog-mine");
+    let branch = first_commit(&mine);
+    let bare = with_remote(&mine, "backlog-bare");
+    mine.open().push().unwrap();
+
+    mine.open().backlog_add("The footer breaks at 320px", None).unwrap();
+    assert_eq!(mine.open().backlog().unwrap().unshared, 1);
+    mine.open().backlog_share().unwrap();
+    assert_eq!(mine.open().backlog().unwrap().unshared, 0);
+
+    // Somebody else's copy of the same repository, which has never seen it.
+    let yours = temp_dir("backlog-yours");
+    let _ = std::fs::remove_dir_all(&yours);
+    git2::Repository::clone(&bare.display().to_string(), &yours).unwrap();
+
+    let theirs = Repo::open(&yours).unwrap();
+    assert!(theirs.backlog().unwrap().items.is_empty(), "a clone fetches branches only");
+
+    theirs.fetch_all().unwrap();
+    let items = Repo::open(&yours).unwrap().backlog().unwrap().items;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title, "The footer breaks at 320px");
+
+    assert_eq!(branch, mine.open().head_name());
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&yours);
+}
+
+#[test]
+fn two_people_writing_down_two_different_things_do_not_clash() {
+    let mine = TempRepo::new("backlog-merge-mine");
+    first_commit(&mine);
+    let bare = with_remote(&mine, "backlog-merge-bare");
+    mine.open().push().unwrap();
+    mine.open().backlog_add("Dark mode", None).unwrap();
+    mine.open().backlog_share().unwrap();
+
+    let yours = temp_dir("backlog-merge-yours");
+    let _ = std::fs::remove_dir_all(&yours);
+    git2::Repository::clone(&bare.display().to_string(), &yours).unwrap();
+    let theirs = git2::Repository::open(&yours).unwrap();
+    let mut config = theirs.config().unwrap();
+    config.set_str("user.name", "someone else").unwrap();
+    config.set_str("user.email", "else@example.invalid").unwrap();
+    Repo::open(&yours).unwrap().fetch_all().unwrap();
+
+    // Both of us write something down from the same starting point.
+    mine.open().backlog_add("Keyboard shortcuts", None).unwrap();
+    Repo::open(&yours).unwrap().backlog_add("Printing", None).unwrap();
+
+    // Yours goes up first, so mine has to join the two rather than overwrite.
+    Repo::open(&yours).unwrap().backlog_share().unwrap();
+    mine.open().backlog_share().unwrap();
+
+    let mut titles: Vec<String> =
+        mine.open().backlog().unwrap().items.into_iter().map(|item| item.title).collect();
+    titles.sort();
+    assert_eq!(titles, ["Dark mode", "Keyboard shortcuts", "Printing"]);
+
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&yours);
+}

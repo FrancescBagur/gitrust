@@ -3,6 +3,7 @@
 //! This crate knows nothing about the user interface. Everything it exposes is
 //! plain data, so the UI could be replaced without touching the Git logic.
 
+pub mod backlog;
 pub mod board;
 pub mod branch;
 pub mod detail;
@@ -18,6 +19,7 @@ pub mod stash;
 pub mod status;
 pub mod tag;
 
+pub use backlog::{Backlog, Item};
 pub use board::{Board, Card, Lane};
 pub use detail::{CommitDetail, CommitFile, RefEntry};
 pub use git2::Oid;
