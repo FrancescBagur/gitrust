@@ -24,7 +24,7 @@ impl Repo {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let inner = Repository::discover(path)
-            .with_context(|| format!("no hay un repositorio Git en {}", path.display()))?;
+            .with_context(|| format!("no Git repository at {}", path.display()))?;
         Ok(Self { inner })
     }
 
@@ -42,8 +42,8 @@ impl Repo {
             Ok(head) => head
                 .shorthand()
                 .map(str::to_string)
-                .unwrap_or_else(|| "HEAD desacoplado".to_string()),
-            Err(_) => "sin commits".to_string(),
+                .unwrap_or_else(|| "detached HEAD".to_string()),
+            Err(_) => "no commits".to_string(),
         }
     }
 
@@ -82,8 +82,8 @@ impl Repo {
             out.push(Commit {
                 id: oid,
                 short_id: oid.to_string().chars().take(7).collect(),
-                summary: commit.summary().unwrap_or("(sin mensaje)").to_string(),
-                author: author.name().unwrap_or("(desconocido)").to_string(),
+                summary: commit.summary().unwrap_or("(no message)").to_string(),
+                author: author.name().unwrap_or("(unknown)").to_string(),
                 time: commit.time().seconds(),
                 parents: commit.parent_ids().collect(),
                 refs: labels.get(&oid).cloned().unwrap_or_default(),
@@ -230,9 +230,9 @@ impl Repo {
         Ok(CommitDetail {
             id: oid,
             short_id: oid.to_string().chars().take(7).collect(),
-            summary: commit.summary().unwrap_or("(sin mensaje)").to_string(),
+            summary: commit.summary().unwrap_or("(no message)").to_string(),
             body,
-            author: author.name().unwrap_or("(desconocido)").to_string(),
+            author: author.name().unwrap_or("(unknown)").to_string(),
             email: author.email().unwrap_or_default().to_string(),
             time: commit.time().seconds(),
             parents: commit.parent_ids().collect(),
@@ -384,7 +384,7 @@ impl Repo {
             self.inner.apply(diff, to, Some(&mut options))?;
         }
 
-        anyhow::ensure!(applied, "el hunk ya no existe; recarga el diff");
+        anyhow::ensure!(applied, "that hunk is gone; reload the diff");
         Ok(())
     }
 
@@ -420,7 +420,7 @@ impl Repo {
             let file = self.workdir().join(path);
             if file.exists() {
                 std::fs::remove_file(&file)
-                    .with_context(|| format!("no se pudo borrar {path}"))?;
+                    .with_context(|| format!("could not delete {path}"))?;
             }
             return Ok(());
         }
@@ -430,7 +430,7 @@ impl Repo {
 
         self.inner
             .checkout_index(None, Some(&mut options))
-            .with_context(|| format!("no se pudieron descartar los cambios de {path}"))?;
+            .with_context(|| format!("could not discard the changes to {path}"))?;
         Ok(())
     }
 
@@ -441,7 +441,7 @@ impl Repo {
     pub fn discard_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
         anyhow::ensure!(
             self.in_index(path)?,
-            "{path} no está en el índice todavía: descártalo entero"
+            "{path} is not in the index yet: discard it whole"
         );
 
         let mut options = DiffOptions::new();
@@ -466,12 +466,12 @@ impl Repo {
     /// Crea un commit con lo que haya en el índice.
     pub fn commit(&self, message: &str) -> Result<Oid> {
         let message = message.trim();
-        anyhow::ensure!(!message.is_empty(), "el mensaje del commit está vacío");
+        anyhow::ensure!(!message.is_empty(), "the commit message is empty");
 
         let signature = self
             .inner
             .signature()
-            .context("falta configurar user.name y user.email en Git")?;
+            .context("set user.name and user.email in Git first")?;
 
         let mut index = self.inner.index()?;
         let tree_id = index.write_tree()?;
@@ -501,18 +501,18 @@ impl Repo {
     /// es lo que hace `git commit --amend`.
     pub fn amend(&self, message: &str) -> Result<Oid> {
         let message = message.trim();
-        anyhow::ensure!(!message.is_empty(), "el mensaje del commit está vacío");
+        anyhow::ensure!(!message.is_empty(), "the commit message is empty");
 
         let head = self
             .inner
             .head()
             .and_then(|head| head.peel_to_commit())
-            .context("no hay ningún commit que enmendar")?;
+            .context("there is no commit to amend")?;
 
         let committer = self
             .inner
             .signature()
-            .context("falta configurar user.name y user.email en Git")?;
+            .context("set user.name and user.email in Git first")?;
 
         let mut index = self.inner.index()?;
         let tree = self.inner.find_tree(index.write_tree()?)?;

@@ -374,21 +374,20 @@ pub fn path_text(path: &str, size: f32, selected: bool) -> egui::text::LayoutJob
 /// `1 fichero`, `3 ficheros`.
 pub fn files_label(count: usize) -> String {
     if count == 1 {
-        "1 fichero".to_string()
+        "1 file".to_string()
     } else {
-        format!("{count} ficheros")
+        format!("{count} files")
     }
 }
 
-/// «2 preparados, 3 sin preparar», callando el lado que esté vacío.
+/// «2 staged, 3 unstaged», callando el lado que esté vacío.
 pub fn pending_label(staged: usize, unstaged: usize) -> String {
     let mut parts = Vec::new();
     if staged > 0 {
-        let plural = if staged == 1 { "" } else { "s" };
-        parts.push(format!("{staged} preparado{plural}"));
+        parts.push(format!("{staged} staged"));
     }
     if unstaged > 0 {
-        parts.push(format!("{unstaged} sin preparar"));
+        parts.push(format!("{unstaged} unstaged"));
     }
     parts.join(", ")
 }

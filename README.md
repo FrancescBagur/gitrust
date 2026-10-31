@@ -18,9 +18,12 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Los cambios sin confirmar, como una fila más arriba del grafo
 - [x] Barra de acciones: pull, push, rama nueva y stash
 - [x] Push forzado con lease, y envío de etiquetas
+- [x] Pull de cuatro maneras: fetch, fusión, solo avance y rebase
 - [x] Columna de ramas y etiquetas a la izquierda del grafo
 - [x] Buscar en la historia por mensaje, autor o hash
 - [x] Tablero de columnas, deducido del grafo sin guardar nada
+- [x] Arrastrar una tarjeta ejecuta la operación que la movería de columna
+- [x] Toda la interfaz en inglés
 - [x] Cambiar de rama, también a una que solo existe en el remoto
 - [x] Borrar ramas, aquí o en el remoto, diciendo qué se pierde
 - [x] Fusionar una rama en la actual, parándose en seco si choca
@@ -35,7 +38,7 @@ crates/
   gitrust-core/     lógica Git, sin dependencias de UI
     repo.rs         repositorio, commits, índice y diffs (libgit2)
     branch.rs       crear ramas, cambiar de una a otra y borrarlas
-    merge.rs        juntar dos ramas, o negarse sin tocar nada
+    merge.rs        juntar dos ramas o rebasar una, o negarse sin tocar nada
     tag.rs          etiquetas ligeras y anotadas
     remote.rs       traer, llevar, y la distancia con la rama remota
     stash.rs        la pila de cambios apartados
@@ -60,6 +63,9 @@ crates/
 
 Las vistas no tocan el repositorio: devuelven una `Action` y `main.rs` la
 ejecuta. Eso mantiene el pintado libre de efectos secundarios.
+
+Los textos que ve el usuario están en inglés; los comentarios del código y los
+nombres de las pruebas siguen en castellano.
 
 El núcleo no conoce la UI. Si en algún momento egui deja de encajar, se
 sustituye `gitrust-ui` y la lógica Git sigue intacta.
@@ -98,7 +104,7 @@ cargo test -p gitrust-core
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
 operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: noventa y dos pruebas, sesenta y nueve de
+ficheros. Son las que llevan cobertura: noventa y nueve pruebas, setenta y seis de
 ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
 
 Las del remoto hablan con un repositorio bare en otro directorio temporal. Por

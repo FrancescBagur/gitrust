@@ -76,7 +76,7 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
                 .desired_width(260.0)
                 .margin(egui::vec2(8.0, 5.0))
                 .font(theme::body(12.0))
-                .hint_text(RichText::new("Buscar: mensaje, autor o hash").color(theme::FAINT)),
+                .hint_text(RichText::new("Find: message, author or hash").color(theme::FAINT)),
         );
 
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
@@ -98,16 +98,16 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
 
         ui.add_space(4.0);
         let (text, color) = match found {
-            0 => ("sin resultados".to_string(), theme::MUTED),
-            n => (format!("{} de {n}", at + 1), theme::FAINT),
+            0 => ("no matches".to_string(), theme::MUTED),
+            n => (format!("{} of {n}", at + 1), theme::FAINT),
         };
         ui.label(RichText::new(text).font(theme::mono(11.0)).color(color));
 
         if found > 0 {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (glyph, hint, what) in [
-                ("↑", "Anterior (Shift+Enter)", Found::Prev),
-                ("↓", "Siguiente (Enter)", Found::Next),
+                ("↑", "Previous (Shift+Enter)", Found::Prev),
+                ("↓", "Next (Enter)", Found::Next),
             ] {
                 if ui
                     .add(
@@ -140,7 +140,7 @@ pub fn show(
     bring: Option<usize>,
 ) -> Option<Oid> {
     if graph.rows.is_empty() {
-        theme::empty(ui, "Abre un repositorio para ver su historia");
+        theme::empty(ui, "Open a repository to see its history");
         return None;
     }
 
@@ -359,7 +359,7 @@ fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
     let title = painter.text(
         Pos2::new(left + 2.0, y),
         Align2::LEFT_CENTER,
-        "Cambios sin confirmar",
+        "Uncommitted changes",
         theme::medium(13.0),
         theme::TEXT,
     );

@@ -96,7 +96,7 @@ impl Repo {
         let tip = self
             .inner
             .find_branch(&trunk, BranchType::Local)
-            .with_context(|| format!("no hay ninguna rama llamada «{trunk}»"))?
+            .with_context(|| format!("no branch called '{trunk}'"))?
             .get()
             .peel(ObjectType::Commit)?
             .id();
@@ -194,7 +194,7 @@ impl Repo {
     /// HEAD apunta a la rama por defecto del repositorio. Si no hay remoto, se
     /// prueban los nombres de siempre. Y si tampoco, la rama que esté puesta,
     /// que al menos no es una invención.
-    fn trunk(&self) -> Result<String> {
+    pub fn trunk(&self) -> Result<String> {
         for remote in self.inner.remotes()?.iter().flatten() {
             let Ok(reference) = self.inner.find_reference(&format!("refs/remotes/{remote}/HEAD"))
             else {
@@ -221,6 +221,6 @@ impl Repo {
             .head()
             .ok()
             .and_then(|head| head.shorthand().map(str::to_string))
-            .context("el repositorio no tiene ninguna rama")
+            .context("the repository has no branches")
     }
 }

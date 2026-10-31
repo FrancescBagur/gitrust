@@ -46,7 +46,7 @@ pub fn show(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 5.0))
             .font(theme::body(12.5))
-            .hint_text(RichText::new("Buscar una rama").color(theme::FAINT)),
+            .hint_text(RichText::new("Find a branch").color(theme::FAINT)),
     );
     ui.add_space(8.0);
 
@@ -57,12 +57,12 @@ pub fn show(
         .collect();
 
     if refs.is_empty() {
-        theme::empty(ui, "Sin referencias");
+        theme::empty(ui, "No references");
         return None;
     }
 
     if matching.is_empty() {
-        theme::empty(ui, "Ninguna rama con ese nombre");
+        theme::empty(ui, "No branch by that name");
         return None;
     }
 
@@ -71,9 +71,9 @@ pub fn show(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (title, kind) in [
-                ("Ramas", RefKind::LocalBranch),
-                ("Remotas", RefKind::RemoteBranch),
-                ("Etiquetas", RefKind::Tag),
+                ("Branches", RefKind::LocalBranch),
+                ("Remotes", RefKind::RemoteBranch),
+                ("Tags", RefKind::Tag),
             ] {
                 section(ui, title, kind, &matching, selected, head, busy, &mut picked);
             }
@@ -107,7 +107,7 @@ fn section(
         ui.horizontal(|ui| {
             ui.add_space(2.0);
             ui.label(
-                RichText::new("Doble clic para cambiar de rama")
+                RichText::new("Double-click to switch branch")
                     .font(theme::body(10.5))
                     .color(theme::FAINT),
             );
@@ -180,7 +180,7 @@ fn leaf(
     let switchable = branch && !entry.is_head && !busy;
 
     let response = response.on_hover_text(if switchable {
-        format!("{}\nDoble clic para cambiar a esta rama", entry.name)
+        format!("{}\nDouble-click to switch to this branch", entry.name)
     } else {
         entry.name.clone()
     });
@@ -192,9 +192,9 @@ fn leaf(
         let remote = entry.kind == RefKind::RemoteBranch;
         response.context_menu(|ui| {
             if switchable {
-                let button = ui.button("Cambiar a esta rama");
+                let button = ui.button("Switch to this branch");
                 let button = if remote {
-                    button.on_hover_text("crea aquí la rama local, si todavía no está")
+                    button.on_hover_text("creates the local branch here if it is not there yet")
                 } else {
                     button
                 };
@@ -208,8 +208,8 @@ fn leaf(
             // adónde traerla, así que entonces ni se ofrece.
             if let Some(head) = head.filter(|_| switchable) {
                 if ui
-                    .button(format!("Fusionar en {head}"))
-                    .on_hover_text("si chocan, no se toca nada y se dice dónde")
+                    .button(format!("Merge into {head}"))
+                    .on_hover_text("if they clash, nothing is touched and it says where")
                     .clicked()
                 {
                     *picked = Some(Pick::Merge(entry.name.clone()));
@@ -219,14 +219,14 @@ fn leaf(
 
             if switchable {
                 let label = if remote {
-                    "Borrar la rama del remoto"
+                    "Delete the branch on the remote"
                 } else {
-                    "Borrar la rama"
+                    "Delete the branch"
                 };
                 let hint = if remote {
-                    "se borra en el servidor: lo verá todo el mundo"
+                    "deleted on the server: everyone will see it"
                 } else {
-                    "solo la de aquí; lo que esté en un remoto se queda"
+                    "only the one here; anything on a remote stays"
                 };
                 if ui.button(label).on_hover_text(hint).clicked() {
                     *picked = Some(Pick::DeleteBranch { name: entry.name.clone(), remote });
@@ -236,8 +236,8 @@ fn leaf(
 
             if removable
                 && ui
-                    .button("Borrar la etiqueta")
-                    .on_hover_text("solo la de aquí; la del remoto se queda donde está")
+                    .button("Delete the tag")
+                    .on_hover_text("only the one here; the remote's stays put")
                     .clicked()
             {
                 *picked = Some(Pick::DeleteTag(entry.name.clone()));

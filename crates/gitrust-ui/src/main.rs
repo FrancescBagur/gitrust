@@ -18,7 +18,7 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Board, CommitDetail, FileDiff, Graph, HunkId, Oid,
-    RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
+    PullMode, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -70,6 +70,8 @@ struct App {
     /// El trabajo repartido en columnas, y por qué proyecto se filtra.
     board: Option<Board>,
     project: Option<String>,
+    /// La postura del botón de traer: repite lo último que se pidió.
+    pull_mode: PullMode,
 
     // La barra de acciones y lo que necesita saber.
     tracking: Option<Tracking>,
@@ -129,6 +131,7 @@ enum Deed {
     DiscardHunk { path: String, hunk: HunkId },
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
+    Land(String),
 }
 
 impl App {
@@ -152,6 +155,7 @@ impl App {
             ref_filter: String::new(),
             board: None,
             project: None,
+            pull_mode: PullMode::Merge,
             tracking: None,
             stashes: Vec::new(),
             draft: action_bar::Draft::default(),
@@ -206,7 +210,7 @@ impl App {
         self.preselect();
 
         self.recount();
-        self.status = format!("leído en {} ms", started.elapsed().as_millis());
+        self.status = format!("read in {} ms", started.elapsed().as_millis());
         self.status_failed = false;
         self.reload_detail(&repo);
     }
@@ -224,9 +228,9 @@ impl App {
 
         let refs = self.refs.len();
         self.summary = format!(
-            "{total} {} en {refs} {}",
+            "{total} {} across {refs} {}",
             if total == 1 { "commit" } else { "commits" },
-            if refs == 1 { "referencia" } else { "referencias" },
+            if refs == 1 { "ref" } else { "refs" },
         );
         Ok(())
     }
@@ -358,7 +362,7 @@ impl App {
     fn read_work(&mut self, repo: &Repo) {
         match repo.status() {
             Ok(work) => self.work = work,
-            Err(err) => return self.note_error(format!("no se pudo leer el estado: {err}")),
+            Err(err) => return self.note_error(format!("could not read the status: {err}")),
         }
 
         // Si el fichero seleccionado ya no está en su lado, soltamos la selección.
@@ -399,6 +403,15 @@ impl App {
             Some(path) if self.detail.is_some() => repo.commit_file_diff(oid, path).ok(),
             _ => None,
         };
+    }
+
+    /// Elige un commit y lo trae a la vista del grafo.
+    ///
+    /// Al pulsar una rama en la lateral o una tarjeta del tablero, lo que se
+    /// quiere es verla. Si cae fuera de la ventana, elegirla no se nota.
+    fn reveal_commit(&mut self, oid: Oid) {
+        self.bring = self.graph.rows.iter().position(|row| row.commit.id == oid);
+        self.select_commit(oid);
     }
 
     fn select_commit(&mut self, oid: Oid) {
@@ -488,7 +501,7 @@ impl App {
             }
             Err(TryRecvError::Disconnected) => {
                 self.job = None;
-                self.note_error("la operación se cortó por el camino".to_string());
+                self.note_error("the operation was cut short".to_string());
             }
         }
     }
@@ -506,14 +519,14 @@ impl App {
     /// Pregunta antes de borrar una rama, diciendo cuánto cuesta.
     fn ask_delete_branch(&mut self, name: String, remote: bool) {
         if remote {
-            let server = name.split_once('/').map(|(server, _)| server).unwrap_or("el remoto");
+            let server = name.split_once('/').map(|(server, _)| server).unwrap_or("the remote");
             let detail = format!(
-                "Se borra en {server}, no solo aquí. Quien la tenga la seguirá viendo hasta que traiga."
+                "It is deleted on {server}, not just here. Anyone who has it keeps seeing it until they fetch."
             );
             return self.ask(
-                format!("¿Borrar {name} del remoto?"),
+                format!("Delete {name} on the remote?"),
                 &detail,
-                "Borrar",
+                "Delete",
                 Deed::DeleteBranch { name, remote },
             );
         }
@@ -521,20 +534,45 @@ impl App {
         // Cuántos commits se van con ella es la única pregunta que importa.
         let alone = self.repo().and_then(|repo| repo.unmerged(&name)).unwrap_or(0);
         let detail = match alone {
-            0 => "Todo lo que tiene está también en otro sitio, así que no se pierde nada."
+            0 => "Everything it has is somewhere else too, so nothing is lost."
                 .to_string(),
-            1 => "Tiene un commit que no está en ninguna otra rama, remoto ni etiqueta. Se va con ella."
+            1 => "It has one commit that is on no other branch, remote or tag. That goes with it."
                 .to_string(),
             n => format!(
-                "Tiene {n} commits que no están en ninguna otra rama, remoto ni etiqueta. Se van con ella."
+                "It has {n} commits that are on no other branch, remote or tag. Those go with it."
             ),
         };
 
         self.ask(
-            format!("¿Borrar la rama {name}?"),
+            format!("Delete the branch {name}?"),
             &detail,
-            "Borrar",
+            "Delete",
             Deed::DeleteBranch { name, remote },
+        );
+    }
+
+    /// Pregunta antes de traer una rama a la principal, que puede empezar
+    /// por cambiarte de sitio.
+    fn ask_land(&mut self, branch: String) {
+        let trunk = match &self.board {
+            Some(board) => board.trunk.clone(),
+            None => return,
+        };
+
+        let detail = if self.head == trunk {
+            format!("{branch} is merged into {trunk}. If they clash, nothing is touched and it says where.")
+        } else {
+            format!(
+                "You move to {trunk} first, and then {branch} is merged into it. \
+                 If they clash, nothing is merged and you stay on {trunk}."
+            )
+        };
+
+        self.ask(
+            format!("Bring {branch} into {trunk}?"),
+            &detail,
+            "Merge",
+            Deed::Land(branch),
         );
     }
 
@@ -547,8 +585,12 @@ impl App {
 
             // La del remoto sale a la red; la de aquí termina al instante.
             Deed::DeleteBranch { name, remote } if remote => {
-                let doing = format!("borrando {name}");
+                let doing = format!("deleting {name}");
                 return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
+            }
+            Deed::Land(branch) => {
+                let doing = format!("merging {branch}");
+                return self.spawn(&doing, move |repo| repo.land(&branch));
             }
             Deed::DeleteBranch { name, .. } => {
                 return match self.repo().and_then(|repo| repo.delete_branch(&name)) {
@@ -556,7 +598,7 @@ impl App {
                         // Cambian las referencias, así que el grafo y la
                         // lateral tienen que volver a leerse.
                         self.load();
-                        self.status = format!("rama {name} borrada");
+                        self.status = format!("branch {name} deleted");
                         self.status_failed = false;
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
@@ -565,7 +607,7 @@ impl App {
         };
 
         if discarded {
-            self.status = "cambios descartados".to_string();
+            self.status = "changes discarded".to_string();
             self.status_failed = false;
         }
     }
@@ -613,7 +655,7 @@ impl App {
 
                 ui.horizontal(|ui| {
                     if ui
-                        .add(egui::Button::new("Cancelar").min_size(egui::vec2(88.0, 28.0)))
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(88.0, 28.0)))
                         .clicked()
                     {
                         close = true;
@@ -692,22 +734,22 @@ impl App {
             Action::Discard { path, untracked } => {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                 let detail = if untracked {
-                    "Git no sabe nada de ese fichero todavía, así que se borra del disco y no queda en ninguna parte."
+                    "Git knows nothing about that file yet, so it goes from the disk and is left nowhere."
                 } else {
-                    "Vuelve a como está en el índice. Lo que hayas escrito desde entonces no está guardado en ningún sitio."
+                    "It goes back to what the index says. Whatever you have written since is saved nowhere."
                 };
                 self.ask(
-                    format!("¿Descartar los cambios de {name}?"),
+                    format!("Discard the changes to {name}?"),
                     detail,
-                    "Descartar",
+                    "Discard",
                     Deed::Discard(path),
                 );
             }
             Action::DiscardHunk { path, hunk } => {
                 self.ask(
-                    "¿Descartar este trozo?".to_string(),
-                    "Ese trozo vuelve a como está en el índice. El resto del fichero se queda como lo tienes.",
-                    "Descartar",
+                    "Discard this hunk?".to_string(),
+                    "That hunk goes back to what the index says. The rest of the file stays as you have it.",
+                    "Discard",
                     Deed::DiscardHunk { path, hunk },
                 );
             }
@@ -715,9 +757,9 @@ impl App {
                 let paths: Vec<String> =
                     self.work.unstaged.iter().map(|file| file.path.clone()).collect();
                 self.ask(
-                    format!("¿Descartar {}?", theme::files_label(paths.len())),
-                    "Los que Git ya conoce vuelven al índice; los nuevos se borran del disco. Nada de esto se puede recuperar.",
-                    "Descartar",
+                    format!("Discard {}?", theme::files_label(paths.len())),
+                    "The ones Git knows go back to the index; the new ones go from the disk. None of it can be got back.",
+                    "Discard",
                     Deed::DiscardAll(paths),
                 );
             }
@@ -757,7 +799,7 @@ impl App {
                         self.selected_commit = Some(oid);
                         self.detail_file = None;
                         self.load();
-                        self.status = "último commit rehecho".to_string();
+                        self.status = "last commit redone".to_string();
                         self.status_failed = false;
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
@@ -775,7 +817,7 @@ impl App {
                         self.detail_file = None;
                         // El commit cambia la historia: hay que redibujar el grafo.
                         self.load();
-                        self.status = format!("commit creado en {}", self.head);
+                        self.status = format!("commit created on {}", self.head);
                         self.status_failed = false;
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
@@ -792,16 +834,17 @@ impl App {
         match action {
             // Las dos que salen a la red se van a un hilo aparte. El resto
             // son locales y terminan antes de que se note.
-            Action::Pull => self.spawn("trayendo", |repo| repo.pull()),
-            Action::Push => self.spawn("llevando", |repo| repo.push()),
-            Action::PushForce => self.spawn("forzando", |repo| repo.push_force()),
-            Action::PushTags => self.spawn("enviando etiquetas", |repo| repo.push_tags()),
+            Action::Pull(mode) => self.spawn("pulling", move |repo| repo.pull(mode)),
+            Action::Fetch => self.spawn("fetching", |repo| repo.fetch_all()),
+            Action::Push => self.spawn("pushing", |repo| repo.push()),
+            Action::PushForce => self.spawn("forcing", |repo| repo.push_force()),
+            Action::PushTags => self.spawn("sending tags", |repo| repo.push_tags()),
 
             Action::Branch(name) => {
                 match self.repo().and_then(|repo| repo.branch_here(&name)) {
                     Ok(()) => {
                         self.load();
-                        self.status = format!("ahora estás en {name}");
+                        self.status = format!("you are now on {name}");
                         self.status_failed = false;
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
@@ -888,19 +931,24 @@ impl eframe::App for App {
                             self.job.is_some(),
                         ),
                         None => {
-                            theme::empty(ui, "Abre un repositorio para ver su trabajo");
+                            theme::empty(ui, "Open a repository to see its work");
                             None
                         }
                     };
 
                     match picked {
-                        Some(refs_view::Pick::Show(oid)) => {
-                            self.select_commit(oid);
+                        Some(board_view::Act::Pick(refs_view::Pick::Show(oid))) => {
+                            self.reveal_commit(oid);
                             self.tab = Tab::History;
                         }
-                        Some(refs_view::Pick::Switch { name, remote }) => {
+                        Some(board_view::Act::Pick(refs_view::Pick::Switch { name, remote })) => {
                             self.switch(name, remote)
                         }
+                        Some(board_view::Act::Publish(branch)) => {
+                            let doing = format!("pushing {branch}");
+                            self.spawn(&doing, move |repo| repo.push_branch(&branch));
+                        }
+                        Some(board_view::Act::Land(branch)) => self.ask_land(branch),
                         _ => {}
                     }
                 }
@@ -969,6 +1017,7 @@ impl App {
                         ui,
                         self.tracking.as_ref(),
                         &self.stashes,
+                        &mut self.pull_mode,
                         self.job.is_some(),
                         &mut self.draft,
                     );
@@ -977,7 +1026,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         reload = ui
                             .add_enabled(self.job.is_none(), egui::Button::new("↻"))
-                            .on_hover_text("Recargar")
+                            .on_hover_text("Reload")
                             .clicked();
                     });
 
@@ -1028,11 +1077,11 @@ impl App {
                             .margin(egui::vec2(8.0, 5.0))
                             .font(theme::mono(11.5))
                             .hint_text(
-                                egui::RichText::new("ruta a un repositorio")
+                                egui::RichText::new("path to a repository")
                                     .color(theme::FAINT),
                             ),
                     );
-                    go = ui.button("Abrir").clicked()
+                    go = ui.button("Open").clicked()
                         || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 });
 
@@ -1059,11 +1108,11 @@ impl App {
 
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            ui.selectable_value(&mut self.tab, Tab::History, "Historia");
+            ui.selectable_value(&mut self.tab, Tab::History, "History");
 
-            let changes = ui.selectable_value(&mut self.tab, Tab::Changes, "Cambios");
+            let changes = ui.selectable_value(&mut self.tab, Tab::Changes, "Changes");
             ui.add_space(2.0);
-            ui.selectable_value(&mut self.tab, Tab::Board, "Tablero");
+            ui.selectable_value(&mut self.tab, Tab::Board, "Board");
             ui.add_space(2.0);
             if pending > 0 {
                 ui.label(
@@ -1072,7 +1121,7 @@ impl App {
                         .color(theme::CHANGED)
                         .background_color(theme::tint(theme::CHANGED, 32)),
                 )
-                .on_hover_text("cambios sin commitear");
+                .on_hover_text("changes not committed");
             }
             let _ = changes;
         });
@@ -1136,13 +1185,13 @@ impl App {
 
         match picked {
             Some(refs_view::Pick::Show(oid)) => {
-                self.select_commit(oid);
+                self.reveal_commit(oid);
                 self.tab = Tab::History;
             }
             Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
             Some(refs_view::Pick::Merge(name)) => {
                 // Puede reescribir el árbol entero, así que va aparte.
-                let doing = format!("fusionando {name}");
+                let doing = format!("merging {name}");
                 self.spawn(&doing, move |repo| repo.merge(&name));
             }
             Some(refs_view::Pick::DeleteBranch { name, remote }) => {
@@ -1152,7 +1201,7 @@ impl App {
                 match self.repo().and_then(|repo| repo.delete_tag(&name)) {
                     Ok(()) => {
                         self.load();
-                        self.status = format!("etiqueta {name} borrada");
+                        self.status = format!("tag {name} deleted");
                         self.status_failed = false;
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
@@ -1178,7 +1227,7 @@ impl App {
         self.selected_commit = None;
         self.detail_file = None;
 
-        let doing = format!("cambiando a {name}");
+        let doing = format!("switching to {name}");
         self.spawn(&doing, move |repo| {
             if remote {
                 repo.checkout_remote(&name)
@@ -1255,7 +1304,7 @@ impl App {
     /// Etiqueta el commit que se está mirando.
     fn create_tag(&mut self, name: String, message: String) {
         let Some(oid) = self.selected_commit.filter(|oid| !oid.is_zero()) else {
-            return self.note_error("no hay ningún commit elegido".to_string());
+            return self.note_error("no commit is selected".to_string());
         };
 
         match self.repo().and_then(|repo| repo.tag(&name, oid, &message)) {
@@ -1263,7 +1312,7 @@ impl App {
                 // La etiqueta nueva tiene que salir en el grafo y en la
                 // lateral, y eso solo pasa releyendo las referencias.
                 self.load();
-                self.status = format!("etiqueta {name} creada");
+                self.status = format!("tag {name} created");
                 self.status_failed = false;
             }
             Err(err) => self.note_error(format!("{err:#}")),

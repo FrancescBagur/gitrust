@@ -85,9 +85,9 @@ pub fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(10.0);
-                    section(ui, "Preparado", &state.staged, selected, true, &mut action);
+                    section(ui, "Staged", &state.staged, selected, true, &mut action);
                     ui.add_space(14.0);
-                    section(ui, "Sin preparar", &state.unstaged, selected, false, &mut action);
+                    section(ui, "Unstaged", &state.unstaged, selected, false, &mut action);
                     ui.add_space(10.0);
                 });
         });
@@ -121,14 +121,14 @@ pub fn compact(
 
     ui.add_space(12.0);
     ui.label(
-        RichText::new("Cambios sin confirmar")
+        RichText::new("Uncommitted changes")
             .font(theme::strong(15.0))
             .color(theme::TEXT),
     );
     ui.add_space(3.0);
     let note = theme::pending_label(state.staged.len(), state.unstaged.len());
     ui.label(
-        RichText::new(if note.is_empty() { "El árbol está limpio".to_string() } else { note })
+        RichText::new(if note.is_empty() { "The working tree is clean".to_string() } else { note })
             .font(theme::body(11.5))
             .color(theme::MUTED),
     );
@@ -143,9 +143,9 @@ pub fn compact(
         .max_height(list_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            section(ui, "Preparado", &state.staged, selected, true, &mut action);
+            section(ui, "Staged", &state.staged, selected, true, &mut action);
             ui.add_space(12.0);
-            section(ui, "Sin preparar", &state.unstaged, selected, false, &mut action);
+            section(ui, "Unstaged", &state.unstaged, selected, false, &mut action);
         });
 
     theme::rule(ui);
@@ -167,7 +167,7 @@ fn commit_box(
     // ambos y así no hay que recordarlo.
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("Título")
+            RichText::new("Title")
                 .font(theme::medium(11.5))
                 .color(theme::MUTED),
         );
@@ -191,12 +191,12 @@ fn commit_box(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
             .font(theme::body(12.5))
-            .hint_text(RichText::new("feat: resumen en una línea").color(theme::FAINT)),
+            .hint_text(RichText::new("feat: one-line summary").color(theme::FAINT)),
     );
 
     ui.add_space(8.0);
     ui.label(
-        RichText::new("Descripción")
+        RichText::new("Description")
             .font(theme::medium(11.5))
             .color(theme::MUTED),
     );
@@ -207,7 +207,7 @@ fn commit_box(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
             .font(theme::mono(11.5))
-            .hint_text(RichText::new("Qué cambia y por qué").color(theme::FAINT)),
+            .hint_text(RichText::new("What changes, and why").color(theme::FAINT)),
     );
     ui.add_space(8.0);
 
@@ -219,7 +219,7 @@ fn commit_box(
         ready && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
 
     ui.horizontal(|ui| {
-        let label = if amending { "Enmendar" } else { "Commit" };
+        let label = if amending { "Amend" } else { "Commit" };
         let button = egui::Button::new(RichText::new(label).font(theme::medium(13.0)))
             .fill(if ready { theme::tint(theme::lane(0), 54) } else { theme::RAISED })
             .min_size(egui::vec2(88.0, 28.0));
@@ -236,11 +236,11 @@ fn commit_box(
         // Si no se puede commitear, el aviso dice qué falta en vez de
         // limitarse a describir el estado.
         let note = if !amending && state.staged.is_empty() {
-            "Prepara algún cambio primero".to_string()
+            "Stage something first".to_string()
         } else if draft.subject.trim().is_empty() {
-            "Falta el título".to_string()
+            "The title is missing".to_string()
         } else if state.staged.is_empty() {
-            "Solo cambiará el mensaje".to_string()
+            "Only the message will change".to_string()
         } else {
             theme::files_label(state.staged.len())
         };
@@ -252,13 +252,13 @@ fn commit_box(
 
         if draft.amendable {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let text = RichText::new("Enmendar el último")
+                let text = RichText::new("Amend the last one")
                     .font(theme::body(11.5))
                     .color(if amending { theme::TEXT } else { theme::MUTED });
 
                 if ui
                     .checkbox(draft.amend, text)
-                    .on_hover_text("Rehace el último commit en vez de escribir otro")
+                    .on_hover_text("Redoes the last commit instead of writing another")
                     .changed()
                 {
                     *action = Some(Action::AmendToggled);
@@ -273,7 +273,7 @@ fn commit_box(
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
-                "Ese commit ya está en {remote}: el próximo push habrá que forzarlo"
+                "That commit is already on {remote}: the next push will have to be forced"
             ))
             .font(theme::body(11.0))
             .color(theme::CHANGED),
@@ -304,7 +304,7 @@ fn section(
 
         if !files.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if staged { "Quitar todo" } else { "Preparar todo" };
+                let label = if staged { "Unstage all" } else { "Stage all" };
                 if ui
                     .add(egui::Button::new(
                         RichText::new(label).font(theme::body(11.0)).color(theme::MUTED),
@@ -319,7 +319,7 @@ fn section(
                 if !staged
                     && ui
                         .add(egui::Button::new(
-                            RichText::new("Descartar todo")
+                            RichText::new("Discard all")
                                 .font(theme::body(11.0))
                                 .color(theme::REMOVED),
                         ))
@@ -334,9 +334,9 @@ fn section(
 
     if files.is_empty() {
         let note = if staged {
-            "El índice está vacío"
+            "The index is empty"
         } else {
-            "Nada sin preparar"
+            "Nothing unstaged"
         };
         ui.horizontal(|ui| {
             ui.add_space(2.0);
@@ -354,7 +354,7 @@ fn section(
             ui.spacing_mut().item_spacing.x = 6.0;
 
             let button = if staged { "−" } else { "+" };
-            let hint = if staged { "Quitar del índice" } else { "Preparar" };
+            let hint = if staged { "Unstage" } else { "Stage" };
             if ui
                 .add(
                     egui::Button::new(RichText::new(button).font(theme::mono(12.0)))
@@ -397,7 +397,7 @@ fn section(
                             )
                             .min_size(egui::vec2(20.0, 20.0)),
                         )
-                        .on_hover_text("Descartar los cambios de este fichero")
+                        .on_hover_text("Discard this file's changes")
                         .clicked()
                     {
                         *action = Some(Action::Discard {
@@ -418,14 +418,14 @@ fn show_diff(
     action: &mut Option<Action>,
 ) {
     let Some((path, staged)) = selected else {
-        theme::empty(ui, "Elige un fichero para ver su cambio");
+        theme::empty(ui, "Pick a file to see what changed");
         return;
     };
 
     ui.horizontal(|ui| {
         ui.label(theme::path_text(path, 12.5, false));
         ui.label(
-            RichText::new(if staged { "en el índice" } else { "en el árbol de trabajo" })
+            RichText::new(if staged { "in the index" } else { "in the working tree" })
                 .font(theme::body(11.0))
                 .color(theme::FAINT),
         );
@@ -439,12 +439,12 @@ fn show_diff(
     theme::rule(ui);
 
     let Some(diff) = diff else {
-        theme::empty(ui, "Sin cambios que mostrar");
+        theme::empty(ui, "Nothing to show");
         return;
     };
 
     if diff.binary {
-        theme::empty(ui, "Fichero binario");
+        theme::empty(ui, "Binary file");
         return;
     }
 
@@ -460,11 +460,11 @@ fn show_diff(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
 
-                    let label = if staged { "− Quitar" } else { "+ Preparar" };
+                    let label = if staged { "− Unstage" } else { "+ Stage" };
                     let hint = if staged {
-                        "Devolver solo este hunk al árbol de trabajo"
+                        "Send just this hunk back to the working tree"
                     } else {
-                        "Preparar solo este hunk"
+                        "Stage just this hunk"
                     };
 
                     if ui
@@ -495,11 +495,11 @@ fn show_diff(
                         if !staged
                             && ui
                                 .add(egui::Button::new(
-                                    RichText::new("Descartar")
+                                    RichText::new("Discard")
                                         .font(theme::body(11.0))
                                         .color(theme::REMOVED),
                                 ))
-                                .on_hover_text("Deshacer solo este hunk en el árbol de trabajo")
+                                .on_hover_text("Undo just this hunk in the working tree")
                                 .clicked()
                         {
                             *action = Some(Action::DiscardHunk {

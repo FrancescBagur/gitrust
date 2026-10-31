@@ -11,6 +11,48 @@ use gitrust_core::{Board, Card, Lane};
 use crate::refs_view::Pick;
 use crate::theme;
 
+/// La tarjeta que se está arrastrando ahora mismo.
+#[derive(Clone)]
+struct Dragged {
+    branch: String,
+    lane: Lane,
+}
+
+/// Lo que se ha pedido desde el tablero.
+pub enum Act {
+    /// Lo mismo que desde la lateral: ver un commit, o cambiar de rama.
+    Pick(Pick),
+    /// Llevar esa rama al remoto.
+    Publish(String),
+    /// Traerla a la principal.
+    Land(String),
+}
+
+/// Si soltar una tarjeta de una columna en otra tiene una operación detrás.
+///
+/// Solo dos saltos la tienen, y por el mismo motivo los dos: son los únicos
+/// en los que uno puede decir qué comando haría lo que el arrastre promete.
+/// Una rama sin commits no se puede publicar, y de «hecho» no se vuelve
+/// arrastrando: eso sería deshacer una fusión, que es otra cosa y más seria.
+fn allows(from: Lane, to: Lane) -> bool {
+    matches!(
+        (from, to),
+        (Lane::InProgress, Lane::InReview)
+            | (Lane::InProgress, Lane::Done)
+            | (Lane::InReview, Lane::Done)
+    )
+}
+
+fn transition(dragged: &Dragged, to: Lane) -> Option<Act> {
+    if !allows(dragged.lane, to) {
+        return None;
+    }
+    Some(match to {
+        Lane::InReview => Act::Publish(dragged.branch.clone()),
+        _ => Act::Land(dragged.branch.clone()),
+    })
+}
+
 /// El rótulo de cada columna y el color de su filete.
 ///
 /// Los tres colores salen de los carriles del grafo, que es de donde sale todo
@@ -18,10 +60,10 @@ use crate::theme;
 /// compite con la rama puesta, que ya lo lleva en su tarjeta.
 fn column(lane: Lane) -> (&'static str, Color32) {
     match lane {
-        Lane::Todo => ("Por hacer", theme::MUTED),
-        Lane::InProgress => ("En marcha", theme::lane(0)),
-        Lane::InReview => ("En revisión", theme::lane(6)),
-        Lane::Done => ("Hecho", theme::lane(1)),
+        Lane::Todo => ("To do", theme::MUTED),
+        Lane::InProgress => ("In progress", theme::lane(0)),
+        Lane::InReview => ("In review", theme::lane(6)),
+        Lane::Done => ("Done", theme::lane(1)),
     }
 }
 
@@ -31,9 +73,9 @@ pub fn show(
     board: &Board,
     project: &mut Option<String>,
     busy: bool,
-) -> Option<Pick> {
+) -> Option<Act> {
     if board.cards.is_empty() {
-        theme::empty(ui, "Solo está la rama principal: crea una rama y aparecerá aquí");
+        theme::empty(ui, "Only the main branch so far: make a branch and it will show up here");
         return None;
     }
 
@@ -43,7 +85,7 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.add_space(2.0);
         ui.label(
-            RichText::new(format!("Midiendo contra {}", board.trunk))
+            RichText::new(format!("Measured against {}", board.trunk))
                 .font(theme::body(11.5))
                 .color(theme::FAINT),
         );
@@ -58,7 +100,7 @@ pub fn show(
             ui.add_space(2.0);
             ui.spacing_mut().item_spacing.x = 4.0;
 
-            if ui.selectable_label(project.is_none(), chip("Todo", project.is_none())).clicked() {
+            if ui.selectable_label(project.is_none(), chip("All", project.is_none())).clicked() {
                 *project = None;
             }
             for name in projects {
@@ -85,24 +127,45 @@ pub fn show(
 
             header(ui, lane, cards.len());
 
-            egui::ScrollArea::vertical()
-                .id_salt(column(lane).0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if cards.is_empty() {
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new("Nada aquí").font(theme::body(11.5)).color(theme::FAINT),
-                        );
-                        return;
-                    }
-                    for card in cards {
-                        if let Some(pick) = draw_card(ui, card, busy) {
-                            picked = Some(pick);
-                        }
-                        ui.add_space(6.0);
-                    }
+            // La columna entera recibe lo que se suelte encima.
+            let mut dropped = None;
+            ui.scope(|ui| {
+                paint_drop_zone(ui, lane);
+
+                let frame = egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(2, 4))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS));
+
+                let (_, payload) = ui.dnd_drop_zone::<Dragged, _>(frame, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt(column(lane).0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if cards.is_empty() {
+                                ui.add_space(10.0);
+                                ui.label(
+                                    RichText::new("Nothing here")
+                                        .font(theme::body(11.5))
+                                        .color(theme::FAINT),
+                                );
+                                return;
+                            }
+                            for card in cards {
+                                if let Some(act) = draw_card(ui, card, busy) {
+                                    picked = Some(act);
+                                }
+                                ui.add_space(6.0);
+                            }
+                        });
                 });
+                dropped = payload;
+            });
+
+            if let Some(dragged) = dropped {
+                if let Some(act) = transition(&dragged, lane) {
+                    picked = Some(act);
+                }
+            }
         }
     });
 
@@ -134,29 +197,60 @@ fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
     ui.add_space(8.0);
 }
 
+/// Deja la zona de soltar del color de la columna, pero solo si lo que se
+/// arrastra puede caer ahí. Una columna que se enciende para cualquier cosa
+/// no está diciendo nada.
+fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane) {
+    let accepts = egui::DragAndDrop::payload::<Dragged>(ui.ctx())
+        .is_some_and(|dragged| allows(dragged.lane, lane));
+    let color = column(lane).1;
+
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.bg_stroke = Stroke::NONE;
+    widgets.active.bg_fill = if accepts { theme::tint(color, 20) } else { Color32::TRANSPARENT };
+    widgets.active.bg_stroke = if accepts {
+        Stroke::new(1.0, color)
+    } else {
+        Stroke::NONE
+    };
+}
+
 /// Una tarjeta: la rama, de qué proyecto es, cuánto lleva y de cuándo es.
-fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Pick> {
+fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
     let frame = egui::Frame::NONE
         .fill(theme::PANEL)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS))
         .stroke(Stroke::new(1.0, theme::HAIRLINE));
 
-    let inner = frame.show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 3.0;
+    let id = egui::Id::new(("card", &card.branch));
+    let dragging = ui.ctx().is_being_dragged(id);
+    let payload = Dragged { branch: card.branch.clone(), lane: card.lane };
 
-        // La rama puesta lleva el ámbar de HEAD, igual que en el grafo y en
-        // la barra: es la misma pregunta contestada en el mismo color.
-        ui.label(
-            RichText::new(card.leaf())
-                .font(theme::medium(12.5))
-                .color(if card.current { theme::HEAD } else { theme::TEXT }),
-        );
-        ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::MUTED));
+    let inner = ui.dnd_drag_source(id, payload, |ui| {
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 3.0;
+
+            // La rama puesta lleva el ámbar de HEAD, igual que en el grafo y
+            // en la barra: es la misma pregunta contestada en el mismo color.
+            ui.label(
+                RichText::new(card.leaf())
+                    .font(theme::medium(12.5))
+                    .color(if card.current { theme::HEAD } else { theme::TEXT }),
+            );
+            ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::MUTED));
+        });
     });
 
     let response = inner.response.interact(egui::Sense::click());
+
+    // Mientras va por el aire la tarjeta se pinta en otra capa y movida, así
+    // que lo que se añada aquí encima caería en el hueco que dejó.
+    if dragging {
+        return None;
+    }
 
     // El realce va por el borde, no por el relleno: un relleno encima taparía
     // lo que la tarjeta dice.
@@ -177,16 +271,20 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Pick> {
     }
 
     let switchable = !card.current && !busy;
-    let response = response.on_hover_text(if switchable {
-        format!("{}\nDoble clic para cambiar a esta rama", card.branch)
-    } else {
-        card.branch.clone()
-    });
+    let hint = match (switchable, allows(card.lane, Lane::Done)) {
+        (true, true) => format!(
+            "{}\nDouble-click to switch to it, or drag it to another column",
+            card.branch
+        ),
+        (true, false) => format!("{}\nDouble-click to switch to this branch", card.branch),
+        _ => card.branch.clone(),
+    };
+    let response = response.on_hover_text(hint);
 
     if switchable && response.double_clicked() {
-        return Some(Pick::Switch { name: card.branch.clone(), remote: false });
+        return Some(Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }));
     }
-    response.clicked().then(|| Pick::Show(card.target))
+    response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
 }
 
 /// «tema · 3 commits · hace 2 h», callando lo que no haya.
@@ -200,7 +298,7 @@ fn note(card: &Card) -> String {
     // Sin nada propio, la fecha es la del commit donde nació la rama, que no
     // cuenta nada de la rama. Se calla y se dice lo único que se sabe.
     if card.lane == Lane::Todo {
-        parts.push("sin empezar".to_string());
+        parts.push("not started".to_string());
         return parts.join(" · ");
     }
 
@@ -223,21 +321,21 @@ fn ago(seconds: i64) -> Option<String> {
 
     let minutes = elapsed.num_minutes();
     if minutes < 1 {
-        return Some("ahora mismo".to_string());
+        return Some("just now".to_string());
     }
     if minutes < 60 {
-        return Some(format!("hace {minutes} min"));
+        return Some(format!("{minutes} min ago"));
     }
 
     let hours = elapsed.num_hours();
     if hours < 24 {
-        return Some(format!("hace {hours} h"));
+        return Some(format!("{hours} h ago"));
     }
 
     let days = elapsed.num_days();
     match days {
-        0..=1 => Some("ayer".to_string()),
-        2..=30 => Some(format!("hace {days} días")),
+        0..=1 => Some("yesterday".to_string()),
+        2..=30 => Some(format!("{days} days ago")),
         _ => Some(when.format("%d/%m/%Y").to_string()),
     }
 }

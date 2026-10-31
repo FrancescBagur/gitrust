@@ -18,17 +18,17 @@ impl Repo {
     /// que uno estaba escribiendo en la rama equivocada.
     pub fn branch_here(&self, name: &str) -> Result<()> {
         let name = name.trim();
-        anyhow::ensure!(!name.is_empty(), "la rama necesita un nombre");
+        anyhow::ensure!(!name.is_empty(), "the branch needs a name");
 
         let commit = self
             .inner
             .head()
             .and_then(|head| head.peel_to_commit())
-            .context("el repositorio no tiene commits de los que partir")?;
+            .context("the repository has no commits to branch from")?;
 
         self.inner
             .branch(name, &commit, false)
-            .with_context(|| format!("no se pudo crear «{name}»"))?;
+            .with_context(|| format!("could not create '{name}'"))?;
         self.inner.set_head(&format!("refs/heads/{name}"))?;
         Ok(())
     }
@@ -47,10 +47,10 @@ impl Repo {
         let reference = self
             .inner
             .find_branch(name, BranchType::Local)
-            .with_context(|| format!("no hay ninguna rama llamada «{name}»"))?
+            .with_context(|| format!("no branch called '{name}'"))?
             .into_reference();
 
-        let refname = reference.name().context("la rama no tiene nombre")?.to_string();
+        let refname = reference.name().context("the branch has no name")?.to_string();
         let commit = reference.peel_to_commit()?;
 
         self.inner
@@ -58,7 +58,7 @@ impl Repo {
             .map_err(|err| blocked(err, name))?;
         self.inner.set_head(&refname)?;
 
-        Ok(format!("ahora estás en {name}"))
+        Ok(format!("you are now on {name}"))
     }
 
     /// Se cambia a una rama remota creando su pareja local.
@@ -70,7 +70,7 @@ impl Repo {
     pub fn checkout_remote(&self, name: &str) -> Result<String> {
         let (_, local) = name
             .split_once('/')
-            .context("una rama remota se llama «remoto/rama»")?;
+            .context("a remote branch is named remote/branch")?;
 
         if self.inner.find_branch(local, BranchType::Local).is_ok() {
             return self.checkout_branch(local);
@@ -79,13 +79,13 @@ impl Repo {
         let commit = self
             .inner
             .find_branch(name, BranchType::Remote)
-            .with_context(|| format!("no hay ninguna rama remota llamada «{name}»"))?
+            .with_context(|| format!("no remote branch called '{name}'"))?
             .into_reference()
             .peel_to_commit()?;
 
         self.inner
             .branch(local, &commit, false)
-            .with_context(|| format!("no se pudo crear «{local}»"))?
+            .with_context(|| format!("could not create '{local}'"))?
             .set_upstream(Some(name))?;
 
         self.checkout_branch(local)
@@ -103,14 +103,14 @@ impl Repo {
             .and_then(|head| head.shorthand().map(str::to_string));
         anyhow::ensure!(
             head.as_deref() != Some(name),
-            "{name} es la rama en la que estás: cámbiate a otra antes"
+            "{name} is the branch you are on: switch to another one first"
         );
 
         self.inner
             .find_branch(name, BranchType::Local)
-            .with_context(|| format!("no hay ninguna rama llamada «{name}»"))?
+            .with_context(|| format!("no branch called '{name}'"))?
             .delete()
-            .with_context(|| format!("no se pudo borrar «{name}»"))
+            .with_context(|| format!("could not delete '{name}'"))
     }
 
     /// Cuántos commits de esa rama no están en ninguna otra parte.
@@ -127,7 +127,7 @@ impl Repo {
         let target = self
             .inner
             .find_branch(name, BranchType::Local)
-            .with_context(|| format!("no hay ninguna rama llamada «{name}»"))?
+            .with_context(|| format!("no branch called '{name}'"))?
             .get()
             .peel(ObjectType::Commit)?
             .id();
@@ -158,7 +158,7 @@ impl Repo {
 fn blocked(err: git2::Error, name: &str) -> anyhow::Error {
     if err.code() == ErrorCode::Conflict {
         anyhow::anyhow!(
-            "hay cambios sin guardar que chocan con {name}: commitéalos, o apártalos con Stash"
+            "unsaved changes clash with {name}: commit them, or set them aside with Stash"
         )
     } else {
         err.into()

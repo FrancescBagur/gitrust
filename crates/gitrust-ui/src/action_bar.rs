@@ -11,7 +11,7 @@ use eframe::egui::{
     text::{LayoutJob, TextFormat},
     Color32, PopupCloseBehavior, RichText,
 };
-use gitrust_core::{StashEntry, Tracking};
+use gitrust_core::{PullMode, StashEntry, Tracking};
 
 use crate::theme;
 
@@ -20,7 +20,10 @@ use crate::theme;
 const STASH_ROW: f32 = 52.0;
 
 pub enum Action {
-    Pull,
+    /// Traer y juntar, de la manera que se diga.
+    Pull(PullMode),
+    /// Traer de todos los remotos y no juntar nada.
+    Fetch,
     Push,
     PushForce,
     PushTags,
@@ -44,10 +47,12 @@ pub struct Draft {
 /// Con `busy` en cierto hay una operación en marcha: los botones se apagan
 /// enteros en lugar de dejar encolar una segunda mientras la primera va por
 /// la red.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     tracking: Option<&Tracking>,
     stashes: &[StashEntry],
+    mode: &mut PullMode,
     busy: bool,
     draft: &mut Draft,
 ) -> Option<Action> {
@@ -62,9 +67,15 @@ pub fn show(
         // Sin rama remota a la que mirar no hay de dónde traer; llevar sí se
         // puede, y es justamente así como se crea.
         let pull = count_button(ui, "↓ Pull", behind, tracking.is_some() && !busy);
-        if pull.on_hover_text(pull_hint(tracking)).clicked() {
-            action = Some(Action::Pull);
+        if pull.on_hover_text(pull_hint(tracking, *mode)).clicked() {
+            action = Some(Action::Pull(*mode));
         }
+
+        ui.spacing_mut().item_spacing.x = 1.0;
+        if let Some(other) = pull_menu(ui, busy, mode) {
+            action = Some(other);
+        }
+        ui.spacing_mut().item_spacing.x = 4.0;
 
         let push = count_button(ui, "↑ Push", ahead, !busy);
         if push.on_hover_text(push_hint(tracking)).clicked() {
@@ -118,19 +129,72 @@ fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> 
     ui.add_enabled(enabled, egui::Button::new(job))
 }
 
-fn pull_hint(tracking: Option<&Tracking>) -> String {
+fn pull_hint(tracking: Option<&Tracking>, mode: PullMode) -> String {
+    let how = match mode {
+        PullMode::Merge => "merging if it has to",
+        PullMode::FastForward => "fast-forward only",
+        PullMode::Rebase => "rebasing",
+    };
     match tracking {
-        Some(t) if t.behind > 0 => format!("traer {} commits de {}", t.behind, t.remote),
-        Some(t) => format!("{} no tiene nada nuevo", t.remote),
-        None => "esta rama no sigue a ninguna remota".to_string(),
+        Some(t) if t.behind > 0 => format!("pull {} commits from {}, {how}", t.behind, t.remote),
+        Some(t) => format!("{} has nothing new", t.remote),
+        None => "this branch tracks no remote one".to_string(),
     }
+}
+
+/// Las otras maneras de traer.
+///
+/// Lo que se elige aquí se hace al momento y se queda de postura del botón:
+/// el botón repite lo último que pediste, que es lo que uno espera de un
+/// mando con memoria y no hay que explicarlo en ninguna parte.
+fn pull_menu(ui: &mut egui::Ui, busy: bool, mode: &mut PullMode) -> Option<Action> {
+    let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
+    theme::caret(ui, &button);
+    let id = ui.make_persistent_id("menu-pull");
+
+    if button.clicked() {
+        ui.memory_mut(|memory| memory.toggle_popup(id));
+    }
+
+    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(248.0);
+        let mut action = None;
+
+        // Traer no junta nada, así que no cambia lo que hace el botón.
+        if ui
+            .button("Fetch all")
+            .on_hover_text("from every remote, touching nothing here")
+            .clicked()
+        {
+            action = Some(Action::Fetch);
+        }
+
+        theme::rule(ui);
+
+        for (label, what) in [
+            ("Pull (fast-forward if possible)", PullMode::Merge),
+            ("Pull (fast-forward only)", PullMode::FastForward),
+            ("Pull (rebase)", PullMode::Rebase),
+        ] {
+            if ui.selectable_label(*mode == what, label).clicked() {
+                *mode = what;
+                action = Some(Action::Pull(what));
+            }
+        }
+
+        if action.is_some() {
+            ui.memory_mut(|memory| memory.close_popup());
+        }
+        action
+    })
+    .flatten()
 }
 
 fn push_hint(tracking: Option<&Tracking>) -> String {
     match tracking {
-        Some(t) if t.ahead > 0 => format!("llevar {} commits a {}", t.ahead, t.remote),
-        Some(t) => format!("{} ya tiene todo", t.remote),
-        None => "llevar esta rama al remoto por primera vez".to_string(),
+        Some(t) if t.ahead > 0 => format!("push {} commits to {}", t.ahead, t.remote),
+        Some(t) => format!("{} already has everything", t.remote),
+        None => "push this branch for the first time".to_string(),
     }
 }
 
@@ -151,15 +215,15 @@ fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
         let mut action = None;
 
         if ui
-            .button("Forzar el push")
-            .on_hover_text("se niega si alguien ha tocado la rama desde que trajiste")
+            .button("Force the push")
+            .on_hover_text("refuses if anyone has touched the branch since you fetched")
             .clicked()
         {
             action = Some(Action::PushForce);
         }
         if ui
-            .button("Enviar las etiquetas")
-            .on_hover_text("las que el remoto todavía no tenga")
+            .button("Send the tags")
+            .on_hover_text("the ones the remote does not have yet")
             .clicked()
         {
             action = Some(Action::PushTags);
@@ -179,9 +243,9 @@ fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
 /// su propio sitio con su aviso. Esto no toca nada: la rama nueva apunta al
 /// mismo commit, así que lo que haya a medias sigue exactamente igual.
 fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<String> {
-    let button = ui.add_enabled(!busy, egui::Button::new(label("Rama")));
+    let button = ui.add_enabled(!busy, egui::Button::new(label("Branch")));
     theme::caret(ui, &button);
-    let id = ui.make_persistent_id("menu-rama");
+    let id = ui.make_persistent_id("menu-branch");
 
     if button.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
@@ -190,7 +254,7 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
     egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(250.0);
         ui.label(
-            RichText::new("Nueva rama aquí mismo")
+            RichText::new("New branch right here")
                 .font(theme::medium(12.0))
                 .color(theme::TEXT),
         );
@@ -201,18 +265,18 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
                 .desired_width(f32::INFINITY)
                 .margin(egui::vec2(8.0, 5.0))
                 .font(theme::mono(12.0))
-                .hint_text(RichText::new("nombre de la rama").color(theme::FAINT)),
+                .hint_text(RichText::new("branch name").color(theme::FAINT)),
         );
         ui.add_space(5.0);
 
         let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let pressed = ui
-            .add_enabled(!name.trim().is_empty(), egui::Button::new("Crear y cambiar"))
+            .add_enabled(!name.trim().is_empty(), egui::Button::new("Create and switch"))
             .clicked();
 
         ui.add_space(2.0);
         ui.label(
-            RichText::new("El árbol de trabajo no se toca")
+            RichText::new("The working tree is left alone")
                 .font(theme::body(11.0))
                 .color(theme::FAINT),
         );
@@ -265,9 +329,9 @@ fn stash_menu(
                     .desired_width(ui.available_width() - 76.0)
                     .margin(egui::vec2(8.0, 5.0))
                     .font(theme::body(12.0))
-                    .hint_text(RichText::new("para qué lo apartas").color(theme::FAINT)),
+                    .hint_text(RichText::new("what you are setting aside").color(theme::FAINT)),
             );
-            if ui.button("Apartar").clicked() {
+            if ui.button("Stash").clicked() {
                 action = Some(Action::StashSave(std::mem::take(message)));
             }
         });
@@ -275,7 +339,7 @@ fn stash_menu(
         if stashes.is_empty() {
             ui.add_space(6.0);
             ui.label(
-                RichText::new("No hay nada apartado")
+                RichText::new("Nothing stashed")
                     .font(theme::body(11.5))
                     .color(theme::FAINT),
             );
@@ -331,14 +395,14 @@ fn stash_row(ui: &mut egui::Ui, entry: &StashEntry) -> Option<Action> {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
 
-            if ui.button(small("Tirar", theme::MUTED)).on_hover_text("no se recupera").clicked() {
+            if ui.button(small("Drop", theme::MUTED)).on_hover_text("there is no getting it back").clicked() {
                 action = Some(Action::StashDrop(entry.index));
             }
-            if ui.button(small("Aplicar", theme::MUTED)).on_hover_text("y sigue apartado").clicked()
+            if ui.button(small("Apply", theme::MUTED)).on_hover_text("and it stays stashed").clicked()
             {
                 action = Some(Action::StashApply(entry.index));
             }
-            if ui.button(small("Sacar", theme::TEXT)).on_hover_text("y sale de la pila").clicked() {
+            if ui.button(small("Pop", theme::TEXT)).on_hover_text("and it leaves the stack").clicked() {
                 action = Some(Action::StashPop(entry.index));
             }
         });

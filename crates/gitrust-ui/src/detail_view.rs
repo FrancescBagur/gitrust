@@ -45,7 +45,7 @@ pub fn show(
     tag: &mut TagDraft,
 ) -> Option<Pick> {
     let Some(detail) = detail else {
-        theme::empty(ui, "Elige un commit del grafo para verlo aquí");
+        theme::empty(ui, "Pick a commit in the graph to see it here");
         return None;
     };
 
@@ -85,7 +85,7 @@ pub fn show(
             );
             if detail.is_merge() {
                 ui.label(
-                    RichText::new("fusión")
+                    RichText::new("merge")
                         .font(theme::medium(10.5))
                         .color(theme::lane(6))
                         .background_color(theme::tint(theme::lane(6), 38)),
@@ -134,9 +134,9 @@ pub fn show(
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for (count, word, color) in [
-                (deleted, "borrados", theme::REMOVED),
-                (modified, "modificados", theme::CHANGED),
-                (added, "nuevos", theme::ADDED),
+                (deleted, "deleted", theme::REMOVED),
+                (modified, "modified", theme::CHANGED),
+                (added, "new", theme::ADDED),
             ] {
                 if count > 0 {
                     ui.label(
@@ -169,8 +169,8 @@ pub fn show(
     theme::rule(ui);
 
     match diff {
-        None => theme::empty(ui, "Elige un fichero para ver su cambio"),
-        Some(diff) if diff.binary => theme::empty(ui, "Fichero binario"),
+        None => theme::empty(ui, "Pick a file to see what changed"),
+        Some(diff) if diff.binary => theme::empty(ui, "Binary file"),
         Some(diff) => {
             egui::ScrollArea::both()
                 .id_salt("diff-commit")
@@ -196,7 +196,7 @@ pub fn show(
 /// etiqueta anotada es exactamente el que tiene algo que contar sobre ella.
 fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
     let button = ui.add(egui::Button::new(
-        RichText::new("Etiquetar     ").font(theme::body(11.5)).color(theme::MUTED),
+        RichText::new("Tag          ").font(theme::body(11.5)).color(theme::MUTED),
     ));
     theme::caret(ui, &button);
     let id = ui.make_persistent_id("menu-etiqueta");
@@ -208,7 +208,7 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
     egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(266.0);
         ui.label(
-            RichText::new("Etiqueta en este commit")
+            RichText::new("Tag on this commit")
                 .font(theme::medium(12.0))
                 .color(theme::TEXT),
         );
@@ -228,11 +228,11 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
                 .desired_width(f32::INFINITY)
                 .margin(egui::vec2(8.0, 5.0))
                 .font(theme::body(11.5))
-                .hint_text(RichText::new("qué trae esta versión").color(theme::FAINT)),
+                .hint_text(RichText::new("what this version brings").color(theme::FAINT)),
         );
         ui.add_space(4.0);
         ui.label(
-            RichText::new("Con mensaje sale anotada; sin él, ligera")
+            RichText::new("With a message it is annotated; without one, lightweight")
                 .font(theme::body(10.5))
                 .color(theme::FAINT),
         );
@@ -240,7 +240,7 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
 
         let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let pressed = ui
-            .add_enabled(!draft.name.trim().is_empty(), egui::Button::new("Crear"))
+            .add_enabled(!draft.name.trim().is_empty(), egui::Button::new("Create"))
             .clicked();
 
         (entered || pressed).then(|| {

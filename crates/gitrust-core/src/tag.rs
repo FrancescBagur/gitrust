@@ -18,12 +18,12 @@ impl Repo {
     /// mueve; moverla en silencio sería quitarle lo único que tiene.
     pub fn tag(&self, name: &str, target: Oid, message: &str) -> Result<()> {
         let name = name.trim();
-        anyhow::ensure!(!name.is_empty(), "la etiqueta necesita un nombre");
+        anyhow::ensure!(!name.is_empty(), "the tag needs a name");
 
         let object = self
             .inner
             .find_object(target, None)
-            .context("ese commit ya no está en el repositorio")?;
+            .context("that commit is no longer in the repository")?;
         let message = message.trim();
 
         if message.is_empty() {
@@ -32,10 +32,10 @@ impl Repo {
             let tagger = self
                 .inner
                 .signature()
-                .context("falta configurar user.name y user.email en Git")?;
+                .context("set user.name and user.email in Git first")?;
             self.inner.tag(name, &object, &tagger, message, false).map(|_| ())
         }
-        .with_context(|| format!("no se pudo crear «{name}»"))
+        .with_context(|| format!("could not create '{name}'"))
     }
 
     /// Quita una etiqueta. El commit que señalaba se queda donde estaba.
@@ -45,6 +45,6 @@ impl Repo {
     pub fn delete_tag(&self, name: &str) -> Result<()> {
         self.inner
             .tag_delete(name)
-            .with_context(|| format!("no se pudo borrar «{name}»"))
+            .with_context(|| format!("could not delete '{name}'"))
     }
 }

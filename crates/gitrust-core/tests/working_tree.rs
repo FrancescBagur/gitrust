@@ -370,7 +370,7 @@ fn enmendar_conserva_al_autor_y_cambia_a_quien_lo_cierra() {
 fn sin_commits_no_hay_nada_que_enmendar() {
     let temp = TempRepo::new("enmendar-vacio");
     let err = temp.open().amend("feat: nada").unwrap_err().to_string();
-    assert!(err.contains("enmendar"), "{err}");
+    assert!(err.contains("no commit to amend"), "{err}");
 }
 
 #[test]
@@ -506,5 +506,5 @@ fn descartar_un_hunk_de_un_fichero_nuevo_dice_que_se_descarte_entero() {
         .discard_hunk("nuevo.txt", HunkId::default())
         .unwrap_err()
         .to_string();
-    assert!(err.contains("entero"), "{err}");
+    assert!(err.contains("discard it whole"), "{err}");
 }

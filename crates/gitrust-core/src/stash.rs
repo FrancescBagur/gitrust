@@ -51,7 +51,7 @@ impl Repo {
         let signature = self
             .inner
             .signature()
-            .context("falta configurar user.name y user.email en Git")?;
+            .context("set user.name and user.email in Git first")?;
 
         let message = message.trim();
         let message = (!message.is_empty()).then_some(message);
@@ -60,32 +60,32 @@ impl Repo {
             .stash_save2(&signature, message, Some(StashFlags::DEFAULT))
             .map_err(|err| match err.code() {
                 // libgit2 llama «no encontrado» a no tener nada que guardar.
-                git2::ErrorCode::NotFound => anyhow::anyhow!("no hay nada que apartar"),
+                git2::ErrorCode::NotFound => anyhow::anyhow!("there is nothing to stash"),
                 _ => anyhow::Error::from(err),
             })?;
 
-        Ok("cambios apartados".to_string())
+        Ok("changes stashed".to_string())
     }
 
     /// Devuelve un apartado al árbol de trabajo y lo saca de la pila.
     pub fn stash_pop(&mut self, index: usize) -> Result<String> {
         self.inner
             .stash_pop(index, None)
-            .context("no se pudo recuperar: hay cambios que chocan con los apartados")?;
-        Ok("cambios recuperados".to_string())
+            .context("could not restore: your changes clash with the stashed ones")?;
+        Ok("changes restored".to_string())
     }
 
     /// Lo mismo, pero dejándolo en la pila.
     pub fn stash_apply(&mut self, index: usize) -> Result<String> {
         self.inner
             .stash_apply(index, None)
-            .context("no se pudo aplicar: hay cambios que chocan con los apartados")?;
-        Ok("cambios aplicados, y siguen apartados".to_string())
+            .context("could not apply: your changes clash with the stashed ones")?;
+        Ok("changes applied, and still stashed".to_string())
     }
 
     /// Tira un apartado. Lo que hubiera en él no se puede recuperar.
     pub fn stash_drop(&mut self, index: usize) -> Result<String> {
         self.inner.stash_drop(index)?;
-        Ok("apartado tirado".to_string())
+        Ok("stash dropped".to_string())
     }
 }
