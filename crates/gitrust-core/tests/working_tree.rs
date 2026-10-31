@@ -287,3 +287,114 @@ fn un_commit_sin_mensaje_se_rechaza() {
 
     assert!(repo.commit("   ").is_err());
 }
+
+// --------------------------------------------------------------- enmendar
+
+#[test]
+fn enmendar_cambia_el_mensaje_sin_escribir_historia() {
+    let temp = TempRepo::new("enmendar-mensaje");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    let viejo = repo.commit("feat: asnuto mal escrito").unwrap();
+
+    let nuevo = temp.open().amend("feat: asunto bien escrito").unwrap();
+    assert_ne!(nuevo, viejo, "enmendar escribe otro commit, no edita el de antes");
+
+    let repo = temp.open();
+    let detail = repo.commit_detail(nuevo).unwrap();
+    assert_eq!(detail.summary, "feat: asunto bien escrito");
+    assert!(detail.parents.is_empty(), "el padre sigue siendo el mismo: ninguno");
+    assert_eq!(repo.commits(50).unwrap().len(), 1, "no hay un commit de más");
+}
+
+#[test]
+fn enmendar_mete_lo_preparado_en_el_ultimo_commit() {
+    let temp = TempRepo::new("enmendar-ficheros");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    // El fichero que se olvidó, que es para lo que se enmienda.
+    temp.write("b.txt", "dos\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    let nuevo = repo.amend("feat: a y b").unwrap();
+
+    let repo = temp.open();
+    let files: Vec<String> = repo
+        .commit_detail(nuevo)
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(files, ["a.txt", "b.txt"]);
+    assert_eq!(repo.commits(50).unwrap().len(), 1);
+    assert!(repo.status().unwrap().is_clean());
+}
+
+#[test]
+fn enmendar_conserva_al_autor_y_cambia_a_quien_lo_cierra() {
+    let temp = TempRepo::new("enmendar-autoria");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    let viejo = repo.commit("feat: a").unwrap();
+
+    let cuando = {
+        let raw = git2::Repository::open(temp.path()).unwrap();
+        let seconds = raw.find_commit(viejo).unwrap().author().when().seconds();
+        seconds
+    };
+
+    // Otra persona enmienda el commit de la primera.
+    {
+        let raw = git2::Repository::open(temp.path()).unwrap();
+        let mut config = raw.config().unwrap();
+        config.set_str("user.name", "Otra").unwrap();
+        config.set_str("user.email", "otra@example.invalid").unwrap();
+    }
+
+    let nuevo = temp.open().amend("feat: a, mejor contado").unwrap();
+
+    let raw = git2::Repository::open(temp.path()).unwrap();
+    let commit = raw.find_commit(nuevo).unwrap();
+    assert_eq!(commit.author().name(), Some("gitrust test"));
+    assert_eq!(commit.author().when().seconds(), cuando);
+    assert_eq!(commit.committer().name(), Some("Otra"));
+}
+
+#[test]
+fn sin_commits_no_hay_nada_que_enmendar() {
+    let temp = TempRepo::new("enmendar-vacio");
+    let err = temp.open().amend("feat: nada").unwrap_err().to_string();
+    assert!(err.contains("enmendar"), "{err}");
+}
+
+#[test]
+fn enmendar_sin_mensaje_se_rechaza() {
+    let temp = TempRepo::new("enmendar-sin-mensaje");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    assert!(temp.open().amend("   ").is_err());
+}
+
+#[test]
+fn el_mensaje_de_head_vuelve_partido_en_asunto_y_cuerpo() {
+    let temp = TempRepo::new("mensaje-head");
+    assert!(temp.open().head_message().is_none(), "sin commits no hay mensaje");
+
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: el asunto\n\nY el cuerpo,\nen dos líneas.\n").unwrap();
+
+    let (subject, body) = temp.open().head_message().unwrap();
+    assert_eq!(subject, "feat: el asunto");
+    assert_eq!(body, "Y el cuerpo,\nen dos líneas.");
+}

@@ -77,6 +77,11 @@ struct App {
     diff: Option<FileDiff>,
     subject: String,
     body: String,
+    /// Si lo escrito va a rehacer el último commit.
+    amend: bool,
+    /// Lo que se estaba escribiendo antes de poner el interruptor, para
+    /// devolverlo si se quita.
+    saved: Option<(String, String)>,
 }
 
 /// Una operación que tarda, corriendo aparte.
@@ -117,6 +122,8 @@ impl App {
             diff: None,
             subject: String::new(),
             body: String::new(),
+            amend: false,
+            saved: None,
         };
         app.load();
         app
@@ -129,6 +136,9 @@ impl App {
     /// Recarga todo: historia, referencias y estado del árbol de trabajo.
     fn load(&mut self) {
         let started = std::time::Instant::now();
+        // Una recarga cambia cuál es el último commit, así que el mensaje que
+        // se hubiera traído de él ya no vale para nada.
+        self.drop_amend();
 
         let mut repo = match self.repo() {
             Ok(repo) => repo,
@@ -192,6 +202,33 @@ impl App {
 
     fn has_working_row(&self) -> bool {
         self.graph.rows.first().is_some_and(|row| row.commit.is_working())
+    }
+
+    /// Quita el modo enmienda y devuelve lo que se estuviera escribiendo.
+    fn drop_amend(&mut self) {
+        self.amend = false;
+        if let Some((subject, body)) = self.saved.take() {
+            self.subject = subject;
+            self.body = body;
+        }
+    }
+
+    /// Si hay un commit que enmendar, y el remoto que ya lo tiene.
+    ///
+    /// El nombre del remoto vuelve en propiedad aposta. Prestado desde
+    /// `&self`, el préstamo duraría lo que durase el valor, y el cuadro de
+    /// commit no podría coger a la vez lo que se está escribiendo.
+    fn amend_state(&self) -> (bool, Option<String>) {
+        let amendable = self.graph.rows.iter().any(|row| !row.commit.is_working());
+
+        // Sin nada por delante del remoto, el último commit ya está allí.
+        let pushed = self
+            .tracking
+            .as_ref()
+            .filter(|tracking| tracking.ahead == 0)
+            .map(|tracking| tracking.remote.clone());
+
+        (amendable, pushed)
     }
 
     /// Recarga solo lo que cambia al tocar el índice.
@@ -410,6 +447,40 @@ impl App {
                 let paths: Vec<String> = self.work.staged.iter().map(|f| f.path.clone()).collect();
                 self.run(|repo| repo.unstage_all(&paths));
             }
+            Action::AmendToggled => {
+                if self.amend {
+                    // Entra el mensaje del último commit, y lo que hubiera
+                    // escrito se guarda: quitar el interruptor tiene que
+                    // devolverlo, no haberlo perdido por el camino.
+                    self.saved = Some((self.subject.clone(), self.body.clone()));
+                    if let Some((subject, body)) =
+                        self.repo().ok().and_then(|repo| repo.head_message())
+                    {
+                        self.subject = subject;
+                        self.body = body;
+                    }
+                } else {
+                    self.drop_amend();
+                }
+            }
+            Action::Amend => {
+                let message = compose(&self.subject, &self.body);
+                match self.repo().and_then(|repo| repo.amend(&message)) {
+                    Ok(oid) => {
+                        self.saved = None;
+                        self.subject.clear();
+                        self.body.clear();
+                        // El viejo ya no existe: el cursor va al que lo
+                        // sustituye, no a un hueco.
+                        self.selected_commit = Some(oid);
+                        self.detail_file = None;
+                        self.load();
+                        self.status = "último commit rehecho".to_string();
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(err.to_string()),
+                }
+            }
             Action::Commit => {
                 let message = compose(&self.subject, &self.body);
                 match self.repo().and_then(|repo| repo.commit(&message)) {
@@ -502,18 +573,26 @@ impl eframe::App for App {
                     }
                 }
                 Tab::Changes => {
+                    let (amendable, pushed) = self.amend_state();
                     let selected = self
                         .selected
                         .as_ref()
                         .map(|(path, staged)| (path.as_str(), *staged));
+
+                    let mut draft = changes_view::Draft {
+                        subject: &mut self.subject,
+                        body: &mut self.body,
+                        amend: &mut self.amend,
+                        amendable,
+                        pushed: pushed.as_deref(),
+                    };
 
                     let action = changes_view::show(
                         ui,
                         &self.work,
                         selected,
                         self.diff.as_ref(),
-                        &mut self.subject,
-                        &mut self.body,
+                        &mut draft,
                     );
 
                     if let Some(action) = action {
@@ -759,6 +838,7 @@ impl App {
         // se commitea sin salir del grafo, que es lo que hace que las dos
         // vistas se sientan una sola.
         let working = self.selected_commit.is_some_and(|oid| oid.is_zero());
+        let (amendable, pushed) = self.amend_state();
         let mut clicked = None;
         let mut action = None;
 
@@ -780,13 +860,20 @@ impl App {
                         .as_ref()
                         .map(|(path, staged)| (path.as_str(), *staged));
 
+                    let mut draft = changes_view::Draft {
+                        subject: &mut self.subject,
+                        body: &mut self.body,
+                        amend: &mut self.amend,
+                        amendable,
+                        pushed: pushed.as_deref(),
+                    };
+
                     action = changes_view::compact(
                         ui,
                         &self.work,
                         selected,
                         self.diff.as_ref(),
-                        &mut self.subject,
-                        &mut self.body,
+                        &mut draft,
                     );
                 } else {
                     clicked = detail_view::show(

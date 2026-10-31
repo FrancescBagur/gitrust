@@ -428,6 +428,63 @@ impl Repo {
             .commit(Some("HEAD"), &signature, &signature, message, &tree, &parents)?;
         Ok(oid)
     }
+
+    /// Rehace el último commit con lo que haya ahora en el índice.
+    ///
+    /// No edita nada: escribe un commit nuevo con el mismo padre y mueve la
+    /// rama a él. El viejo se queda sin nadie que lo señale. Por eso, si ya
+    /// había salido a un remoto, lo de allí y lo de aquí dejan de ser la misma
+    /// historia y el siguiente envío habrá que forzarlo.
+    ///
+    /// El autor y su fecha se conservan: el trabajo sigue siendo de quien lo
+    /// hizo y de cuando lo hizo. Lo único que cambia es quién lo cierra, que
+    /// es lo que hace `git commit --amend`.
+    pub fn amend(&self, message: &str) -> Result<Oid> {
+        let message = message.trim();
+        anyhow::ensure!(!message.is_empty(), "el mensaje del commit está vacío");
+
+        let head = self
+            .inner
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .context("no hay ningún commit que enmendar")?;
+
+        let committer = self
+            .inner
+            .signature()
+            .context("falta configurar user.name y user.email en Git")?;
+
+        let mut index = self.inner.index()?;
+        let tree = self.inner.find_tree(index.write_tree()?)?;
+
+        let oid = head.amend(
+            Some("HEAD"),
+            None,
+            Some(&committer),
+            None,
+            Some(message),
+            Some(&tree),
+        )?;
+        Ok(oid)
+    }
+
+    /// El asunto y el cuerpo del último commit, separados como los pide el
+    /// cuadro de commit.
+    ///
+    /// Hace falta para enmendar: entrar a cambiar un mensaje sin ver lo que
+    /// decía es la manera de perder la mitad sin enterarse.
+    pub fn head_message(&self) -> Option<(String, String)> {
+        let commit = self.inner.head().ok()?.peel_to_commit().ok()?;
+        let message = commit.message()?;
+
+        let subject = commit.summary().unwrap_or_default().to_string();
+        let body = message
+            .split_once("\n\n")
+            .map(|(_, body)| body.trim_end().to_string())
+            .unwrap_or_default();
+
+        Some((subject, body))
+    }
 }
 
 /// Recorre un diff ya calculado y lo trocea en hunks y líneas.

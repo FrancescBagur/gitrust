@@ -18,7 +18,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Barra de acciones: pull, push, rama nueva y stash
 - [x] Columna de ramas y etiquetas a la izquierda del grafo
 - [x] Cambiar de rama, también a una que solo existe en el remoto
-- [ ] Enmendar el último commit
+- [x] Enmendar el último commit, con aviso si ya salió al remoto
 - [ ] Merge con editor de conflictos, rebase interactivo, worktrees
 
 ## Arquitectura
@@ -87,7 +87,7 @@ cargo test -p gitrust-core
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
 operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: cincuenta pruebas, treinta de
+ficheros. Son las que llevan cobertura: cincuenta y seis pruebas, treinta y seis de
 ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
 
 Las del remoto hablan con un repositorio bare en otro directorio temporal. Por

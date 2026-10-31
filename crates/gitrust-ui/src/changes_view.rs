@@ -16,6 +16,23 @@ pub enum Action {
     StageAll,
     UnstageAll,
     Commit,
+    Amend,
+    /// El interruptor de enmendar ha cambiado de postura.
+    AmendToggled,
+}
+
+/// El mensaje que se está escribiendo, y en qué commit va a acabar.
+pub struct Draft<'a> {
+    pub subject: &'a mut String,
+    pub body: &'a mut String,
+    /// Si lo escrito va a rehacer el último commit en vez de crear otro.
+    pub amend: &'a mut bool,
+    /// Hay un commit que enmendar. Sin él, el interruptor no se enseña.
+    pub amendable: bool,
+    /// El remoto que ya tiene el último commit, si lo tiene. Enmendarlo
+    /// entonces obliga a forzar el siguiente envío, y eso hay que decirlo
+    /// antes, no después.
+    pub pushed: Option<&'a str>,
 }
 
 fn kind_color(kind: ChangeKind) -> Color32 {
@@ -35,8 +52,7 @@ pub fn show(
     state: &WorkingState,
     selected: Option<(&str, bool)>,
     diff: Option<&FileDiff>,
-    subject: &mut String,
-    body: &mut String,
+    draft: &mut Draft<'_>,
 ) -> Option<Action> {
     let mut action = None;
 
@@ -57,7 +73,7 @@ pub fn show(
                         .fill(theme::PANEL)
                         .inner_margin(egui::Margin::symmetric(0, 10)),
                 )
-                .show_inside(ui, |ui| commit_box(ui, state, subject, body, &mut action));
+                .show_inside(ui, |ui| commit_box(ui, state, draft, &mut action));
 
             egui::ScrollArea::vertical()
                 .id_salt("listas")
@@ -94,8 +110,7 @@ pub fn compact(
     state: &WorkingState,
     selected: Option<(&str, bool)>,
     diff: Option<&FileDiff>,
-    subject: &mut String,
-    body: &mut String,
+    draft: &mut Draft<'_>,
 ) -> Option<Action> {
     let mut action = None;
 
@@ -129,7 +144,7 @@ pub fn compact(
         });
 
     theme::rule(ui);
-    commit_box(ui, state, subject, body, &mut action);
+    commit_box(ui, state, draft, &mut action);
     theme::rule(ui);
     show_diff(ui, selected, diff, &mut action);
 
@@ -140,8 +155,7 @@ pub fn compact(
 fn commit_box(
     ui: &mut egui::Ui,
     state: &WorkingState,
-    subject: &mut String,
-    body: &mut String,
+    draft: &mut Draft<'_>,
     action: &mut Option<Action>,
 ) {
     // El asunto va aparte del cuerpo: Git espera una línea en blanco entre
@@ -153,7 +167,7 @@ fn commit_box(
                 .color(theme::MUTED),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let length = subject.chars().count();
+            let length = draft.subject.chars().count();
             let color = if length > SUBJECT_LIMIT {
                 theme::CHANGED
             } else {
@@ -168,7 +182,7 @@ fn commit_box(
     });
     ui.add_space(3.0);
     ui.add(
-        egui::TextEdit::singleline(subject)
+        egui::TextEdit::singleline(draft.subject)
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
             .font(theme::body(12.5))
@@ -183,7 +197,7 @@ fn commit_box(
     );
     ui.add_space(3.0);
     ui.add(
-        egui::TextEdit::multiline(body)
+        egui::TextEdit::multiline(draft.body)
             .desired_rows(4)
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
@@ -192,12 +206,16 @@ fn commit_box(
     );
     ui.add_space(8.0);
 
-    let ready = !state.staged.is_empty() && !subject.trim().is_empty();
+    // Enmendando no hace falta tener nada preparado: cambiar solo el mensaje
+    // del último commit es la mitad de las veces que se enmienda.
+    let amending = *draft.amend;
+    let ready = !draft.subject.trim().is_empty() && (amending || !state.staged.is_empty());
     let shortcut =
         ready && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
 
     ui.horizontal(|ui| {
-        let button = egui::Button::new(RichText::new("Commit").font(theme::medium(13.0)))
+        let label = if amending { "Enmendar" } else { "Commit" };
+        let button = egui::Button::new(RichText::new(label).font(theme::medium(13.0)))
             .fill(if ready { theme::tint(theme::lane(0), 54) } else { theme::RAISED })
             .min_size(egui::vec2(88.0, 28.0));
 
@@ -207,15 +225,17 @@ fn commit_box(
             .clicked()
             || shortcut
         {
-            *action = Some(Action::Commit);
+            *action = Some(if amending { Action::Amend } else { Action::Commit });
         }
 
         // Si no se puede commitear, el aviso dice qué falta en vez de
         // limitarse a describir el estado.
-        let note = if state.staged.is_empty() {
+        let note = if !amending && state.staged.is_empty() {
             "Prepara algún cambio primero".to_string()
-        } else if subject.trim().is_empty() {
+        } else if draft.subject.trim().is_empty() {
             "Falta el título".to_string()
+        } else if state.staged.is_empty() {
+            "Solo cambiará el mensaje".to_string()
         } else {
             theme::files_label(state.staged.len())
         };
@@ -224,7 +244,36 @@ fn commit_box(
                 .font(theme::body(11.5))
                 .color(theme::FAINT),
         );
+
+        if draft.amendable {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let text = RichText::new("Enmendar el último")
+                    .font(theme::body(11.5))
+                    .color(if amending { theme::TEXT } else { theme::MUTED });
+
+                if ui
+                    .checkbox(draft.amend, text)
+                    .on_hover_text("Rehace el último commit en vez de escribir otro")
+                    .changed()
+                {
+                    *action = Some(Action::AmendToggled);
+                }
+            });
+        }
     });
+
+    // Enmendar un commit que ya salió deja dos historias distintas con el
+    // mismo nombre. Se puede hacer, pero no a ciegas.
+    if let (true, Some(remote)) = (amending, draft.pushed) {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(format!(
+                "Ese commit ya está en {remote}: el próximo push habrá que forzarlo"
+            ))
+            .font(theme::body(11.0))
+            .color(theme::CHANGED),
+        );
+    }
 }
 
 fn section(
