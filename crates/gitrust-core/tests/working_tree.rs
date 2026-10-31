@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 
 use common::TempRepo;
-use gitrust_core::{ChangeKind, Repo};
+use gitrust_core::{ChangeKind, HunkId, Repo};
 
 #[test]
 fn un_fichero_nuevo_pasa_de_sin_seguimiento_a_preparado() {
@@ -397,4 +397,114 @@ fn el_mensaje_de_head_vuelve_partido_en_asunto_y_cuerpo() {
     let (subject, body) = temp.open().head_message().unwrap();
     assert_eq!(subject, "feat: el asunto");
     assert_eq!(body, "Y el cuerpo,\nen dos líneas.");
+}
+
+// -------------------------------------------------------------- descartar
+
+#[test]
+fn descartar_devuelve_el_fichero_a_lo_que_dice_el_indice() {
+    let temp = TempRepo::new("descartar");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    temp.write("a.txt", "uno\nlo que me estoy inventando\n");
+    assert!(!temp.open().status().unwrap().is_clean());
+
+    temp.open().discard("a.txt").unwrap();
+
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\n");
+    assert!(temp.open().status().unwrap().is_clean());
+}
+
+#[test]
+fn descartar_respeta_lo_que_ya_estaba_preparado() {
+    let temp = TempRepo::new("descartar-preparado");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    // Una parte preparada y otra encima sin preparar.
+    temp.write("a.txt", "uno\ndos\n");
+    temp.open().stage("a.txt").unwrap();
+    temp.write("a.txt", "uno\ndos\ntres a medias\n");
+
+    temp.open().discard("a.txt").unwrap();
+
+    // Vuelve al índice, no al commit: «dos» sobrevive porque estaba preparado.
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\ndos\n");
+    let state = temp.open().status().unwrap();
+    assert!(state.unstaged.is_empty());
+    assert_eq!(state.staged.len(), 1);
+}
+
+#[test]
+fn descartar_un_fichero_sin_seguimiento_lo_borra() {
+    let temp = TempRepo::new("descartar-nuevo");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    temp.write("nuevo.txt", "no lo conoce nadie\n");
+    assert!(temp.path().join("nuevo.txt").exists());
+
+    temp.open().discard("nuevo.txt").unwrap();
+
+    assert!(!temp.path().join("nuevo.txt").exists());
+    assert!(temp.open().status().unwrap().is_clean());
+}
+
+#[test]
+fn descartar_un_fichero_borrado_lo_devuelve_al_disco() {
+    let temp = TempRepo::new("descartar-borrado");
+    temp.write("a.txt", "uno\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: a").unwrap();
+
+    fs::remove_file(temp.path().join("a.txt")).unwrap();
+    temp.open().discard("a.txt").unwrap();
+
+    assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "uno\n");
+}
+
+#[test]
+fn descartar_un_hunk_deja_el_otro_donde_estaba() {
+    let temp = TempRepo::new("descartar-hunk");
+    let repo = repo_with_base(&temp);
+
+    // Dos cambios lejos el uno del otro, que es lo que hace dos hunks.
+    temp.write("a.txt", &numbered(&[2, 18]));
+
+    let diff = repo.file_diff("a.txt", false).unwrap();
+    assert_eq!(diff.hunks.len(), 2, "hacen falta dos hunks para esta prueba");
+
+    temp.open().discard_hunk("a.txt", diff.hunks[0].id).unwrap();
+
+    let texto = fs::read_to_string(temp.path().join("a.txt")).unwrap();
+    assert!(texto.contains("line 2\n"), "el primero vuelve: {texto}");
+    assert!(!texto.contains("line 2 changed"), "y de verdad: {texto}");
+    assert!(texto.contains("line 18 changed"), "el segundo se queda: {texto}");
+}
+
+#[test]
+fn descartar_un_hunk_de_un_fichero_nuevo_dice_que_se_descarte_entero() {
+    let temp = TempRepo::new("descartar-hunk-nuevo");
+    repo_with_base(&temp);
+    temp.write("nuevo.txt", "recien llegado\n");
+
+    // Un fichero sin seguimiento no trae hunks: el diff no entra en su
+    // contenido mientras Git no sepa nada de él.
+    let repo = temp.open();
+    assert!(repo.file_diff("nuevo.txt", false).unwrap().hunks.is_empty());
+
+    let err = temp
+        .open()
+        .discard_hunk("nuevo.txt", HunkId::default())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("entero"), "{err}");
 }

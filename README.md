@@ -12,6 +12,7 @@ gratis y bien hecho: **el grafo de commits con todas las ramas entrelazadas**.
 - [x] Lista de cambios separada entre índice y árbol de trabajo
 - [x] Diff por fichero, stage y unstage, y commit con título y descripción
 - [x] Stage y unstage por hunk suelto
+- [x] Descartar cambios: por fichero, por hunk o todos, con aviso
 - [x] Tres paneles: ramas, grafo y detalle del commit
 - [x] Tema propio: una sola familia de color saturado, la de los carriles
 - [x] Los cambios sin confirmar, como una fila más arriba del grafo
@@ -89,7 +90,7 @@ cargo test -p gitrust-core
 
 El algoritmo del grafo es la pieza con más riesgo de regresión, y las
 operaciones que escriben —índice, stash, ramas y remoto— son las que tocan tus
-ficheros. Son las que llevan cobertura: sesenta y una pruebas, cuarenta y una de
+ficheros. Son las que llevan cobertura: sesenta y siete pruebas, cuarenta y siete de
 ellas contra repositorios reales creados en `/tmp` y borrados al terminar.
 
 Las del remoto hablan con un repositorio bare en otro directorio temporal. Por

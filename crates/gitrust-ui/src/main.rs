@@ -16,8 +16,8 @@ mod theme;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, CommitDetail, FileDiff, Graph, Oid, RefEntry, RefKind,
-    Repo, StashEntry, Tracking, WorkingState,
+    compose, layout, layout_with_working, CommitDetail, FileDiff, Graph, HunkId, Oid, RefEntry,
+    RefKind, Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -84,6 +84,8 @@ struct App {
     saved: Option<(String, String)>,
     /// La etiqueta que se esté escribiendo en el panel de detalle.
     tag: detail_view::TagDraft,
+    /// Lo que está esperando un sí antes de destruir nada.
+    confirm: Option<Confirm>,
 }
 
 /// Una operación que tarda, corriendo aparte.
@@ -94,6 +96,26 @@ struct App {
 /// una sola cosa: la frase que toque poner en la barra de abajo.
 struct Job {
     done: std::sync::mpsc::Receiver<Result<String>>,
+}
+
+/// Algo que destruye y que está esperando un sí.
+///
+/// Todo lo que no se puede deshacer pasa por aquí. La vista pide la acción
+/// como cualquier otra; es la aplicación la que se para a preguntar, de modo
+/// que ninguna vista tenga que acordarse de hacerlo.
+struct Confirm {
+    title: String,
+    detail: String,
+    verb: String,
+    deed: Deed,
+}
+
+/// Lo que se hará si se contesta que sí. Es un tipo aparte de las acciones
+/// de las vistas aposta: así no hay manera de volver a preguntar en bucle.
+enum Deed {
+    Discard(String),
+    DiscardHunk { path: String, hunk: HunkId },
+    DiscardAll(Vec<String>),
 }
 
 impl App {
@@ -127,6 +149,7 @@ impl App {
             amend: false,
             saved: None,
             tag: detail_view::TagDraft::default(),
+            confirm: None,
         };
         app.load();
         app
@@ -401,6 +424,107 @@ impl App {
         }
     }
 
+    /// Deja algo esperando un sí en vez de hacerlo.
+    fn ask(&mut self, title: String, detail: &str, deed: Deed) {
+        self.confirm = Some(Confirm {
+            title,
+            detail: detail.to_string(),
+            verb: "Descartar".to_string(),
+            deed,
+        });
+    }
+
+    /// Hace lo que ya se ha contestado que sí.
+    fn commit_deed(&mut self, deed: Deed) {
+        let done = match deed {
+            Deed::Discard(path) => self.run(|repo| repo.discard(&path)),
+            Deed::DiscardHunk { path, hunk } => self.run(|repo| repo.discard_hunk(&path, hunk)),
+            Deed::DiscardAll(paths) => self.run(|repo| repo.discard_all(&paths)),
+        };
+
+        if done {
+            self.status = "cambios descartados".to_string();
+            self.status_failed = false;
+        }
+    }
+
+    /// El aviso de lo que no se puede deshacer.
+    ///
+    /// Lo que destruye va a la derecha y en rojo, y lo que no hace nada a la
+    /// izquierda: el botón fácil de alcanzar sin leer tiene que ser el que no
+    /// rompe nada.
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = &self.confirm else {
+            return;
+        };
+
+        let (title, detail, verb) =
+            (confirm.title.clone(), confirm.detail.clone(), confirm.verb.clone());
+        let mut go = false;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let modal = egui::Modal::new(egui::Id::new("confirmar"))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::same(18))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+            )
+            .show(ctx, |ui| {
+                ui.set_max_width(372.0);
+                ui.label(
+                    egui::RichText::new(&title)
+                        .font(theme::strong(14.0))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&detail)
+                            .font(theme::body(12.0))
+                            .color(theme::MUTED),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(16.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Cancelar").min_size(egui::vec2(88.0, 28.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(
+                            egui::RichText::new(&verb)
+                                .font(theme::medium(13.0))
+                                .color(theme::REMOVED),
+                        )
+                        .fill(theme::tint(theme::REMOVED, 38))
+                        .min_size(egui::vec2(104.0, 28.0));
+
+                        if ui.add(button).clicked() {
+                            go = true;
+                        }
+                    });
+                });
+            });
+
+        if modal.backdrop_response.clicked() {
+            close = true;
+        }
+
+        if go {
+            if let Some(confirm) = self.confirm.take() {
+                self.commit_deed(confirm.deed);
+            }
+        } else if close {
+            self.confirm = None;
+        }
+    }
+
     /// Deja un aviso en la barra de abajo, marcado como fallo.
     fn note_error(&mut self, message: String) {
         self.status = message;
@@ -441,6 +565,31 @@ impl App {
             }
             Action::UnstageHunk { path, hunk } => {
                 self.run(|repo| repo.unstage_hunk(&path, hunk));
+            }
+            Action::Discard { path, untracked } => {
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                let detail = if untracked {
+                    "Git no sabe nada de ese fichero todavía, así que se borra del disco y no queda en ninguna parte."
+                } else {
+                    "Vuelve a como está en el índice. Lo que hayas escrito desde entonces no está guardado en ningún sitio."
+                };
+                self.ask(format!("¿Descartar los cambios de {name}?"), detail, Deed::Discard(path));
+            }
+            Action::DiscardHunk { path, hunk } => {
+                self.ask(
+                    "¿Descartar este trozo?".to_string(),
+                    "Ese trozo vuelve a como está en el índice. El resto del fichero se queda como lo tienes.",
+                    Deed::DiscardHunk { path, hunk },
+                );
+            }
+            Action::DiscardAll => {
+                let paths: Vec<String> =
+                    self.work.unstaged.iter().map(|file| file.path.clone()).collect();
+                self.ask(
+                    format!("¿Descartar {}?", theme::files_label(paths.len())),
+                    "Los que Git ya conoce vuelven al índice; los nuevos se borran del disco. Nada de esto se puede recuperar.",
+                    Deed::DiscardAll(paths),
+                );
             }
             Action::StageAll => {
                 let paths: Vec<String> = self.work.unstaged.iter().map(|f| f.path.clone()).collect();
@@ -551,6 +700,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
         self.top_bar(ctx);
+        self.confirm_dialog(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
 

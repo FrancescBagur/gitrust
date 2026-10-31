@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use git2::{
-    ApplyLocation, ApplyOptions, Delta, Diff, DiffFormat, DiffHunk, DiffOptions, ObjectType, Oid,
-    Repository, Sort, StatusOptions,
+    build::CheckoutBuilder, ApplyLocation, ApplyOptions, Delta, Diff, DiffFormat, DiffHunk,
+    DiffOptions, ObjectType, Oid, Repository, Sort, StatusOptions,
 };
 
 use crate::detail::{CommitDetail, CommitFile, RefEntry};
@@ -344,7 +344,7 @@ impl Repo {
             .recurse_untracked_dirs(true);
 
         let diff = self.inner.diff_index_to_workdir(None, Some(&mut options))?;
-        self.apply_hunk(&diff, hunk)
+        self.apply_hunk(&diff, hunk, ApplyLocation::Index)
     }
 
     /// Devuelve un solo hunk del índice al árbol de trabajo.
@@ -364,10 +364,10 @@ impl Repo {
             .inner
             .diff_tree_to_index(tree.as_ref(), None, Some(&mut options))?;
 
-        self.apply_hunk(&diff, hunk.reversed())
+        self.apply_hunk(&diff, hunk.reversed(), ApplyLocation::Index)
     }
 
-    fn apply_hunk(&self, diff: &Diff<'_>, wanted: HunkId) -> Result<()> {
+    fn apply_hunk(&self, diff: &Diff<'_>, wanted: HunkId, to: ApplyLocation) -> Result<()> {
         let mut applied = false;
         {
             let mut options = ApplyOptions::new();
@@ -381,8 +381,7 @@ impl Repo {
                 None => true,
             });
 
-            self.inner
-                .apply(diff, ApplyLocation::Index, Some(&mut options))?;
+            self.inner.apply(diff, to, Some(&mut options))?;
         }
 
         anyhow::ensure!(applied, "el hunk ya no existe; recarga el diff");
@@ -401,6 +400,67 @@ impl Repo {
             self.unstage(path)?;
         }
         Ok(())
+    }
+
+    // ------------------------------------------------------------ descartar
+
+    /// Tira los cambios de un fichero en el árbol de trabajo.
+    ///
+    /// Vuelve a lo que diga el índice, no a lo que diga HEAD: si el fichero
+    /// tenía una parte preparada, esa parte se respeta. Es lo que hace
+    /// `git restore <fichero>`, y es lo que le corresponde a una lista que
+    /// separa los dos lados.
+    ///
+    /// Un fichero sin seguimiento no tiene índice al que volver: ahí el cambio
+    /// es el fichero entero, así que se borra. Eso no deja copia en ningún
+    /// sitio, y es la única operación de toda la aplicación de la que no se
+    /// puede volver.
+    pub fn discard(&self, path: &str) -> Result<()> {
+        if !self.in_index(path)? {
+            let file = self.workdir().join(path);
+            if file.exists() {
+                std::fs::remove_file(&file)
+                    .with_context(|| format!("no se pudo borrar {path}"))?;
+            }
+            return Ok(());
+        }
+
+        let mut options = CheckoutBuilder::new();
+        options.force().path(path);
+
+        self.inner
+            .checkout_index(None, Some(&mut options))
+            .with_context(|| format!("no se pudieron descartar los cambios de {path}"))?;
+        Ok(())
+    }
+
+    /// Tira un solo hunk del árbol de trabajo y deja el resto del fichero.
+    ///
+    /// El diff se calcula invertido, igual que para quitar del índice, pero se
+    /// aplica al árbol: así deshace ese trozo donde está escrito.
+    pub fn discard_hunk(&self, path: &str, hunk: HunkId) -> Result<()> {
+        anyhow::ensure!(
+            self.in_index(path)?,
+            "{path} no está en el índice todavía: descártalo entero"
+        );
+
+        let mut options = DiffOptions::new();
+        options.pathspec(path).context_lines(3).reverse(true);
+
+        let diff = self.inner.diff_index_to_workdir(None, Some(&mut options))?;
+        self.apply_hunk(&diff, hunk.reversed(), ApplyLocation::WorkDir)
+    }
+
+    pub fn discard_all(&self, paths: &[String]) -> Result<()> {
+        for path in paths {
+            self.discard(path)?;
+        }
+        Ok(())
+    }
+
+    /// Si Git sabe algo de ese fichero, o es nuevo del todo.
+    fn in_index(&self, path: &str) -> Result<bool> {
+        Ok(self.inner.index()?.get_path(Path::new(path), 0).is_some())
     }
 
     /// Crea un commit con lo que haya en el índice.

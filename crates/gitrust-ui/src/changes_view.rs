@@ -15,6 +15,11 @@ pub enum Action {
     UnstageHunk { path: String, hunk: HunkId },
     StageAll,
     UnstageAll,
+    /// Tirar los cambios de un fichero. `untracked` cambia lo que se pierde:
+    /// un fichero nuevo se borra entero, uno conocido vuelve al índice.
+    Discard { path: String, untracked: bool },
+    DiscardHunk { path: String, hunk: HunkId },
+    DiscardAll,
     Commit,
     Amend,
     /// El interruptor de enmendar ha cambiado de postura.
@@ -308,6 +313,20 @@ fn section(
                 {
                     *action = Some(if staged { Action::UnstageAll } else { Action::StageAll });
                 }
+
+                // Tirar un lado entero no se deshace, así que se viste del
+                // color de lo que se borra y no se pone de primero.
+                if !staged
+                    && ui
+                        .add(egui::Button::new(
+                            RichText::new("Descartar todo")
+                                .font(theme::body(11.0))
+                                .color(theme::REMOVED),
+                        ))
+                        .clicked()
+                {
+                    *action = Some(Action::DiscardAll);
+                }
             });
         }
     });
@@ -364,6 +383,29 @@ fn section(
                 .clicked()
             {
                 *action = Some(Action::Select { path: file.path.clone(), staged });
+            }
+
+            // El de tirar se va al otro extremo de la fila, lejos del de
+            // preparar: entre dos botones pegados, el que no se deshace es el
+            // que no conviene pulsar sin querer.
+            if !staged {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("×").font(theme::mono(12.0)).color(theme::MUTED),
+                            )
+                            .min_size(egui::vec2(20.0, 20.0)),
+                        )
+                        .on_hover_text("Descartar los cambios de este fichero")
+                        .clicked()
+                    {
+                        *action = Some(Action::Discard {
+                            path: file.path.clone(),
+                            untracked: file.kind == ChangeKind::Untracked,
+                        });
+                    }
+                });
             }
         });
     }
@@ -449,6 +491,22 @@ fn show_diff(
                     let (added, removed) = hunk.counts();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         diff_view::counts(ui, added, removed);
+
+                        if !staged
+                            && ui
+                                .add(egui::Button::new(
+                                    RichText::new("Descartar")
+                                        .font(theme::body(11.0))
+                                        .color(theme::REMOVED),
+                                ))
+                                .on_hover_text("Deshacer solo este hunk en el árbol de trabajo")
+                                .clicked()
+                        {
+                            *action = Some(Action::DiscardHunk {
+                                path: path.to_string(),
+                                hunk: hunk.id,
+                            });
+                        }
                     });
                 });
 
