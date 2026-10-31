@@ -22,6 +22,8 @@ const STASH_ROW: f32 = 52.0;
 pub enum Action {
     Pull,
     Push,
+    PushForce,
+    PushTags,
     Branch(String),
     StashSave(String),
     StashApply(usize),
@@ -68,6 +70,14 @@ pub fn show(
         if push.on_hover_text(push_hint(tracking)).clicked() {
             action = Some(Action::Push);
         }
+
+        // La punta va pegada al botón: es el mismo mando con dos posturas,
+        // y lo que hay detrás no se pulsa de pasada.
+        ui.spacing_mut().item_spacing.x = 1.0;
+        if let Some(other) = push_menu(ui, busy) {
+            action = Some(other);
+        }
+        ui.spacing_mut().item_spacing.x = 4.0;
 
         if let Some(name) = branch_menu(ui, busy, &mut draft.branch) {
             action = Some(Action::Branch(name));
@@ -122,6 +132,45 @@ fn push_hint(tracking: Option<&Tracking>) -> String {
         Some(t) => format!("{} ya tiene todo", t.remote),
         None => "llevar esta rama al remoto por primera vez".to_string(),
     }
+}
+
+/// Las dos maneras de llevar que no son la de todos los días.
+fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
+    // Sin texto: el ancho sale del relleno del botón, y así la punta cae en
+    // su centro en vez de dejar medio botón vacío a la izquierda.
+    let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
+    theme::caret(ui, &button);
+    let id = ui.make_persistent_id("menu-push");
+
+    if button.clicked() {
+        ui.memory_mut(|memory| memory.toggle_popup(id));
+    }
+
+    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(234.0);
+        let mut action = None;
+
+        if ui
+            .button("Forzar el push")
+            .on_hover_text("se niega si alguien ha tocado la rama desde que trajiste")
+            .clicked()
+        {
+            action = Some(Action::PushForce);
+        }
+        if ui
+            .button("Enviar las etiquetas")
+            .on_hover_text("las que el remoto todavía no tenga")
+            .clicked()
+        {
+            action = Some(Action::PushTags);
+        }
+
+        if action.is_some() {
+            ui.memory_mut(|memory| memory.close_popup());
+        }
+        action
+    })
+    .flatten()
 }
 
 /// El desplegable de rama: solo crea, y crea donde uno está.

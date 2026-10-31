@@ -6,9 +6,11 @@
 //! movió y adónde.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
+
 use git2::{
-    build::CheckoutBuilder, Config, Cred, CredentialType, FetchOptions, ObjectType, PushOptions,
-    RemoteCallbacks,
+    build::CheckoutBuilder, BranchType, Config, Cred, CredentialType, Direction, FetchOptions,
+    ObjectType, Oid, PushOptions, Remote, RemoteCallbacks,
 };
 
 use crate::repo::Repo;
@@ -117,12 +119,7 @@ impl Repo {
 
         // Sin remoto configurado se prueba «origin», que es como se llama en
         // la inmensa mayoría de los repositorios.
-        let remote_name = self
-            .inner
-            .branch_upstream_remote(&refname)
-            .ok()
-            .and_then(|buf| buf.as_str().map(str::to_string))
-            .unwrap_or_else(|| "origin".to_string());
+        let remote_name = self.remote_of(&refname);
 
         let ahead = self.tracking().map(|t| t.ahead).unwrap_or(0);
         let mut remote = self
@@ -162,6 +159,144 @@ impl Repo {
         }
 
         Ok(format!("{} a {remote_name}/{branch}", commits(ahead)))
+    }
+
+    /// Lleva la rama al remoto pisando lo que haya, pero solo si lo que hay
+    /// sigue siendo lo que viste la última vez.
+    ///
+    /// Eso es el «with lease» de `git push --force-with-lease`, y es lo que
+    /// separa rehacer tu propia historia de borrarle el trabajo a otro sin
+    /// que se entere nadie. Se pregunta al remoto antes de escribir: si ha
+    /// cambiado desde tu última visita, no se fuerza y se dice por qué.
+    pub fn push_force(&self) -> Result<String> {
+        let head = self.inner.head().context("el repositorio no tiene commits")?;
+        let refname = head.name().context("HEAD no tiene nombre")?.to_string();
+        let branch = refname
+            .strip_prefix("refs/heads/")
+            .context("HEAD está desacoplado: no hay rama que llevar")?
+            .to_string();
+
+        let remote_name = self.remote_of(&refname);
+        let mut remote = self
+            .inner
+            .find_remote(&remote_name)
+            .with_context(|| format!("no hay ningún remoto llamado «{remote_name}»"))?;
+
+        // Lo que vimos la última vez que trajimos.
+        let seen = self
+            .inner
+            .find_branch(&format!("{remote_name}/{branch}"), BranchType::Remote)
+            .ok()
+            .and_then(|branch| branch.get().target());
+
+        let theirs = self.heads_of(&mut remote)?.get(&refname).copied();
+        anyhow::ensure!(
+            theirs == seen,
+            "{remote_name}/{branch} ha cambiado desde la última vez que trajiste: \
+             trae primero y mira qué hay antes de pisarlo"
+        );
+
+        // El «+» delante del refspec es lo que autoriza a no avanzar.
+        self.send(&mut remote, &[format!("+{refname}:{refname}")])?;
+        Ok(format!("{branch} forzada en {remote_name}"))
+    }
+
+    /// Manda al remoto las etiquetas que no tenga.
+    ///
+    /// Las que ya están no se vuelven a enviar, y una que haya cambiado de
+    /// sitio se queda aquí: el remoto la rechaza y eso está bien, porque una
+    /// etiqueta que se mueve deja de valer para lo único que sirve.
+    pub fn push_tags(&self) -> Result<String> {
+        let remote_name = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|head| head.name().map(|name| self.remote_of(name)))
+            .unwrap_or_else(|| "origin".to_string());
+
+        let mut remote = self
+            .inner
+            .find_remote(&remote_name)
+            .with_context(|| format!("no hay ningún remoto llamado «{remote_name}»"))?;
+
+        let theirs = self.heads_of(&mut remote)?;
+        let mut missing = Vec::new();
+
+        for reference in self.inner.references()? {
+            let reference = reference?;
+            let Some(name) = reference.name() else {
+                continue;
+            };
+            if !name.starts_with("refs/tags/") {
+                continue;
+            }
+            if theirs.contains_key(name) {
+                continue;
+            }
+            missing.push(format!("{name}:{name}"));
+        }
+
+        if missing.is_empty() {
+            return Ok(format!("{remote_name} ya tiene todas las etiquetas"));
+        }
+
+        let count = missing.len();
+        self.send(&mut remote, &missing)?;
+        Ok(format!(
+            "{count} {} a {remote_name}",
+            if count == 1 { "etiqueta enviada" } else { "etiquetas enviadas" }
+        ))
+    }
+
+    /// Qué referencias tiene el remoto ahora mismo.
+    fn heads_of(&self, remote: &mut Remote<'_>) -> Result<HashMap<String, Oid>> {
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(credentials(self.inner.config()?));
+
+        let connection = remote
+            .connect_auth(Direction::Push, Some(callbacks), None)
+            .context("no se pudo hablar con el remoto")?;
+
+        let heads = connection
+            .list()?
+            .iter()
+            .map(|head| (head.name().to_string(), head.oid()))
+            .collect();
+
+        Ok(heads)
+    }
+
+    /// Manda unos refspecs y se entera de si el servidor dice que no.
+    fn send(&self, remote: &mut Remote<'_>, refspecs: &[String]) -> Result<()> {
+        let refused = std::cell::RefCell::new(None);
+        {
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(credentials(self.inner.config()?));
+            callbacks.push_update_reference(|name, status| {
+                if let Some(reason) = status {
+                    *refused.borrow_mut() = Some(format!("{name}: {reason}"));
+                }
+                Ok(())
+            });
+
+            let mut options = PushOptions::new();
+            options.remote_callbacks(callbacks);
+            remote.push(refspecs, Some(&mut options))?;
+        }
+
+        match refused.into_inner() {
+            Some(reason) => anyhow::bail!("el remoto se ha negado — {reason}"),
+            None => Ok(()),
+        }
+    }
+
+    /// El remoto de una rama, o «origin», que es como se llama casi siempre.
+    fn remote_of(&self, refname: &str) -> String {
+        self.inner
+            .branch_upstream_remote(refname)
+            .ok()
+            .and_then(|buf| buf.as_str().map(str::to_string))
+            .unwrap_or_else(|| "origin".to_string())
     }
 
     /// Borra una rama en el remoto, y de paso su rastro aquí.

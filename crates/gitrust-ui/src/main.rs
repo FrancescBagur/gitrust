@@ -725,6 +725,8 @@ impl App {
             // son locales y terminan antes de que se note.
             Action::Pull => self.spawn("trayendo", |repo| repo.pull()),
             Action::Push => self.spawn("llevando", |repo| repo.push()),
+            Action::PushForce => self.spawn("forzando", |repo| repo.push_force()),
+            Action::PushTags => self.spawn("enviando etiquetas", |repo| repo.push_tags()),
 
             Action::Branch(name) => {
                 match self.repo().and_then(|repo| repo.branch_here(&name)) {

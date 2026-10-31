@@ -686,3 +686,97 @@ fn una_rama_no_se_fusiona_consigo_misma() {
     let err = temp.open().merge(&actual).unwrap_err().to_string();
     assert!(err.contains("en la que estás"), "{err}");
 }
+
+// -------------------------------------------------- forzar y etiquetas
+
+#[test]
+fn forzar_lleva_la_historia_rehecha_al_remoto() {
+    let temp = TempRepo::new("forzar");
+    let rama = primer_commit(&temp);
+    let bare = con_remoto(&temp, "forzar-bare");
+    temp.open().push().unwrap();
+
+    // Se rehace lo que ya había salido: el remoto y esto dejan de cuadrar.
+    let rehecho = temp.open().amend("feat: uno, mejor contado").unwrap();
+    assert!(temp.open().push().is_err(), "sin forzar no debería poder");
+
+    let nota = temp.open().push_force().unwrap();
+    assert!(nota.contains("forzada"), "{nota}");
+
+    let remoto = git2::Repository::open(&bare).unwrap();
+    assert_eq!(
+        remoto.find_reference(&format!("refs/heads/{rama}")).unwrap().target(),
+        Some(rehecho),
+    );
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn forzar_se_niega_si_el_remoto_ha_cambiado_desde_la_ultima_visita() {
+    let temp = TempRepo::new("forzar-ajeno");
+    primer_commit(&temp);
+    let bare = con_remoto(&temp, "forzar-ajeno-bare");
+    temp.open().push().unwrap();
+
+    // Otra persona escribe en el remoto sin que aquí nos enteremos.
+    let otro = temp_dir("forzar-ajeno-otro");
+    git2::Repository::clone(&bare.display().to_string(), &otro).unwrap();
+    {
+        let raw = git2::Repository::open(&otro).unwrap();
+        let mut config = raw.config().unwrap();
+        config.set_str("user.name", "Otra").unwrap();
+        config.set_str("user.email", "otra@example.invalid").unwrap();
+    }
+    std::fs::write(otro.join("suyo.txt"), "lo mio\n").unwrap();
+    let repo = Repo::open(&otro).unwrap();
+    repo.stage("suyo.txt").unwrap();
+    repo.commit("feat: lo suyo").unwrap();
+    repo.push().unwrap();
+
+    temp.open().amend("feat: uno, a mi manera").unwrap();
+    let err = temp.open().push_force().unwrap_err().to_string();
+    assert!(err.contains("ha cambiado"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&otro);
+}
+
+#[test]
+fn las_etiquetas_salen_una_vez_y_no_se_repiten() {
+    let temp = TempRepo::new("etiquetas-push");
+    primer_commit(&temp);
+    let bare = con_remoto(&temp, "etiquetas-push-bare");
+    temp.open().push().unwrap();
+
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+    repo.tag("v1.0", commit, "").unwrap();
+    repo.tag("v1.1", commit, "anotada").unwrap();
+
+    let nota = temp.open().push_tags().unwrap();
+    assert!(nota.contains("2 etiquetas enviadas"), "{nota}");
+
+    let remoto = git2::Repository::open(&bare).unwrap();
+    assert!(remoto.find_reference("refs/tags/v1.0").is_ok());
+    assert!(remoto.find_reference("refs/tags/v1.1").is_ok());
+
+    // La segunda vez no hay nada que mandar, y lo dice.
+    let nota = temp.open().push_tags().unwrap();
+    assert!(nota.contains("ya tiene todas"), "{nota}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn sin_etiquetas_no_se_inventa_un_envio() {
+    let temp = TempRepo::new("etiquetas-push-vacio");
+    primer_commit(&temp);
+    let bare = con_remoto(&temp, "etiquetas-push-vacio-bare");
+    temp.open().push().unwrap();
+
+    let nota = temp.open().push_tags().unwrap();
+    assert!(nota.contains("ya tiene todas"), "{nota}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
