@@ -19,6 +19,8 @@ pub enum Pick {
     Switch { name: String, remote: bool },
     /// Quitar esa etiqueta de aquí.
     DeleteTag(String),
+    /// Borrar esa rama: la de aquí, o la del remoto.
+    DeleteBranch { name: String, remote: bool },
 }
 
 /// Devuelve lo que se haya pedido sobre una referencia.
@@ -192,6 +194,23 @@ fn leaf(
                 };
                 if button.clicked() {
                     *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+                    ui.close_menu();
+                }
+            }
+
+            if switchable {
+                let label = if remote {
+                    "Borrar la rama del remoto"
+                } else {
+                    "Borrar la rama"
+                };
+                let hint = if remote {
+                    "se borra en el servidor: lo verá todo el mundo"
+                } else {
+                    "solo la de aquí; lo que esté en un remoto se queda"
+                };
+                if ui.button(label).on_hover_text(hint).clicked() {
+                    *picked = Some(Pick::DeleteBranch { name: entry.name.clone(), remote });
                     ui.close_menu();
                 }
             }

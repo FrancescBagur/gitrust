@@ -164,6 +164,53 @@ impl Repo {
         Ok(format!("{} a {remote_name}/{branch}", commits(ahead)))
     }
 
+    /// Borra una rama en el remoto, y de paso su rastro aquí.
+    ///
+    /// Un refspec sin nada a la izquierda es cómo se le dice a Git que la
+    /// referencia del otro lado sobra. Es lo mismo que `git push origin :rama`.
+    ///
+    /// Esto se ve desde todas las máquinas, no solo desde esta.
+    pub fn delete_remote_branch(&self, name: &str) -> Result<String> {
+        let (remote_name, branch) = name
+            .split_once('/')
+            .context("una rama remota se llama «remoto/rama»")?;
+
+        let mut remote = self
+            .inner
+            .find_remote(remote_name)
+            .with_context(|| format!("no hay ningún remoto llamado «{remote_name}»"))?;
+
+        let refused = std::cell::RefCell::new(None);
+        {
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(credentials(self.inner.config()?));
+            callbacks.push_update_reference(|_, status| {
+                if let Some(reason) = status {
+                    *refused.borrow_mut() = Some(reason.to_string());
+                }
+                Ok(())
+            });
+
+            let mut options = PushOptions::new();
+            options.remote_callbacks(callbacks);
+            remote
+                .push(&[format!(":refs/heads/{branch}")], Some(&mut options))
+                .with_context(|| format!("no se pudo borrar {branch} en {remote_name}"))?;
+        }
+
+        if let Some(reason) = refused.into_inner() {
+            anyhow::bail!("{remote_name} se ha negado: {reason}");
+        }
+
+        // Y la copia local de esa rama remota, que si no se queda señalando a
+        // algo que ya no está.
+        if let Ok(mut local) = self.inner.find_branch(name, git2::BranchType::Remote) {
+            let _ = local.delete();
+        }
+
+        Ok(format!("{name} borrada en el remoto"))
+    }
+
     /// El remoto al que mira la rama actual, y su nombre.
     fn upstream(&self) -> Result<(String, String)> {
         let head = self.inner.head().context("el repositorio no tiene commits")?;
@@ -209,7 +256,7 @@ impl Repo {
 /// Cada vía se prueba una sola vez. libgit2 vuelve a llamar mientras no se le
 /// dé algo que sirva, así que sin llevar la cuenta esto daría vueltas para
 /// siempre contra un servidor que rechace la primera clave.
-fn credentials(
+pub(crate) fn credentials(
     config: Config,
 ) -> impl FnMut(&str, Option<&str>, CredentialType) -> Result<Cred, git2::Error> {
     let mut used = CredentialType::empty();

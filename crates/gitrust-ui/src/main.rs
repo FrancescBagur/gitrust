@@ -116,6 +116,7 @@ enum Deed {
     Discard(String),
     DiscardHunk { path: String, hunk: HunkId },
     DiscardAll(Vec<String>),
+    DeleteBranch { name: String, remote: bool },
 }
 
 impl App {
@@ -425,24 +426,77 @@ impl App {
     }
 
     /// Deja algo esperando un sí en vez de hacerlo.
-    fn ask(&mut self, title: String, detail: &str, deed: Deed) {
+    fn ask(&mut self, title: String, detail: &str, verb: &str, deed: Deed) {
         self.confirm = Some(Confirm {
             title,
             detail: detail.to_string(),
-            verb: "Descartar".to_string(),
+            verb: verb.to_string(),
             deed,
         });
     }
 
+    /// Pregunta antes de borrar una rama, diciendo cuánto cuesta.
+    fn ask_delete_branch(&mut self, name: String, remote: bool) {
+        if remote {
+            let server = name.split_once('/').map(|(server, _)| server).unwrap_or("el remoto");
+            let detail = format!(
+                "Se borra en {server}, no solo aquí. Quien la tenga la seguirá viendo hasta que traiga."
+            );
+            return self.ask(
+                format!("¿Borrar {name} del remoto?"),
+                &detail,
+                "Borrar",
+                Deed::DeleteBranch { name, remote },
+            );
+        }
+
+        // Cuántos commits se van con ella es la única pregunta que importa.
+        let alone = self.repo().and_then(|repo| repo.unmerged(&name)).unwrap_or(0);
+        let detail = match alone {
+            0 => "Todo lo que tiene está también en otro sitio, así que no se pierde nada."
+                .to_string(),
+            1 => "Tiene un commit que no está en ninguna otra rama, remoto ni etiqueta. Se va con ella."
+                .to_string(),
+            n => format!(
+                "Tiene {n} commits que no están en ninguna otra rama, remoto ni etiqueta. Se van con ella."
+            ),
+        };
+
+        self.ask(
+            format!("¿Borrar la rama {name}?"),
+            &detail,
+            "Borrar",
+            Deed::DeleteBranch { name, remote },
+        );
+    }
+
     /// Hace lo que ya se ha contestado que sí.
     fn commit_deed(&mut self, deed: Deed) {
-        let done = match deed {
+        let discarded = match deed {
             Deed::Discard(path) => self.run(|repo| repo.discard(&path)),
             Deed::DiscardHunk { path, hunk } => self.run(|repo| repo.discard_hunk(&path, hunk)),
             Deed::DiscardAll(paths) => self.run(|repo| repo.discard_all(&paths)),
+
+            // La del remoto sale a la red; la de aquí termina al instante.
+            Deed::DeleteBranch { name, remote } if remote => {
+                let doing = format!("borrando {name}");
+                return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
+            }
+            Deed::DeleteBranch { name, .. } => {
+                return match self.repo().and_then(|repo| repo.delete_branch(&name)) {
+                    Ok(()) => {
+                        // Cambian las referencias, así que el grafo y la
+                        // lateral tienen que volver a leerse.
+                        self.load();
+                        self.status = format!("rama {name} borrada");
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                };
+            }
         };
 
-        if done {
+        if discarded {
             self.status = "cambios descartados".to_string();
             self.status_failed = false;
         }
@@ -573,12 +627,18 @@ impl App {
                 } else {
                     "Vuelve a como está en el índice. Lo que hayas escrito desde entonces no está guardado en ningún sitio."
                 };
-                self.ask(format!("¿Descartar los cambios de {name}?"), detail, Deed::Discard(path));
+                self.ask(
+                    format!("¿Descartar los cambios de {name}?"),
+                    detail,
+                    "Descartar",
+                    Deed::Discard(path),
+                );
             }
             Action::DiscardHunk { path, hunk } => {
                 self.ask(
                     "¿Descartar este trozo?".to_string(),
                     "Ese trozo vuelve a como está en el índice. El resto del fichero se queda como lo tienes.",
+                    "Descartar",
                     Deed::DiscardHunk { path, hunk },
                 );
             }
@@ -588,6 +648,7 @@ impl App {
                 self.ask(
                     format!("¿Descartar {}?", theme::files_label(paths.len())),
                     "Los que Git ya conoce vuelven al índice; los nuevos se borran del disco. Nada de esto se puede recuperar.",
+                    "Descartar",
                     Deed::DiscardAll(paths),
                 );
             }
@@ -955,6 +1016,9 @@ impl App {
                 self.tab = Tab::History;
             }
             Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
+            Some(refs_view::Pick::DeleteBranch { name, remote }) => {
+                self.ask_delete_branch(name, remote)
+            }
             Some(refs_view::Pick::DeleteTag(name)) => {
                 match self.repo().and_then(|repo| repo.delete_tag(&name)) {
                     Ok(()) => {

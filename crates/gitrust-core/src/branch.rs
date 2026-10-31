@@ -5,7 +5,7 @@
 //! salga mal, salga mal antes de haber tocado nada.
 
 use anyhow::{Context, Result};
-use git2::{build::CheckoutBuilder, BranchType, ErrorCode};
+use git2::{build::CheckoutBuilder, BranchType, ErrorCode, ObjectType};
 
 use crate::repo::Repo;
 
@@ -89,6 +89,66 @@ impl Repo {
             .set_upstream(Some(name))?;
 
         self.checkout_branch(local)
+    }
+
+    /// Borra una rama local.
+    ///
+    /// La actual no: borrarla dejaría HEAD señalando a algo que ya no existe,
+    /// y salir de ahí no se puede desde la aplicación.
+    pub fn delete_branch(&self, name: &str) -> Result<()> {
+        let head = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|head| head.shorthand().map(str::to_string));
+        anyhow::ensure!(
+            head.as_deref() != Some(name),
+            "{name} es la rama en la que estás: cámbiate a otra antes"
+        );
+
+        self.inner
+            .find_branch(name, BranchType::Local)
+            .with_context(|| format!("no hay ninguna rama llamada «{name}»"))?
+            .delete()
+            .with_context(|| format!("no se pudo borrar «{name}»"))
+    }
+
+    /// Cuántos commits de esa rama no están en ninguna otra parte.
+    ///
+    /// Es exactamente lo que se pierde al borrarla. Cero quiere decir que
+    /// todo lo suyo ya está en otro sitio —otra rama, un remoto, una
+    /// etiqueta— y que borrarla no se lleva nada por delante.
+    ///
+    /// Se calcula recorriendo su historia y escondiendo la de todas las demás
+    /// referencias, que es lo mismo que hace `git branch -d` para decidir si
+    /// se niega.
+    pub fn unmerged(&self, name: &str) -> Result<usize> {
+        let refname = format!("refs/heads/{name}");
+        let target = self
+            .inner
+            .find_branch(name, BranchType::Local)
+            .with_context(|| format!("no hay ninguna rama llamada «{name}»"))?
+            .get()
+            .peel(ObjectType::Commit)?
+            .id();
+
+        let mut walk = self.inner.revwalk()?;
+        walk.push(target)?;
+
+        for reference in self.inner.references()? {
+            let reference = reference?;
+            let Some(other) = reference.name() else {
+                continue;
+            };
+            if other == refname {
+                continue;
+            }
+            if let Ok(object) = reference.peel(ObjectType::Commit) {
+                walk.hide(object.id())?;
+            }
+        }
+
+        Ok(walk.count())
     }
 }
 

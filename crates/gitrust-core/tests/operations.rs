@@ -465,3 +465,103 @@ fn una_etiqueta_sin_nombre_no_se_crea() {
     let err = repo.tag("  ", commit, "").unwrap_err().to_string();
     assert!(err.contains("nombre"), "{err}");
 }
+
+// -------------------------------------------------------- borrar ramas
+
+#[test]
+fn borrar_una_rama_no_toca_a_los_commits_que_comparte() {
+    let temp = TempRepo::new("borrar-rama");
+    let vieja = primer_commit(&temp);
+    let antes = temp.open().head_id().unwrap();
+
+    temp.open().branch_here("sobra").unwrap();
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    // No tiene nada suyo: nació donde estaba todo lo demás.
+    assert_eq!(temp.open().unmerged("sobra").unwrap(), 0);
+    temp.open().delete_branch("sobra").unwrap();
+
+    let repo = temp.open();
+    assert!(!repo.references().unwrap().iter().any(|e| e.name == "sobra"));
+    assert_eq!(repo.head_id(), Some(antes));
+}
+
+#[test]
+fn la_cuenta_dice_lo_que_se_perderia() {
+    let temp = TempRepo::new("borrar-cuenta");
+    let vieja = primer_commit(&temp);
+
+    temp.open().branch_here("suya").unwrap();
+    for n in 1..=2 {
+        temp.write("b.txt", &format!("version {n}\n"));
+        let repo = temp.open();
+        repo.stage("b.txt").unwrap();
+        repo.commit(&format!("feat: b{n}")).unwrap();
+    }
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    // Dos commits que no están en ningún otro sitio.
+    assert_eq!(temp.open().unmerged("suya").unwrap(), 2);
+
+    // Y en cuanto una etiqueta los alcanza, dejan de estar solos.
+    let repo = temp.open();
+    let punta = repo
+        .references()
+        .unwrap()
+        .iter()
+        .find(|e| e.name == "suya")
+        .unwrap()
+        .target;
+    repo.tag("guardada", punta, "").unwrap();
+    assert_eq!(temp.open().unmerged("suya").unwrap(), 0);
+}
+
+#[test]
+fn la_rama_en_la_que_estas_no_se_borra() {
+    let temp = TempRepo::new("borrar-actual");
+    let actual = primer_commit(&temp);
+
+    let err = temp.open().delete_branch(&actual).unwrap_err().to_string();
+    assert!(err.contains("en la que estás"), "{err}");
+}
+
+#[test]
+fn borrar_una_rama_que_no_existe_lo_dice() {
+    let temp = TempRepo::new("borrar-fantasma");
+    primer_commit(&temp);
+    let err = temp.open().delete_branch("fantasma").unwrap_err().to_string();
+    assert!(err.contains("fantasma"), "{err}");
+}
+
+#[test]
+fn borrar_en_el_remoto_la_quita_de_alli_y_de_aqui() {
+    let temp = TempRepo::new("borrar-remota");
+    let vieja = primer_commit(&temp);
+    let bare = con_remoto(&temp, "borrar-remota-bare");
+    temp.open().push().unwrap();
+
+    temp.open().branch_here("entrega").unwrap();
+    temp.write("c.txt", "de la entrega\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+    repo.push().unwrap();
+    temp.open().checkout_branch(&vieja).unwrap();
+
+    let remoto = git2::Repository::open(&bare).unwrap();
+    assert!(remoto.find_reference("refs/heads/entrega").is_ok());
+
+    temp.open().delete_remote_branch("origin/entrega").unwrap();
+
+    // Ya no está allí, ni queda el rastro de aquí.
+    let remoto = git2::Repository::open(&bare).unwrap();
+    assert!(remoto.find_reference("refs/heads/entrega").is_err());
+
+    let repo = temp.open();
+    let refs = repo.references().unwrap();
+    assert!(!refs.iter().any(|e| e.name == "origin/entrega"));
+    // Y la local sigue donde estaba: borrar allí no borra aquí.
+    assert!(refs.iter().any(|e| e.name == "entrega"));
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
