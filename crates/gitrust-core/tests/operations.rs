@@ -8,7 +8,7 @@
 mod common;
 
 use common::{temp_dir, TempRepo};
-use gitrust_core::Repo;
+use gitrust_core::{layout, RefKind, Repo};
 
 /// Deja el repositorio con un commit y devuelve el nombre de su rama.
 fn primer_commit(temp: &TempRepo) -> String {
@@ -368,4 +368,100 @@ fn si_la_local_ya_existe_se_va_a_ella_sin_tocarla() {
     assert_eq!(repo.head_id(), Some(suyo));
 
     let _ = std::fs::remove_dir_all(&bare);
+}
+
+// ------------------------------------------------------------- etiquetas
+
+#[test]
+fn una_etiqueta_sin_mensaje_sale_ligera_y_con_mensaje_anotada() {
+    let temp = TempRepo::new("etiquetas");
+    primer_commit(&temp);
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+
+    repo.tag("v1.0", commit, "").unwrap();
+    repo.tag("v2.0", commit, "La primera entrega de verdad").unwrap();
+
+    let raw = git2::Repository::open(temp.path()).unwrap();
+
+    // La ligera es una referencia a secas: apunta al commit.
+    let ligera = raw.find_reference("refs/tags/v1.0").unwrap();
+    assert_eq!(ligera.target(), Some(commit));
+    assert!(raw.find_tag(ligera.target().unwrap()).is_err());
+
+    // La anotada es un objeto propio, con su mensaje y quien la puso.
+    let anotada = raw.find_reference("refs/tags/v2.0").unwrap();
+    let objeto = raw.find_tag(anotada.target().unwrap()).unwrap();
+    assert_eq!(objeto.message(), Some("La primera entrega de verdad"));
+    assert_eq!(objeto.tagger().unwrap().name(), Some("gitrust test"));
+    assert_eq!(objeto.target_id(), commit);
+}
+
+#[test]
+fn las_dos_clases_salen_en_las_referencias_y_sobre_su_commit() {
+    let temp = TempRepo::new("etiquetas-refs");
+    primer_commit(&temp);
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+    repo.tag("v1.0", commit, "").unwrap();
+    repo.tag("v2.0", commit, "anotada").unwrap();
+
+    let repo = temp.open();
+    let refs = repo.references().unwrap();
+    let etiquetas: Vec<&str> = refs
+        .iter()
+        .filter(|entry| entry.kind == RefKind::Tag)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(etiquetas, ["v1.0", "v2.0"]);
+
+    // Y en el grafo cuelgan del commit, anotada incluida: pelarla es lo que
+    // hace que no se quede flotando en su propio objeto.
+    let graph = layout(repo.commits(10).unwrap());
+    let nombres: Vec<&str> = graph.rows[0]
+        .commit
+        .refs
+        .iter()
+        .filter(|label| label.kind == RefKind::Tag)
+        .map(|label| label.name.as_str())
+        .collect();
+    assert_eq!(nombres, ["v1.0", "v2.0"]);
+}
+
+#[test]
+fn una_etiqueta_no_pisa_a_otra_con_su_nombre() {
+    let temp = TempRepo::new("etiquetas-repetida");
+    primer_commit(&temp);
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+
+    repo.tag("v1.0", commit, "").unwrap();
+    let err = repo.tag("v1.0", commit, "").unwrap_err().to_string();
+    assert!(err.contains("v1.0"), "{err}");
+}
+
+#[test]
+fn borrar_una_etiqueta_no_toca_al_commit() {
+    let temp = TempRepo::new("etiquetas-borrar");
+    primer_commit(&temp);
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+    repo.tag("v1.0", commit, "con mensaje").unwrap();
+
+    repo.delete_tag("v1.0").unwrap();
+
+    let repo = temp.open();
+    assert!(!repo.references().unwrap().iter().any(|e| e.kind == RefKind::Tag));
+    assert_eq!(repo.head_id(), Some(commit));
+}
+
+#[test]
+fn una_etiqueta_sin_nombre_no_se_crea() {
+    let temp = TempRepo::new("etiquetas-sin-nombre");
+    primer_commit(&temp);
+    let repo = temp.open();
+    let commit = repo.head_id().unwrap();
+
+    let err = repo.tag("  ", commit, "").unwrap_err().to_string();
+    assert!(err.contains("nombre"), "{err}");
 }

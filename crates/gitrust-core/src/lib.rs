@@ -13,6 +13,7 @@ pub mod remote;
 pub mod repo;
 pub mod stash;
 pub mod status;
+pub mod tag;
 
 pub use detail::{CommitDetail, CommitFile, RefEntry};
 pub use git2::Oid;

@@ -82,6 +82,8 @@ struct App {
     /// Lo que se estaba escribiendo antes de poner el interruptor, para
     /// devolverlo si se quita.
     saved: Option<(String, String)>,
+    /// La etiqueta que se esté escribiendo en el panel de detalle.
+    tag: detail_view::TagDraft,
 }
 
 /// Una operación que tarda, corriendo aparte.
@@ -124,6 +126,7 @@ impl App {
             body: String::new(),
             amend: false,
             saved: None,
+            tag: detail_view::TagDraft::default(),
         };
         app.load();
         app
@@ -336,7 +339,7 @@ impl App {
                 true
             }
             Err(err) => {
-                self.note_error(err.to_string());
+                self.note_error(format!("{err:#}"));
                 false
             }
         }
@@ -385,7 +388,7 @@ impl App {
                         self.status = note;
                         self.status_failed = false;
                     }
-                    Err(err) => self.note_error(err.to_string()),
+                    Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
             Err(TryRecvError::Empty) => {
@@ -416,7 +419,7 @@ impl App {
         self.detail_diff = None;
         self.head.clear();
         self.summary.clear();
-        self.note_error(err.to_string());
+        self.note_error(format!("{err:#}"));
     }
 
     fn handle(&mut self, action: changes_view::Action) {
@@ -478,7 +481,7 @@ impl App {
                         self.status = "último commit rehecho".to_string();
                         self.status_failed = false;
                     }
-                    Err(err) => self.note_error(err.to_string()),
+                    Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
             Action::Commit => {
@@ -496,7 +499,7 @@ impl App {
                         self.status = format!("commit creado en {}", self.head);
                         self.status_failed = false;
                     }
-                    Err(err) => self.note_error(err.to_string()),
+                    Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
         }
@@ -520,7 +523,7 @@ impl App {
                         self.status = format!("ahora estás en {name}");
                         self.status_failed = false;
                     }
-                    Err(err) => self.note_error(err.to_string()),
+                    Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
 
@@ -539,7 +542,7 @@ impl App {
                 self.status = note;
                 self.status_failed = false;
             }
-            Err(err) => self.note_error(err.to_string()),
+            Err(err) => self.note_error(format!("{err:#}")),
         }
     }
 }
@@ -802,6 +805,16 @@ impl App {
                 self.tab = Tab::History;
             }
             Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
+            Some(refs_view::Pick::DeleteTag(name)) => {
+                match self.repo().and_then(|repo| repo.delete_tag(&name)) {
+                    Ok(()) => {
+                        self.load();
+                        self.status = format!("etiqueta {name} borrada");
+                        self.status_failed = false;
+                    }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                }
+            }
             None => {}
         }
     }
@@ -881,6 +894,7 @@ impl App {
                         self.detail.as_ref(),
                         self.detail_file.as_deref(),
                         self.detail_diff.as_ref(),
+                        &mut self.tag,
                     );
                 }
             });
@@ -888,8 +902,28 @@ impl App {
         if let Some(action) = action {
             self.handle(action);
         }
-        if let Some(path) = clicked {
-            self.select_detail_file(path);
+        match clicked {
+            Some(detail_view::Pick::File(path)) => self.select_detail_file(path),
+            Some(detail_view::Pick::Tag { name, message }) => self.create_tag(name, message),
+            None => {}
+        }
+    }
+
+    /// Etiqueta el commit que se está mirando.
+    fn create_tag(&mut self, name: String, message: String) {
+        let Some(oid) = self.selected_commit.filter(|oid| !oid.is_zero()) else {
+            return self.note_error("no hay ningún commit elegido".to_string());
+        };
+
+        match self.repo().and_then(|repo| repo.tag(&name, oid, &message)) {
+            Ok(()) => {
+                // La etiqueta nueva tiene que salir en el grafo y en la
+                // lateral, y eso solo pasa releyendo las referencias.
+                self.load();
+                self.status = format!("etiqueta {name} creada");
+                self.status_failed = false;
+            }
+            Err(err) => self.note_error(format!("{err:#}")),
         }
     }
 }

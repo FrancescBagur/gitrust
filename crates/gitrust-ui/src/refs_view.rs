@@ -17,6 +17,8 @@ pub enum Pick {
     Show(Oid),
     /// Cambiarse a esa rama.
     Switch { name: String, remote: bool },
+    /// Quitar esa etiqueta de aquí.
+    DeleteTag(String),
 }
 
 /// Devuelve lo que se haya pedido sobre una referencia.
@@ -175,22 +177,37 @@ fn leaf(
         entry.name.clone()
     });
 
-    if switchable {
+    // Una etiqueta no lleva a ningún sitio, pero se puede quitar de en medio.
+    let removable = entry.kind == RefKind::Tag && !busy;
+
+    if switchable || removable {
         let remote = entry.kind == RefKind::RemoteBranch;
         response.context_menu(|ui| {
-            let button = ui.button("Cambiar a esta rama");
-            let button = if remote {
-                button.on_hover_text("crea aquí la rama local, si todavía no está")
-            } else {
-                button
-            };
-            if button.clicked() {
-                *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+            if switchable {
+                let button = ui.button("Cambiar a esta rama");
+                let button = if remote {
+                    button.on_hover_text("crea aquí la rama local, si todavía no está")
+                } else {
+                    button
+                };
+                if button.clicked() {
+                    *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+                    ui.close_menu();
+                }
+            }
+
+            if removable
+                && ui
+                    .button("Borrar la etiqueta")
+                    .on_hover_text("solo la de aquí; la del remoto se queda donde está")
+                    .clicked()
+            {
+                *picked = Some(Pick::DeleteTag(entry.name.clone()));
                 ui.close_menu();
             }
         });
 
-        if response.double_clicked() {
+        if switchable && response.double_clicked() {
             *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
             return;
         }
