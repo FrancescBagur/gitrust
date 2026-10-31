@@ -1,12 +1,14 @@
 //! The board: the branches laid out in columns by where they stand.
 //!
-//! Nothing here is stored. What you see comes straight off the graph, so it
+//! Nothing here is stored. The columns come straight off the graph, so they
 //! cannot fall out of date: the moment you commit, the card changes column on
-//! its own.
+//! its own. The one thing the graph cannot know is whether anybody is looking
+//! at a branch, so the forge is asked that, and its answer arrives later and
+//! moves the cards again.
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Color32, RichText, Stroke};
-use gitrust_core::{Board, Card, Lane};
+use gitrust_core::{Board, Card, Lane, PullRequestState};
 
 use crate::refs_view::Pick;
 use crate::theme;
@@ -16,6 +18,16 @@ use crate::theme;
 struct Dragged {
     branch: String,
     lane: Lane,
+    /// Whether it already has a pull request, open or otherwise.
+    reviewed: bool,
+}
+
+/// How the asking of the forge is going, as far as the header is concerned.
+#[derive(Clone, Copy)]
+pub struct Forge<'a> {
+    pub asking: bool,
+    /// Why it could not answer, when it could not.
+    pub note: Option<&'a str>,
 }
 
 /// What has been asked for from the board.
@@ -24,8 +36,14 @@ pub enum Act {
     Pick(Pick),
     /// Push that branch to the remote.
     Publish(String),
+    /// Open a pull request for it.
+    Review(String),
     /// Bring it into the main branch.
     Land(String),
+    /// Ask the forge again.
+    Reload,
+    /// Open that address in a browser.
+    Open(String),
 }
 
 /// Whether dropping a card from one column into another has an operation behind it.
@@ -34,22 +52,29 @@ pub enum Act {
 /// where you can name the command that would do what the drag promises. A
 /// branch with no commits cannot be published, and you do not come back from
 /// "done" by dragging: that would undo a merge, which is another thing, and graver.
-fn allows(from: Lane, to: Lane) -> bool {
-    matches!(
-        (from, to),
-        (Lane::InProgress, Lane::InReview)
-            | (Lane::InProgress, Lane::Done)
-            | (Lane::InReview, Lane::Done)
-    )
+///
+/// Which command the first one is depends on who was asked. Unasked, a card
+/// reaches "in review" by being pushed, so the drop pushes. Asked, it gets
+/// there by having a pull request, so the drop opens one — and a branch that
+/// already has one is left alone, because turning a draft into a review is
+/// `gh pr ready`, a different thing that deserves its own place.
+fn allows(dragged: &Dragged, to: Lane, asked: bool) -> bool {
+    match (dragged.lane, to) {
+        (Lane::InProgress, Lane::InReview) => !(asked && dragged.reviewed),
+        (Lane::InProgress, Lane::Done) | (Lane::InReview, Lane::Done) => true,
+        _ => false,
+    }
 }
 
-fn transition(dragged: &Dragged, to: Lane) -> Option<Act> {
-    if !allows(dragged.lane, to) {
+fn transition(dragged: &Dragged, to: Lane, asked: bool) -> Option<Act> {
+    if !allows(dragged, to, asked) {
         return None;
     }
-    Some(match to {
-        Lane::InReview => Act::Publish(dragged.branch.clone()),
-        _ => Act::Land(dragged.branch.clone()),
+    let branch = dragged.branch.clone();
+    Some(match (to, asked) {
+        (Lane::InReview, true) => Act::Review(branch),
+        (Lane::InReview, false) => Act::Publish(branch),
+        _ => Act::Land(branch),
     })
 }
 
@@ -74,6 +99,7 @@ pub fn show(
     board: &Board,
     project: &mut Option<String>,
     busy: bool,
+    forge: Forge<'_>,
 ) -> Option<Act> {
     if board.cards.is_empty() {
         theme::empty(ui, "Only the main branch so far: make a branch and it will show up here");
@@ -83,14 +109,9 @@ pub fn show(
     let mut picked = None;
 
     ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new(format!("Measured against {}", board.trunk))
-                .font(theme::body(11.5))
-                .color(theme::FAINT),
-        );
-    });
+    if header_line(ui, board, forge) {
+        picked = Some(Act::Reload);
+    }
 
     // The projects are the folders in the branch names: `theme/colors` and
     // `theme/typography` are the same job, and people already name them so.
@@ -116,6 +137,7 @@ pub fn show(
     theme::rule(ui);
 
     let filter = project.clone();
+    let asked = board.asked;
     ui.columns(Lane::ALL.len(), |columns| {
         for (ui, lane) in columns.iter_mut().zip(Lane::ALL) {
             let cards: Vec<&Card> = board
@@ -131,7 +153,7 @@ pub fn show(
             // The whole column takes whatever is dropped on it.
             let mut dropped = None;
             ui.scope(|ui| {
-                paint_drop_zone(ui, lane);
+                paint_drop_zone(ui, lane, board.asked);
 
                 let frame = egui::Frame::NONE
                     .inner_margin(egui::Margin::symmetric(2, 4))
@@ -152,7 +174,7 @@ pub fn show(
                                 return;
                             }
                             for card in cards {
-                                if let Some(act) = draw_card(ui, card, busy) {
+                                if let Some(act) = draw_card(ui, card, busy, asked) {
                                     picked = Some(act);
                                 }
                                 ui.add_space(6.0);
@@ -163,7 +185,7 @@ pub fn show(
             });
 
             if let Some(dragged) = dropped {
-                if let Some(act) = transition(&dragged, lane) {
+                if let Some(act) = transition(&dragged, lane, asked) {
                     picked = Some(act);
                 }
             }
@@ -171,6 +193,59 @@ pub fn show(
     });
 
     picked
+}
+
+/// What the columns are measured against, and who was asked.
+///
+/// The second half of this line is the difference between a board that knows
+/// and a board that is guessing, and that difference has to be readable
+/// without opening anything. "In review means pushed" is the guess said out
+/// loud; the reason the forge could not be reached waits in the hover, where
+/// it is there for whoever wants it and in nobody's way otherwise.
+///
+/// Gives back whether the forge should be asked again.
+fn header_line(ui: &mut egui::Ui, board: &Board, forge: Forge<'_>) -> bool {
+    let mut again = false;
+
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.label(
+            RichText::new(format!("Measured against {}", board.trunk))
+                .font(theme::body(11.5))
+                .color(theme::FAINT),
+        );
+
+        let reviews = board.cards.iter().filter(|card| card.pull.is_some()).count();
+        let (said, hint) = match (forge.asking, board.asked, forge.note) {
+            (true, _, _) => ("· asking the forge…".to_string(), None),
+            (_, true, _) => (
+                format!("· {}", theme::count_label(reviews, "pull request")),
+                Some("Click to ask the forge again".to_string()),
+            ),
+            (_, _, Some(note)) => (
+                "· in review means pushed".to_string(),
+                Some(format!("{note}\n\nClick to try the forge again")),
+            ),
+            _ => (String::new(), None),
+        };
+
+        if said.is_empty() {
+            return;
+        }
+
+        let label = egui::Label::new(RichText::new(said).font(theme::body(11.5)).color(theme::FAINT));
+        let response = match hint {
+            Some(hint) => {
+                let response = ui.add(label.sense(egui::Sense::click()));
+                response.on_hover_text(hint)
+            }
+            None => ui.add(label),
+        };
+        again = response.clicked();
+    });
+
+    again
 }
 
 fn chip(text: &str, on: bool) -> RichText {
@@ -201,9 +276,9 @@ fn header(ui: &mut egui::Ui, lane: Lane, count: usize) {
 /// Leaves the drop zone in the column's color, but only if what is being
 /// dragged can land there. A column that lights up for anything is not saying
 /// anything.
-fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane) {
+fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane, asked: bool) {
     let accepts = egui::DragAndDrop::payload::<Dragged>(ui.ctx())
-        .is_some_and(|dragged| allows(dragged.lane, lane));
+        .is_some_and(|dragged| allows(&dragged, lane, asked));
     let color = column(lane).1;
 
     let widgets = &mut ui.visuals_mut().widgets;
@@ -218,7 +293,7 @@ fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane) {
 }
 
 /// A card: the branch, which project it is from, how much it carries and how old it is.
-fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
+fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<Act> {
     let frame = egui::Frame::NONE
         .fill(theme::PANEL)
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -227,23 +302,44 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
 
     let id = egui::Id::new(("card", &card.branch));
     let dragging = ui.ctx().is_being_dragged(id);
-    let payload = Dragged { branch: card.branch.clone(), lane: card.lane };
+    let payload = Dragged {
+        branch: card.branch.clone(),
+        lane: card.lane,
+        reviewed: card.pull.is_some(),
+    };
 
-    let inner = ui.dnd_drag_source(id, payload, |ui| {
+    let mut opened = None;
+
+    let inner = ui.dnd_drag_source(id, payload.clone(), |ui| {
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 3.0;
 
-            // The branch you are on wears HEAD's amber, as in the graph and in
-            // the bar: it is the same question answered in the same color.
-            ui.label(
-                RichText::new(card.leaf())
-                    .font(theme::medium(12.5))
-                    .color(if card.current { theme::HEAD } else { theme::TEXT }),
-            );
+            ui.horizontal(|ui| {
+                // The branch you are on wears HEAD's amber, as in the graph and
+                // in the bar: it is the same question answered in the same color.
+                ui.label(
+                    RichText::new(card.leaf())
+                        .font(theme::medium(12.5))
+                        .color(if card.current { theme::HEAD } else { theme::TEXT }),
+                );
+                // The pull request goes to the far side, where the eye is not
+                // reading. It is a fact about the card, not its name.
+                if let Some(pull) = &card.pull {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if review_badge(ui, pull) {
+                            opened = Some(pull.url.clone());
+                        }
+                    });
+                }
+            });
             ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::MUTED));
         });
     });
+
+    if let Some(url) = opened {
+        return Some(Act::Open(url));
+    }
 
     let response = inner.response.interact(egui::Sense::click());
 
@@ -272,7 +368,8 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
     }
 
     let switchable = !card.current && !busy;
-    let hint = match (switchable, allows(card.lane, Lane::Done)) {
+    let draggable = allows(&payload, Lane::Done, asked);
+    let hint = match (switchable, draggable) {
         (true, true) => format!(
             "{}\nDouble-click to switch to it, or drag it to another column",
             card.branch
@@ -286,6 +383,40 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool) -> Option<Act> {
         return Some(Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }));
     }
     response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
+}
+
+/// The pull request's number, in the color of the column it argues for.
+///
+/// A draft and a closed one go muted: they are both pull requests that are not
+/// asking anybody for anything, and the card they sit on is not in review.
+/// Gives back whether it was clicked, which means open it in a browser.
+fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> bool {
+    let (color, says) = match (pull.state, pull.draft) {
+        (PullRequestState::Merged, _) => (theme::lane(1), "merged"),
+        (PullRequestState::Open, false) => (theme::lane(6), "open"),
+        (PullRequestState::Open, true) => (theme::MUTED, "a draft"),
+        (PullRequestState::Closed, _) => (theme::MUTED, "closed, not merged"),
+    };
+
+    let label = egui::Label::new(
+        RichText::new(format!("#{}", pull.number))
+            .font(theme::mono(10.5))
+            .color(color),
+    );
+
+    // Without a URL there is nowhere to go, so it does not pretend to be a
+    // link: it stays a number that says which pull request this is.
+    if pull.url.is_empty() {
+        ui.add(label).on_hover_text(format!("Pull request {says}"));
+        return false;
+    }
+
+    let response = ui
+        .add(label.sense(egui::Sense::click()))
+        .on_hover_text(format!("Pull request {says}\n{}\n\nClick to open it", pull.url))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    response.clicked()
 }
 
 /// "theme - 3 commits - 2 h ago", saying nothing of what is not there.

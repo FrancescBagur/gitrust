@@ -18,7 +18,7 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Board, CommitDetail, FileDiff, Graph, HunkId, Oid,
-    PullMode, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
+    PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -70,6 +70,12 @@ struct App {
     /// The work laid out in columns, and which project it is filtered by.
     board: Option<Board>,
     project: Option<String>,
+    /// What the forge last said, and the asking of it.
+    pulls: Option<PullRequests>,
+    forge: Option<Forge>,
+    /// Why the forge could not answer, if it could not. It is kept so the
+    /// board can say why it is guessing instead of quietly guessing.
+    forge_note: Option<String>,
     /// The fetch button's position: it repeats the last thing asked for.
     pull_mode: PullMode,
 
@@ -113,6 +119,17 @@ struct Job {
     done: std::sync::mpsc::Receiver<Result<String>>,
 }
 
+/// The asking of the forge, which is a job of its own.
+///
+/// It is kept apart from [`Job`] on purpose. `gh` goes out to the network, and
+/// it can sit there for as long as the network lets it; hanging the toolbar on
+/// that would mean a board nobody asked to open could stop you pushing. So
+/// this one darkens nothing and holds nothing up: the board is already drawn
+/// from the graph, and the answer only ever improves it.
+struct Forge {
+    done: std::sync::mpsc::Receiver<Result<PullRequests>>,
+}
+
 /// Something destructive that is waiting for a yes.
 ///
 /// Everything that cannot be undone comes through here. The view asks for the
@@ -133,6 +150,7 @@ enum Deed {
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
     Land(String),
+    Review(String),
 }
 
 impl App {
@@ -156,6 +174,9 @@ impl App {
             ref_filter: String::new(),
             board: None,
             project: None,
+            pulls: None,
+            forge: None,
+            forge_note: None,
             pull_mode: PullMode::Merge,
             tracking: None,
             stashes: Vec::new(),
@@ -199,7 +220,7 @@ impl App {
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
-        self.board = repo.board().ok();
+        self.board = repo.board_with(self.pulls.as_ref()).ok();
         self.stashes = repo.stashes().unwrap_or_default();
 
         // The tree's state goes before the graph: whether there is a row of
@@ -552,6 +573,100 @@ impl App {
         );
     }
 
+    /// Goes and asks the forge which pull requests there are.
+    ///
+    /// It runs at most once at a time, and it never says anything in the
+    /// bottom bar while it runs: nobody asked for it out loud, so it should
+    /// not talk over whatever did.
+    fn ask_forge(&mut self) {
+        if self.forge.is_some() {
+            return;
+        }
+
+        let (send, done) = std::sync::mpsc::channel();
+        let path = self.path.clone();
+
+        std::thread::spawn(move || {
+            let _ = send.send(Repo::open(&path).and_then(|repo| repo.pull_requests()));
+        });
+
+        self.forge = Some(Forge { done });
+    }
+
+    /// Looks at whether the forge has answered, and redraws the board if so.
+    fn poll_forge(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(forge) = &self.forge else {
+            return;
+        };
+
+        match forge.done.try_recv() {
+            Ok(Ok(pulls)) => {
+                self.forge = None;
+                self.forge_note = None;
+                self.pulls = Some(pulls);
+                self.rebuild_board();
+            }
+            // A forge that cannot answer is not a failure of the board; it is
+            // the board going back to what the graph alone can tell. The
+            // reason is kept for the header to show, not shouted in the bar.
+            Ok(Err(err)) => {
+                self.forge = None;
+                self.forge_note = Some(format!("{err:#}"));
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.forge = None;
+                self.forge_note = Some("the forge was not reached".to_string());
+            }
+        }
+    }
+
+    /// Hands an address to whatever the desktop opens addresses with.
+    ///
+    /// It is spawned and forgotten rather than waited on: the browser takes a
+    /// second or two to appear and there is nothing to report when it does.
+    /// What there is to report is it not being there at all.
+    fn open_in_browser(&mut self, url: &str) {
+        match std::process::Command::new("xdg-open").arg(url).spawn() {
+            Ok(_) => {
+                self.status = format!("opening {url}");
+                self.status_failed = false;
+            }
+            Err(err) => self.note_error(format!("could not open a browser: {err}")),
+        }
+    }
+
+    /// Lays the columns out again over whatever the forge last said.
+    fn rebuild_board(&mut self) {
+        if let Ok(repo) = self.repo() {
+            self.board = repo.board_with(self.pulls.as_ref()).ok();
+        }
+    }
+
+    /// Asks before opening a pull request, which everyone on the repository
+    /// is going to see.
+    fn ask_review(&mut self, branch: String) {
+        let trunk = match &self.board {
+            Some(board) => board.trunk.clone(),
+            None => return,
+        };
+
+        self.ask(
+            format!("Open a pull request for {branch}?"),
+            &format!(
+                "{branch} is pushed first, and then a pull request is opened against \
+                 {trunk} with the title and body taken from its own commits. \
+                 Everyone on the repository sees it."
+            ),
+            "Open",
+            Deed::Review(branch),
+        );
+    }
+
     /// Asks before bringing a branch into the main one, which may start by
     /// moving you somewhere else.
     fn ask_land(&mut self, branch: String) {
@@ -592,6 +707,13 @@ impl App {
             Deed::Land(branch) => {
                 let doing = format!("merging {branch}");
                 return self.spawn(&doing, move |repo| repo.land(&branch));
+            }
+            Deed::Review(branch) => {
+                // What the forge last said no longer holds once there is a new
+                // pull request in it, so it gets asked again when this lands.
+                self.pulls = None;
+                let doing = format!("opening a pull request for {branch}");
+                return self.spawn(&doing, move |repo| repo.open_pull_request(&branch));
             }
             Deed::DeleteBranch { name, .. } => {
                 return match self.repo().and_then(|repo| repo.delete_branch(&name)) {
@@ -875,6 +997,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
+        self.poll_forge(ctx);
         self.top_bar(ctx);
         self.confirm_dialog(ctx);
         self.status_bar(ctx);
@@ -924,12 +1047,24 @@ impl eframe::App for App {
                     }
                 }
                 Tab::Board => {
+                    // The forge is asked the first time the board is looked
+                    // at, not when the window opens: somebody who never leaves
+                    // the history should not be making network calls.
+                    if self.pulls.is_none() && self.forge_note.is_none() {
+                        self.ask_forge();
+                    }
+
+                    let state = board_view::Forge {
+                        asking: self.forge.is_some(),
+                        note: self.forge_note.as_deref(),
+                    };
                     let picked = match &self.board {
                         Some(board) => board_view::show(
                             ui,
                             board,
                             &mut self.project,
                             self.job.is_some(),
+                            state,
                         ),
                         None => {
                             theme::empty(ui, "Open a repository to see its work");
@@ -945,11 +1080,22 @@ impl eframe::App for App {
                         Some(board_view::Act::Pick(refs_view::Pick::Switch { name, remote })) => {
                             self.switch(name, remote)
                         }
+                        // Pushing is what moves a card into review only while
+                        // nobody has asked the forge. Once it has answered,
+                        // what moves it is a pull request, so that is what the
+                        // drop does.
                         Some(board_view::Act::Publish(branch)) => {
                             let doing = format!("pushing {branch}");
                             self.spawn(&doing, move |repo| repo.push_branch(&branch));
                         }
+                        Some(board_view::Act::Review(branch)) => self.ask_review(branch),
                         Some(board_view::Act::Land(branch)) => self.ask_land(branch),
+                        Some(board_view::Act::Reload) => {
+                            self.pulls = None;
+                            self.forge_note = None;
+                            self.ask_forge();
+                        }
+                        Some(board_view::Act::Open(url)) => self.open_in_browser(&url),
                         _ => {}
                     }
                 }

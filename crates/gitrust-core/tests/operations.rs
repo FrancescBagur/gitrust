@@ -8,7 +8,9 @@
 mod common;
 
 use common::{temp_dir, TempRepo};
-use gitrust_core::{layout, Lane, PullMode, RefKind, Repo};
+use gitrust_core::{
+    layout, Lane, PullMode, PullRequest, PullRequestState, PullRequests, RefKind, Repo,
+};
 
 /// Leaves the repository with one commit and gives back its branch's name.
 fn first_commit(temp: &TempRepo) -> String {
@@ -938,6 +940,90 @@ fn an_empty_branch_left_behind_is_still_to_do() {
     assert_eq!(card.lane, Lane::Todo);
     assert_eq!(card.ahead, 0);
     assert!(card.behind > 0, "left behind, but not done");
+}
+
+// ------------------------------------------------------ the board and gh
+
+/// A pull request on that branch, without going near a network.
+fn pull(branch: &str, state: PullRequestState, draft: bool) -> PullRequests {
+    let mut pulls = PullRequests::new();
+    pulls.insert(
+        branch.to_string(),
+        PullRequest {
+            number: 7,
+            state,
+            draft,
+            url: format!("https://example.invalid/pull/7#{branch}"),
+        },
+    );
+    pulls
+}
+
+#[test]
+fn a_squashed_branch_is_done_once_the_forge_has_been_asked() {
+    let temp = TempRepo::new("board-squashed");
+    let trunk = first_commit(&temp);
+
+    // Squashing is what the graph cannot see: the branch's commit never
+    // reaches the main branch, so nothing here ever swallowed it.
+    branch_with_work(&temp, "squashed", "b.txt", "theirs\n");
+    temp.write("b.txt", "theirs\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b, squashed onto the trunk").unwrap();
+    assert_eq!(temp.open().head_name(), trunk);
+
+    // On its own the graph can only say it is in progress.
+    let board = temp.open().board().unwrap();
+    assert_eq!(card(&board, "squashed").lane, Lane::InProgress);
+
+    let pulls = pull("squashed", PullRequestState::Merged, false);
+    let board = temp.open().board_with(Some(&pulls)).unwrap();
+    let card = card(&board, "squashed");
+    assert_eq!(card.lane, Lane::Done);
+    assert_eq!(card.pull.as_ref().unwrap().number, 7);
+    assert!(board.asked);
+}
+
+#[test]
+fn asked_and_told_of_no_pull_request_a_pushed_branch_stays_in_progress() {
+    let temp = TempRepo::new("board-asked");
+    let trunk = first_commit(&temp);
+    let bare = with_remote(&temp, "board-asked-bare");
+    temp.open().push().unwrap();
+
+    branch_with_work(&temp, "proposal", "b.txt", "for somebody to look at\n");
+    temp.open().push_branch("proposal").unwrap();
+    assert_eq!(temp.open().head_name(), trunk);
+
+    // Unasked, being pushed is the only evidence there is, and it reads as
+    // being in review. That is the guess this whole thing exists to replace.
+    let board = temp.open().board().unwrap();
+    assert_eq!(card(&board, "proposal").lane, Lane::InReview);
+    assert!(!board.asked);
+
+    let board = temp.open().board_with(Some(&PullRequests::new())).unwrap();
+    let card = card(&board, "proposal");
+    assert_eq!(card.lane, Lane::InProgress);
+    assert!(card.pull.is_none());
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn an_open_pull_request_is_what_in_review_means_and_a_draft_is_not() {
+    let temp = TempRepo::new("board-open-pull");
+    first_commit(&temp);
+    branch_with_work(&temp, "proposal", "b.txt", "for somebody to look at\n");
+
+    let open = pull("proposal", PullRequestState::Open, false);
+    let board = temp.open().board_with(Some(&open)).unwrap();
+    assert_eq!(card(&board, "proposal").lane, Lane::InReview);
+
+    let draft = pull("proposal", PullRequestState::Open, true);
+    let board = temp.open().board_with(Some(&draft)).unwrap();
+    assert_eq!(card(&board, "proposal").lane, Lane::InProgress);
+    assert!(card(&board, "proposal").pull.as_ref().unwrap().draft);
 }
 
 // --------------------------------------------------------- the pull modes

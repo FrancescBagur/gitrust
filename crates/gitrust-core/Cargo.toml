@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-# El rustdoc del paquete de Pop!_OS no arranca (le falta libLLVM) y no tenemos
-# ejemplos ejecutables en los doc-comments.
+# The rustdoc shipped with Pop!_OS will not start (it is missing libLLVM) and
+# we have no runnable examples in the doc comments.
 doctest = false
 
 [dependencies]

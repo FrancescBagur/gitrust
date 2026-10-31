@@ -22,6 +22,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] A column of branches and tags to the left of the graph
 - [x] Search the history by message, author or hash
 - [x] A board of columns, worked out from the graph and storing nothing
+- [x] In review means a pull request is open, asked of the forge through `gh`
 - [x] Dragging a card runs the operation that would have moved it
 - [x] Everything in English, interface and code alike
 - [x] Switch branch, including to one that only exists on the remote
@@ -44,6 +45,7 @@ crates/
     stash.rs        the pile of changes set aside
     graph.rs        the lane algorithm, and the uncommitted-changes row
     board.rs        which column each branch falls in
+    forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
     detail.rs       a commit's detail, and the references
@@ -75,6 +77,13 @@ channel. The painting thread waits for nobody.
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
 binary, as the commercial clients do, because libgit2 does not cover them well.
 
+**The forge:** Git stores nothing about pull requests, so a branch that is
+merely pushed and one somebody is reviewing look alike from inside the
+repository. The board asks `gh` instead of guessing, on its own thread, the
+first time it is opened. Without `gh`, without a login, or on a remote that is
+not GitHub, nothing breaks: the board goes back to reading the graph alone and
+the header says so, because a column that is guessing should admit it.
+
 ## Building
 
 System dependencies on Debian/Ubuntu/Pop!_OS:
@@ -83,6 +92,12 @@ System dependencies on Debian/Ubuntu/Pop!_OS:
 sudo apt install -y rustc cargo cmake libssl-dev libxkbcommon-dev \
   libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
   libgl1-mesa-dev
+```
+
+Optional, for the board's pull requests:
+
+```bash
+sudo apt install -y gh && gh auth login
 ```
 
 Then:
@@ -101,8 +116,9 @@ cargo test -p gitrust-core
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: ninety-nine tests, seventy-six of
-them against real repositories made in `/tmp` and deleted when they finish.
+files. Those are the ones that carry cover: a hundred and fifteen tests,
+seventy-nine of them against real repositories made in `/tmp` and deleted when
+they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over
 a disk path they walk the same road as a real remote — the refspecs, the fast

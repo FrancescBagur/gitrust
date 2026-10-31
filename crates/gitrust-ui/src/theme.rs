@@ -373,10 +373,18 @@ pub fn path_text(path: &str, size: f32, selected: bool) -> egui::text::LayoutJob
 
 /// `1 file`, `3 files`.
 pub fn files_label(count: usize) -> String {
-    if count == 1 {
-        "1 file".to_string()
-    } else {
-        format!("{count} files")
+    count_label(count, "file")
+}
+
+/// `1 pull request`, `4 pull requests`, `no pull requests`.
+///
+/// Zero gets a word rather than a digit. "0 pull requests" reads like a
+/// measurement that came out empty; "no pull requests" reads like an answer.
+pub fn count_label(count: usize, thing: &str) -> String {
+    match count {
+        0 => format!("no {thing}s"),
+        1 => format!("1 {thing}"),
+        n => format!("{n} {thing}s"),
     }
 }
 
