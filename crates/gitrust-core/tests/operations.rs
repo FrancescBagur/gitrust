@@ -8,7 +8,7 @@
 mod common;
 
 use common::{temp_dir, TempRepo};
-use gitrust_core::{layout, RefKind, Repo};
+use gitrust_core::{layout, Lane, RefKind, Repo};
 
 /// Deja el repositorio con un commit y devuelve el nombre de su rama.
 fn primer_commit(temp: &TempRepo) -> String {
@@ -779,4 +779,163 @@ fn sin_etiquetas_no_se_inventa_un_envio() {
     assert!(nota.contains("ya tiene todas"), "{nota}");
 
     let _ = std::fs::remove_dir_all(&bare);
+}
+
+// --------------------------------------------------------------- tablero
+
+/// La tarjeta de esa rama, o el pánico de la prueba.
+fn carta<'a>(board: &'a gitrust_core::Board, branch: &str) -> &'a gitrust_core::Card {
+    board
+        .cards
+        .iter()
+        .find(|card| card.branch == branch)
+        .unwrap_or_else(|| panic!("no hay tarjeta de {branch} en {:?}", board.cards))
+}
+
+#[test]
+fn una_rama_recien_hecha_esta_por_hacer_y_con_commits_en_marcha() {
+    let temp = TempRepo::new("tablero");
+    let principal = primer_commit(&temp);
+
+    temp.open().branch_here("sin-empezar").unwrap();
+    temp.open().checkout_branch(&principal).unwrap();
+
+    let board = temp.open().board().unwrap();
+    assert_eq!(board.trunk, principal);
+    assert_eq!(carta(&board, "sin-empezar").lane, Lane::Todo);
+    assert_eq!(carta(&board, "sin-empezar").ahead, 0);
+
+    // En cuanto tiene algo suyo, cambia de columna sola.
+    temp.open().checkout_branch("sin-empezar").unwrap();
+    temp.write("b.txt", "ya hay algo\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+
+    let board = temp.open().board().unwrap();
+    let card = carta(&board, "sin-empezar");
+    assert_eq!(card.lane, Lane::InProgress);
+    assert_eq!(card.ahead, 1);
+    assert!(card.current, "es la que está puesta");
+    assert!(card.time > 0);
+}
+
+#[test]
+fn empujada_y_sin_fusionar_pasa_a_en_revision() {
+    let temp = TempRepo::new("tablero-revision");
+    let principal = primer_commit(&temp);
+    let bare = con_remoto(&temp, "tablero-revision-bare");
+    temp.open().push().unwrap();
+
+    temp.open().branch_here("propuesta").unwrap();
+    temp.write("b.txt", "para que lo miren\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+
+    // Antes de salir de aquí, está en marcha.
+    assert_eq!(carta(&temp.open().board().unwrap(), "propuesta").lane, Lane::InProgress);
+
+    temp.open().push().unwrap();
+    temp.open().checkout_branch(&principal).unwrap();
+
+    assert_eq!(carta(&temp.open().board().unwrap(), "propuesta").lane, Lane::InReview);
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn fusionada_en_la_principal_queda_hecha() {
+    let temp = TempRepo::new("tablero-hecho");
+    let principal = primer_commit(&temp);
+
+    temp.open().branch_here("terminada").unwrap();
+    temp.write("b.txt", "lo que hacía falta\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+    temp.open().checkout_branch(&principal).unwrap();
+
+    // La principal avanza por su cuenta, para que la fusión sea de verdad.
+    temp.write("c.txt", "mientras tanto\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+
+    temp.open().merge("terminada").unwrap();
+
+    let board = temp.open().board().unwrap();
+    let card = carta(&board, "terminada");
+    assert_eq!(card.lane, Lane::Done);
+    assert_eq!(card.ahead, 0);
+    assert!(card.behind > 0);
+}
+
+#[test]
+fn la_principal_no_es_una_tarjeta() {
+    let temp = TempRepo::new("tablero-principal");
+    let principal = primer_commit(&temp);
+
+    let board = temp.open().board().unwrap();
+    assert_eq!(board.trunk, principal);
+    assert!(!board.cards.iter().any(|card| card.branch == principal));
+}
+
+#[test]
+fn el_proyecto_sale_de_la_carpeta_del_nombre() {
+    let temp = TempRepo::new("tablero-proyecto");
+    let principal = primer_commit(&temp);
+
+    for rama in ["tema/colores", "tema/tipografia", "suelta"] {
+        temp.open().branch_here(rama).unwrap();
+        temp.open().checkout_branch(&principal).unwrap();
+    }
+
+    let board = temp.open().board().unwrap();
+    assert_eq!(carta(&board, "tema/colores").project.as_deref(), Some("tema"));
+    assert_eq!(carta(&board, "tema/colores").leaf(), "colores");
+    assert_eq!(carta(&board, "suelta").project, None);
+    assert_eq!(board.projects(), ["tema"]);
+}
+
+#[test]
+fn las_columnas_reparten_todas_las_tarjetas_y_ninguna_dos_veces() {
+    let temp = TempRepo::new("tablero-columnas");
+    let principal = primer_commit(&temp);
+
+    temp.open().branch_here("a").unwrap();
+    temp.open().checkout_branch(&principal).unwrap();
+    temp.open().branch_here("b").unwrap();
+    temp.write("b.txt", "algo\n");
+    let repo = temp.open();
+    repo.stage("b.txt").unwrap();
+    repo.commit("feat: b").unwrap();
+
+    let board = temp.open().board().unwrap();
+    let repartidas: usize = Lane::ALL.iter().map(|lane| board.lane(*lane).count()).sum();
+    assert_eq!(repartidas, board.cards.len());
+    assert_eq!(board.lane(Lane::Todo).count(), 1);
+    assert_eq!(board.lane(Lane::InProgress).count(), 1);
+}
+
+#[test]
+fn una_rama_vacia_que_se_queda_atras_sigue_por_hacer() {
+    let temp = TempRepo::new("tablero-olvidada");
+    let principal = primer_commit(&temp);
+
+    temp.open().branch_here("algun-dia").unwrap();
+    temp.open().checkout_branch(&principal).unwrap();
+
+    // La principal avanza sin ella. Nunca hizo nada, así que no ha terminado
+    // nada: quedarse atrás no es haber acabado.
+    temp.write("c.txt", "mientras tanto\n");
+    let repo = temp.open();
+    repo.stage("c.txt").unwrap();
+    repo.commit("feat: c").unwrap();
+
+    let board = temp.open().board().unwrap();
+    let card = carta(&board, "algun-dia");
+    assert_eq!(card.lane, Lane::Todo);
+    assert_eq!(card.ahead, 0);
+    assert!(card.behind > 0, "se ha quedado atrás, pero no hecha");
 }

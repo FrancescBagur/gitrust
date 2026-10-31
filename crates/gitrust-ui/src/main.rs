@@ -6,6 +6,7 @@
 //! pantalla.
 
 mod action_bar;
+mod board_view;
 mod changes_view;
 mod detail_view;
 mod diff_view;
@@ -16,8 +17,8 @@ mod theme;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, CommitDetail, FileDiff, Graph, HunkId, Oid, RefEntry,
-    RefKind, Repo, StashEntry, Tracking, WorkingState,
+    compose, layout, layout_with_working, Board, CommitDetail, FileDiff, Graph, HunkId, Oid,
+    RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -42,6 +43,7 @@ fn main() -> eframe::Result<()> {
 enum Tab {
     History,
     Changes,
+    Board,
 }
 
 struct App {
@@ -64,6 +66,10 @@ struct App {
     bring: Option<usize>,
     refs: Vec<RefEntry>,
     ref_filter: String,
+
+    /// El trabajo repartido en columnas, y por qué proyecto se filtra.
+    board: Option<Board>,
+    project: Option<String>,
 
     // La barra de acciones y lo que necesita saber.
     tracking: Option<Tracking>,
@@ -144,6 +150,8 @@ impl App {
             bring: None,
             refs: Vec::new(),
             ref_filter: String::new(),
+            board: None,
+            project: None,
             tracking: None,
             stashes: Vec::new(),
             draft: action_bar::Draft::default(),
@@ -186,6 +194,7 @@ impl App {
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
+        self.board = repo.board().ok();
         self.stashes = repo.stashes().unwrap_or_default();
 
         // El estado del árbol va antes que el grafo: de él depende que haya o
@@ -647,6 +656,7 @@ impl App {
     fn fail(&mut self, err: anyhow::Error) {
         self.graph = Graph::default();
         self.refs.clear();
+        self.board = None;
         self.tracking = None;
         self.stashes.clear();
         self.work = WorkingState::default();
@@ -835,6 +845,11 @@ impl eframe::App for App {
             // que los carriles sean lo que más luz tiene en pantalla.
             Tab::History => egui::Frame::NONE.fill(theme::CANVAS),
             Tab::Changes => egui::Frame::NONE.fill(theme::PANEL),
+            // El tablero se pinta sobre el lienzo para que las tarjetas, que
+            // van del color de los paneles, se levanten del fondo.
+            Tab::Board => egui::Frame::NONE
+                .fill(theme::CANVAS)
+                .inner_margin(egui::Margin::symmetric(12, 0)),
         };
 
         egui::CentralPanel::default()
@@ -862,6 +877,31 @@ impl eframe::App for App {
                     );
                     if let Some(oid) = clicked {
                         self.select_commit(oid);
+                    }
+                }
+                Tab::Board => {
+                    let picked = match &self.board {
+                        Some(board) => board_view::show(
+                            ui,
+                            board,
+                            &mut self.project,
+                            self.job.is_some(),
+                        ),
+                        None => {
+                            theme::empty(ui, "Abre un repositorio para ver su trabajo");
+                            None
+                        }
+                    };
+
+                    match picked {
+                        Some(refs_view::Pick::Show(oid)) => {
+                            self.select_commit(oid);
+                            self.tab = Tab::History;
+                        }
+                        Some(refs_view::Pick::Switch { name, remote }) => {
+                            self.switch(name, remote)
+                        }
+                        _ => {}
                     }
                 }
                 Tab::Changes => {
@@ -1022,6 +1062,9 @@ impl App {
             ui.selectable_value(&mut self.tab, Tab::History, "Historia");
 
             let changes = ui.selectable_value(&mut self.tab, Tab::Changes, "Cambios");
+            ui.add_space(2.0);
+            ui.selectable_value(&mut self.tab, Tab::Board, "Tablero");
+            ui.add_space(2.0);
             if pending > 0 {
                 ui.label(
                     egui::RichText::new(pending.to_string())

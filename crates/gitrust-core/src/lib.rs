@@ -3,6 +3,7 @@
 //! Este crate no sabe nada de interfaz gráfica. Todo lo que expone son datos
 //! planos, de modo que la UI se pueda sustituir sin tocar la lógica Git.
 
+pub mod board;
 pub mod branch;
 pub mod detail;
 pub mod diff;
@@ -16,6 +17,7 @@ pub mod stash;
 pub mod status;
 pub mod tag;
 
+pub use board::{Board, Card, Lane};
 pub use detail::{CommitDetail, CommitFile, RefEntry};
 pub use git2::Oid;
 pub use diff::{DiffLine, FileDiff, Hunk, HunkId};
