@@ -23,6 +23,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Search the history by message, author or hash
 - [x] A board of columns, worked out from the graph and storing nothing
 - [x] In review means a pull request is open, asked of the forge through `gh`
+- [x] A branch cut from a branch is a subtask, and has a board of its own
 - [x] Dragging a card runs the operation that would have moved it
 - [x] A backlog everyone with the repository shares, kept in a reference
 - [x] Everything in English, interface and code alike
@@ -31,7 +32,8 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Merge a branch into the current one, stopping dead if it clashes
 - [x] Amend the last commit, with a warning if it already went to the remote
 - [x] Tags: make them lightweight or annotated, and delete them
-- [ ] Conflict editor, interactive rebase, worktrees
+- [x] Open a branch in a folder of its own, and know where each one is open
+- [ ] Conflict editor, interactive rebase
 
 ## Architecture
 
@@ -45,8 +47,9 @@ crates/
     remote.rs       fetching, pushing, and the distance to the remote branch
     stash.rs        the pile of changes set aside
     graph.rs        the lane algorithm, and the uncommitted-changes row
-    board.rs        which column each branch falls in
+    board.rs        which column each branch falls in, and what came from what
     backlog.rs      the work with no branch yet, and how it travels
+    worktree.rs     the same repository checked out in several places
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
@@ -90,6 +93,19 @@ noticing. What keeps it from rotting is a rule rather than a mechanism: an item
 lives there only until it becomes a branch, and from that moment it is read off
 the graph like everything else.
 
+**Subtasks:** a branch cut from another branch is a piece of that branch's
+work. Nothing records that either, so it is read off the graph: a branch is a
+child of whichever other branch it shares more history with than it shares
+with the trunk. The board inside a card is then the same board measured
+against a different branch, and "done" for a subtask is having gone into its
+parent. It is a reading and not a fact — a rebase moves the fork — and where
+it is wrong it is wrong out loud, with a test pinning each case.
+
+**Worktrees:** one repository can be checked out in several folders at once,
+each with its own branch, sharing one history. A branch can only be open in
+one of them, so switching to one that is open elsewhere says where it is
+rather than refusing. The folders go beside the repository, never inside it.
+
 **The forge:** Git stores nothing about pull requests, so a branch that is
 merely pushed and one somebody is reviewing look alike from inside the
 repository. The board asks `gh` instead of guessing, on its own thread, the
@@ -129,9 +145,9 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and thirty-seven tests,
-eighty-eight of them against real repositories made in `/tmp` and deleted when
-they finish.
+files. Those are the ones that carry cover: a hundred and fifty-seven tests,
+a hundred and five of them against real repositories made in `/tmp` and
+deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over
 a disk path they walk the same road as a real remote — the refspecs, the fast

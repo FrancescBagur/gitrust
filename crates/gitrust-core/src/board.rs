@@ -21,11 +21,29 @@
 //! not merely that the branch has been pushed. Unasked, the graph falls back
 //! to reading a pushed branch as being in review, which is the best guess
 //! there is when there is nobody to ask.
+//!
+//! # Subtasks
+//!
+//! A branch cut from another branch is a piece of that branch's work, and
+//! that is all a subtask is here. It is read off the graph like everything
+//! else: a branch is a child of whichever other branch it shares more history
+//! with than it shares with the trunk. So the board inside a card is the same
+//! board measured against a different branch, and "done" for a subtask is
+//! having gone into its parent rather than into the trunk -- which is exactly
+//! what being finished means for a piece of a larger job.
+//!
+//! Git records none of this, so it is a reading and not a fact, and it has
+//! two known wrong answers. A rebase moves the fork, so a replayed branch may
+//! come back the child of something else or of nothing. And a subtask that
+//! went into its parent by fast forward leaves two names on one commit, which
+//! says nothing about which came from which, so both sit outside. Both are
+//! the same blindness the columns already own up to, and both are pinned by a
+//! test rather than left to be discovered.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use git2::{BranchType, ObjectType, Oid};
+use git2::{BranchType, ObjectType, Oid, Repository};
 
 use crate::forge::{PullRequest, PullRequestState, PullRequests};
 use crate::repo::Repo;
@@ -68,6 +86,9 @@ pub struct Card {
     pub target: Oid,
     /// Its pull request, when the forge was asked and knew of one.
     pub pull: Option<PullRequest>,
+    /// How many branches were cut from this one. They are not on this board:
+    /// they are on the one inside this card.
+    pub children: usize,
 }
 
 impl Card {
@@ -76,6 +97,12 @@ impl Card {
         self.branch.rsplit_once('/').map_or(self.branch.as_str(), |(_, leaf)| leaf)
     }
 }
+
+/// Which branch each branch was cut from.
+///
+/// `None` is the trunk, which is where most work starts and is the only
+/// answer that needs no evidence.
+pub type Parents = HashMap<String, Option<String>>;
 
 /// The whole board.
 #[derive(Debug, Clone)]
@@ -148,6 +175,147 @@ fn lane_of(
     }
 }
 
+/// Which branch each branch was cut from.
+///
+/// Git does not record this. A branch is a name pointing at a commit, and
+/// nothing anywhere says where the name came from, so this is worked out from
+/// the shape of the history and is a reading, not a fact.
+///
+/// The reading: a branch is a child of whichever other branch it shares more
+/// history with than it shares with the trunk. Two branches cut from the same
+/// place on the trunk share exactly the trunk's history and nothing more, so
+/// they are siblings and both answer `None`. One cut from a branch that had
+/// already left the trunk shares that branch's extra commits, so it is a
+/// child of it.
+///
+/// Where it is wrong, said here rather than found out later: **a rebase moves
+/// the fork.** Replaying a branch somewhere else leaves no trace of where it
+/// used to hang from, so a rebased branch may come back the child of something
+/// else, or of nothing. Git's own `merge-base --fork-point` has the same
+/// trouble and answers it with the reflog, which never leaves your machine and
+/// expires, so it is no use for a board the whole team reads.
+fn parentage(inner: &Repository, trunk_tip: Oid, tips: &[(String, Oid)]) -> Parents {
+    let merges = merges(inner, tips);
+    tips.iter()
+        .map(|(name, tip)| {
+            let parent = cut_from(inner, name, *tip, trunk_tip, tips, &merges);
+            (name.clone(), parent)
+        })
+        .collect()
+}
+
+/// Every commit that was taken into something by a merge, and the merge
+/// commits that took it.
+///
+/// One walk over every branch, because the alternative is one walk for each
+/// pair of branches, and the pairs are the square of the branches.
+fn merges(inner: &Repository, tips: &[(String, Oid)]) -> HashMap<Oid, Vec<Oid>> {
+    let mut out: HashMap<Oid, Vec<Oid>> = HashMap::new();
+    let Ok(mut walk) = inner.revwalk() else {
+        return out;
+    };
+    for (_, tip) in tips {
+        let _ = walk.push(*tip);
+    }
+
+    for oid in walk.flatten() {
+        let Ok(commit) = inner.find_commit(oid) else {
+            continue;
+        };
+        // The first parent is where the branch was; the rest are what it took in.
+        for parent in commit.parent_ids().skip(1) {
+            out.entry(parent).or_default().push(oid);
+        }
+    }
+    out
+}
+
+/// Whether `tip` was merged into something that `other_tip` has.
+///
+/// This is what tells apart the two shapes that look identical from the fork:
+/// a branch cut from another, and a branch finished into another. Both leave
+/// one holding everything the other has, and both leave the same merge base,
+/// so the merge commit is the only evidence there is. Without it, finishing a
+/// subtask would take it off its parent's board -- the one place anybody would
+/// go looking for it.
+fn took_in(
+    inner: &Repository,
+    other_tip: Oid,
+    tip: Oid,
+    merges: &HashMap<Oid, Vec<Oid>>,
+) -> bool {
+    merges.get(&tip).into_iter().flatten().any(|merge| {
+        *merge == other_tip || inner.graph_descendant_of(other_tip, *merge).unwrap_or(false)
+    })
+}
+
+/// The one branch this one most likely came out of, or `None` for the trunk.
+fn cut_from(
+    inner: &Repository,
+    name: &str,
+    tip: Oid,
+    trunk_tip: Oid,
+    tips: &[(String, Oid)],
+    merges: &HashMap<Oid, Vec<Oid>>,
+) -> Option<String> {
+    let trunk_base = inner.merge_base(tip, trunk_tip).ok()?;
+    let mut best: Option<(String, Oid, usize)> = None;
+
+    for (other, other_tip) in tips {
+        if other == name {
+            continue;
+        }
+        // Work this branch took in is finished work inside it, not where it
+        // came from.
+        if took_in(inner, tip, *other_tip, merges) {
+            continue;
+        }
+        // And a branch that already holds everything this one has did not give
+        // rise to it -- unless the reason it holds it is that it took it in,
+        // which is a subtask being finished and leaves the parent a parent.
+        if *other_tip == tip {
+            continue;
+        }
+        if inner.graph_descendant_of(*other_tip, tip).unwrap_or(false)
+            && !took_in(inner, *other_tip, tip, merges)
+        {
+            continue;
+        }
+
+        let Ok(shared) = inner.merge_base(tip, *other_tip) else {
+            continue;
+        };
+        // Sharing no more with that branch than with the trunk means they left
+        // the trunk together: siblings, not parent and child.
+        if shared == trunk_base || !inner.graph_descendant_of(shared, trunk_base).unwrap_or(false) {
+            continue;
+        }
+
+        // How far that branch has moved since the fork. It breaks a tie
+        // between two candidates that fork at the same commit, and it breaks
+        // it the right way: you cut from a branch where it was, so the parent
+        // is usually the one still standing at the fork, while a sibling has
+        // walked on.
+        let moved = inner
+            .graph_ahead_behind(*other_tip, shared)
+            .map(|(ahead, _)| ahead)
+            .unwrap_or(usize::MAX);
+
+        let better = match &best {
+            None => true,
+            Some((_, kept, kept_moved)) => match shared == *kept {
+                true => moved < *kept_moved,
+                false => inner.graph_descendant_of(shared, *kept).unwrap_or(false),
+            },
+        };
+        if better {
+            best = Some((other.clone(), shared, moved));
+        }
+    }
+
+    best.map(|(name, _, _)| name)
+}
+
 impl Repo {
     /// Sorts each local branch by where it falls against the main one.
     ///
@@ -164,14 +332,26 @@ impl Repo {
     /// requests, a pushed branch is just a pushed branch, and stays in
     /// progress. Unasked, being pushed is the only evidence there is.
     pub fn board_with(&self, pulls: Option<&PullRequests>) -> Result<Board> {
+        self.board_against(&self.trunk()?, pulls)
+    }
+
+    /// The work cut from one particular branch.
+    ///
+    /// This is all a subtask is. The board the window opens on is this one
+    /// measured against the trunk; going into a card is the same board
+    /// measured against that card's branch. The columns do not change what
+    /// they mean, they change what they are measured against, and that is the
+    /// whole of it: "done" for a subtask is having gone into its parent, not
+    /// into the trunk, which is exactly what being finished means for a piece
+    /// of a larger job.
+    ///
+    /// A branch appears on one board only, the one of the branch it was cut
+    /// from. Which is why a card says how many were cut from it: otherwise a
+    /// branch could be nowhere anybody thought to look.
+    pub fn board_against(&self, base: &str, pulls: Option<&PullRequests>) -> Result<Board> {
+        let tip = self.tip_of(base)?;
         let trunk = self.trunk()?;
-        let tip = self
-            .inner
-            .find_branch(&trunk, BranchType::Local)
-            .with_context(|| format!("no branch called '{trunk}'"))?
-            .get()
-            .peel(ObjectType::Commit)?
-            .id();
+        let trunk_tip = self.tip_of(&trunk)?;
 
         let head = self
             .inner
@@ -179,7 +359,7 @@ impl Repo {
             .ok()
             .and_then(|head| head.shorthand().map(str::to_string));
 
-        // The tips the main branch took in at some merge. It is the only thing
+        // The tips the base took in at some merge. It is the only thing
         // telling a finished branch from one that never got started.
         let mut swallowed = HashSet::new();
         let mut walk = self.inner.revwalk()?;
@@ -207,20 +387,28 @@ impl Repo {
             }
         }
 
+        let tips = self.branch_tips()?;
+        let parents = parentage(&self.inner, trunk_tip, &tips);
+
+        let mut children: HashMap<&str, usize> = HashMap::new();
+        for parent in parents.values().flatten() {
+            *children.entry(parent.as_str()).or_default() += 1;
+        }
+
+        // The trunk is not a branch anybody was cut from on purpose, so the
+        // cards that belong to it are the ones with no parent at all.
+        let wanted = (base != trunk).then(|| base.to_string());
+
         let mut cards = Vec::new();
-        for branch in self.inner.branches(Some(BranchType::Local))? {
-            let (branch, _) = branch?;
-            let Some(name) = branch.name()?.map(str::to_string) else {
-                continue;
-            };
-            if name == trunk {
+        for (name, target) in &tips {
+            if name == base {
                 continue;
             }
-            let Ok(object) = branch.get().peel(ObjectType::Commit) else {
+            if parents.get(name).cloned().flatten() != wanted {
                 continue;
-            };
+            }
 
-            let target = object.id();
+            let (name, target) = (name.clone(), *target);
             let (ahead, behind) = self.inner.graph_ahead_behind(target, tip)?;
 
             let pull = pulls.and_then(|pulls| pulls.get(&name)).cloned();
@@ -241,6 +429,7 @@ impl Repo {
             cards.push(Card {
                 project: name.rsplit_once('/').map(|(folder, _)| folder.to_string()),
                 current: head.as_deref() == Some(name.as_str()),
+                children: children.get(name.as_str()).copied().unwrap_or(0),
                 branch: name,
                 lane,
                 ahead,
@@ -255,11 +444,47 @@ impl Repo {
         cards.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| a.branch.cmp(&b.branch)));
         Ok(Board {
             cards,
-            trunk,
+            trunk: base.to_string(),
             asked: pulls.is_some(),
         })
     }
 
+    /// Which branch each branch was cut from, as far as the graph can tell.
+    pub fn parents(&self) -> Result<Parents> {
+        let trunk_tip = self.tip_of(&self.trunk()?)?;
+        Ok(parentage(&self.inner, trunk_tip, &self.branch_tips()?))
+    }
+
+    /// Every local branch and where it points, in order by name.
+    ///
+    /// In order on purpose. Two equally good candidates for a parent have to
+    /// be settled the same way every time, and the order branches come out of
+    /// libgit2 in is not something to build an answer on.
+    fn branch_tips(&self) -> Result<Vec<(String, Oid)>> {
+        let mut tips = Vec::new();
+        for branch in self.inner.branches(Some(BranchType::Local))? {
+            let (branch, _) = branch?;
+            let Some(name) = branch.name()?.map(str::to_string) else {
+                continue;
+            };
+            let Ok(object) = branch.get().peel(ObjectType::Commit) else {
+                continue;
+            };
+            tips.push((name, object.id()));
+        }
+        tips.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(tips)
+    }
+
+    fn tip_of(&self, name: &str) -> Result<Oid> {
+        Ok(self
+            .inner
+            .find_branch(name, BranchType::Local)
+            .with_context(|| format!("no branch called '{name}'"))?
+            .get()
+            .peel(ObjectType::Commit)?
+            .id())
+    }
     /// The branch the rest of the work is measured against.
     ///
     /// The remote is asked first, because it is the one that really knows: its

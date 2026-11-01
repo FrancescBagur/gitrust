@@ -109,15 +109,26 @@ impl Repo {
     pub fn land(&self, branch: &str) -> Result<String> {
         let trunk = self.trunk()?;
         anyhow::ensure!(branch != trunk, "{branch} is the main branch");
+        self.land_into(&trunk, branch)
+    }
 
-        let moved = self.head_name() != trunk;
+    /// The same, into whichever branch the work actually belongs to.
+    ///
+    /// A subtask is finished when it goes into its parent, not when it reaches
+    /// the trunk, so what it is merged into is the board you are looking at
+    /// and not always the main branch. Dragging a card to "done" means the
+    /// same thing at every depth; what changes is where "done" is.
+    pub fn land_into(&self, base: &str, branch: &str) -> Result<String> {
+        anyhow::ensure!(branch != base, "{branch} is the branch it would go into");
+
+        let moved = self.head_name() != base;
         if moved {
-            self.checkout_branch(&trunk)?;
+            self.checkout_branch(base)?;
         }
 
         let note = self.merge(branch)?;
         Ok(match moved {
-            true => format!("{note}, and you are now on {trunk}"),
+            true => format!("{note}, and you are now on {base}"),
             false => note,
         })
     }
