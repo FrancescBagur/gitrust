@@ -19,6 +19,17 @@ use crate::theme;
 /// give the list its height, as it cannot measure itself in there.
 const STASH_ROW: f32 = 52.0;
 
+/// How wide each menu is, measured inside its frame.
+///
+/// Told, not asked for. A menu that asks how much room there is gets a
+/// different answer depending on what is in it that day, and the answer is
+/// always generous: that is how the stash one came to be three times the
+/// width of the button it hangs from.
+const PULL_MENU: f32 = 248.0;
+const PUSH_MENU: f32 = 190.0;
+const BRANCH_MENU: f32 = 250.0;
+const STASH_MENU: f32 = 310.0;
+
 pub enum Action {
     /// Fetch and join, in whichever way is asked for.
     Pull(PullMode),
@@ -66,26 +77,29 @@ pub fn show(
 
         // With no remote branch to look at there is nowhere to fetch from;
         // pushing you can do, and that is exactly how one gets created.
-        let pull = count_button(ui, "↓ Pull", behind, tracking.is_some() && !busy);
-        if pull.on_hover_text(pull_hint(tracking, *mode)).clicked() {
+        // The rectangle is kept because the menu behind the caret hangs from
+        // the pair, not from the caret: see `anchored`.
+        let pull = count_button(ui, "↓ Pull", behind, tracking.is_some() && !busy)
+            .on_hover_text(pull_hint(tracking, *mode));
+        if pull.clicked() {
             action = Some(Action::Pull(*mode));
         }
 
         ui.spacing_mut().item_spacing.x = 1.0;
-        if let Some(other) = pull_menu(ui, busy, mode) {
+        if let Some(other) = pull_menu(ui, busy, mode, pull.rect) {
             action = Some(other);
         }
         ui.spacing_mut().item_spacing.x = 4.0;
 
-        let push = count_button(ui, "↑ Push", ahead, !busy);
-        if push.on_hover_text(push_hint(tracking)).clicked() {
+        let push = count_button(ui, "↑ Push", ahead, !busy).on_hover_text(push_hint(tracking));
+        if push.clicked() {
             action = Some(Action::Push);
         }
 
         // The caret sits flush against the button: it is one control with two
         // positions, and what is behind it is not pressed in passing.
         ui.spacing_mut().item_spacing.x = 1.0;
-        if let Some(other) = push_menu(ui, busy) {
+        if let Some(other) = push_menu(ui, busy, push.rect) {
             action = Some(other);
         }
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -129,6 +143,65 @@ fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> 
     ui.add_enabled(enabled, egui::Button::new(job))
 }
 
+/// Hands egui a response pinned to the whole control instead of to the part
+/// that was pressed.
+///
+/// A popup opens at the left edge of the widget egui is given, and grows
+/// rightwards from there. For a split button that widget is the caret, which
+/// is the narrow half sitting flush against the next button along, so the menu
+/// opens where *that* button starts and reads as its menu. What has to be
+/// pinned is the pair.
+///
+/// Only the rectangle is changed. Everything else egui reads off a response --
+/// what is hovered, what was clicked, where the pointer went -- is how it
+/// works out that a click landed outside and the menu should close, and that
+/// is still the caret's business and nobody else's.
+fn anchored(
+    ui: &egui::Ui,
+    opener: &egui::Response,
+    control: egui::Rect,
+    width: f32,
+) -> egui::Response {
+    let whole = width + egui::Frame::popup(ui.style()).total_margin().sum().x;
+
+    // Left edges together, which is what belonging looks like. Unless the menu
+    // would hang off the window from there -- which is what happens to the
+    // last control in the row -- and then the right edges go together instead,
+    // and it still meets the control that opened it.
+    let left = match control.left() + whole > ui.ctx().screen_rect().right() {
+        true => control.right() - whole,
+        false => control.left(),
+    };
+
+    let mut anchored = opener.clone();
+    anchored.rect = control.translate(egui::vec2(left - control.left(), 0.0));
+    anchored
+}
+
+/// While its menu is open, the control wears an outline.
+///
+/// Where the menu hangs says which button opened it, but it says it only to
+/// somebody who was watching it appear. The outline says it to whoever looks
+/// down afterwards, and around a split button it says the second thing too:
+/// that the two halves are one control.
+///
+/// In the caret's own grey. The borders in this window are hairlines meant to
+/// be felt rather than seen, and a mark nobody can see is not a mark; this is
+/// the same ink as the arrow sitting inside the control, so it reads as part
+/// of the same control rather than as a line somebody drew round it.
+fn open_mark(ui: &egui::Ui, id: egui::Id, control: egui::Rect) {
+    if !ui.memory(|memory| memory.is_popup_open(id)) {
+        return;
+    }
+
+    ui.painter().rect_stroke(
+        control,
+        egui::CornerRadius::same(theme::RADIUS),
+        egui::Stroke::new(1.0, theme::MUTED),
+        egui::StrokeKind::Outside,
+    );
+}
+
 fn pull_hint(tracking: Option<&Tracking>, mode: PullMode) -> String {
     let how = match mode {
         PullMode::Merge => "merging if it has to",
@@ -147,17 +220,20 @@ fn pull_hint(tracking: Option<&Tracking>, mode: PullMode) -> String {
 /// What you pick here happens at once and stays as the button's position: the
 /// button repeats the last thing you asked for, which is what one expects of
 /// a control with a memory, and needs explaining nowhere.
-fn pull_menu(ui: &mut egui::Ui, busy: bool, mode: &mut PullMode) -> Option<Action> {
-    let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
-    theme::caret(ui, &button);
+fn pull_menu(ui: &mut egui::Ui, busy: bool, mode: &mut PullMode, main: egui::Rect) -> Option<Action> {
+    let caret = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
+    theme::caret(ui, &caret);
     let id = ui.make_persistent_id("menu-pull");
+    let control = main.union(caret.rect);
 
-    if button.clicked() {
+    if caret.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
     }
+    open_mark(ui, id, control);
 
-    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        ui.set_min_width(248.0);
+    let anchor = anchored(ui, &caret, control, PULL_MENU);
+    egui::popup::popup_below_widget(ui, id, &anchor, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_width(PULL_MENU);
         let mut action = None;
 
         // Fetching joins nothing, so it does not change what the button does.
@@ -199,19 +275,22 @@ fn push_hint(tracking: Option<&Tracking>) -> String {
 }
 
 /// The two ways of pushing that are not the everyday one.
-fn push_menu(ui: &mut egui::Ui, busy: bool) -> Option<Action> {
+fn push_menu(ui: &mut egui::Ui, busy: bool, main: egui::Rect) -> Option<Action> {
     // No text: the width comes from the button's own padding, so the caret
     // lands in its middle instead of leaving half a button empty on the left.
-    let button = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
-    theme::caret(ui, &button);
+    let caret = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
+    theme::caret(ui, &caret);
     let id = ui.make_persistent_id("menu-push");
+    let control = main.union(caret.rect);
 
-    if button.clicked() {
+    if caret.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
     }
+    open_mark(ui, id, control);
 
-    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        ui.set_min_width(234.0);
+    let anchor = anchored(ui, &caret, control, PUSH_MENU);
+    egui::popup::popup_below_widget(ui, id, &anchor, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_width(PUSH_MENU);
         let mut action = None;
 
         if ui
@@ -250,9 +329,13 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
     if button.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
     }
+    open_mark(ui, id, button.rect);
 
-    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        ui.set_min_width(250.0);
+    // Here the caret is painted inside the button, so the control and the part
+    // that was pressed are the same thing.
+    let anchor = anchored(ui, &button, button.rect, BRANCH_MENU);
+    egui::popup::popup_below_widget(ui, id, &anchor, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_width(BRANCH_MENU);
         ui.label(
             RichText::new("New branch right here")
                 .font(theme::medium(12.0))
@@ -318,9 +401,11 @@ fn stash_menu(
     if button.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
     }
+    open_mark(ui, id, button.rect);
 
-    egui::popup::popup_below_widget(ui, id, &button, PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        ui.set_min_width(370.0);
+    let anchor = anchored(ui, &button, button.rect, STASH_MENU);
+    egui::popup::popup_below_widget(ui, id, &anchor, PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_width(STASH_MENU);
         let mut action = None;
 
         ui.horizontal(|ui| {
