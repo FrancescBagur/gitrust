@@ -129,8 +129,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and thirty-five tests,
-eighty-six of them against real repositories made in `/tmp` and deleted when
+files. Those are the ones that carry cover: a hundred and thirty-seven tests,
+eighty-eight of them against real repositories made in `/tmp` and deleted when
 they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

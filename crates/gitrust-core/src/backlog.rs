@@ -173,7 +173,7 @@ impl Repo {
         };
 
         Ok(Backlog {
-            unshared: self.unshared(&items),
+            unshared: self.unshared(),
             items,
         })
     }
@@ -413,14 +413,14 @@ impl Repo {
     /// It is the difference between the two trees, so taking something out
     /// counts as much as putting something in: both are things the remote does
     /// not know yet.
-    fn unshared(&self, items: &[Item]) -> usize {
+    fn unshared(&self) -> usize {
         let Some(remote) = self.backlog_remote() else {
             return 0;
         };
-        if items.is_empty() {
-            return 0;
-        }
 
+        // Never having written one is the only case with nothing to say. An
+        // empty backlog is not that case: emptying it is itself a change the
+        // remote has not been told about.
         let ours = self.backlog_tip().and_then(|commit| commit.tree().ok());
         let Some(ours) = ours else {
             return 0;

@@ -1328,6 +1328,83 @@ fn the_backlog_travels_to_everyone_who_has_the_repository() {
 }
 
 #[test]
+fn taking_an_item_out_is_as_unshared_as_putting_one_in() {
+    let mine = TempRepo::new("backlog-drop");
+    first_commit(&mine);
+    let bare = with_remote(&mine, "backlog-drop-bare");
+    mine.open().push().unwrap();
+
+    // Never having written one is the only state with nothing to send.
+    assert_eq!(mine.open().backlog().unwrap().unshared, 0);
+
+    mine.open().backlog_add("Dark mode", None).unwrap();
+    mine.open().backlog_share().unwrap();
+
+    let id = mine.open().backlog().unwrap().items[0].id.clone();
+    let note = mine.open().backlog_remove(&id).unwrap();
+    assert!(note.contains("Dark mode"), "{note}");
+
+    // Empty here, but the remote still has it, so there is still something to
+    // say. Counting this as nothing would leave the other side holding an item
+    // nobody can see has gone.
+    let backlog = mine.open().backlog().unwrap();
+    assert!(backlog.items.is_empty());
+    assert_eq!(backlog.unshared, 1);
+
+    mine.open().backlog_share().unwrap();
+    assert_eq!(mine.open().backlog().unwrap().unshared, 0);
+
+    let err = mine.open().backlog_remove(&id).unwrap_err().to_string();
+    assert!(err.contains("no longer in the backlog"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn an_item_taken_out_here_is_gone_for_everybody() {
+    let mine = TempRepo::new("backlog-gone-mine");
+    first_commit(&mine);
+    let bare = with_remote(&mine, "backlog-gone-bare");
+    mine.open().push().unwrap();
+    mine.open().backlog_add("Dark mode", None).unwrap();
+    mine.open().backlog_add("Conflict editor", None).unwrap();
+    mine.open().backlog_share().unwrap();
+
+    let yours = temp_dir("backlog-gone-yours");
+    let _ = std::fs::remove_dir_all(&yours);
+    git2::Repository::clone(&bare.display().to_string(), &yours).unwrap();
+    Repo::open(&yours).unwrap().fetch_all().unwrap();
+    assert_eq!(Repo::open(&yours).unwrap().backlog().unwrap().items.len(), 2);
+
+    let id = mine
+        .open()
+        .backlog()
+        .unwrap()
+        .items
+        .iter()
+        .find(|item| item.title == "Dark mode")
+        .expect("it should still be there")
+        .id
+        .clone();
+    mine.open().backlog_remove(&id).unwrap();
+    mine.open().backlog_share().unwrap();
+
+    Repo::open(&yours).unwrap().fetch_all().unwrap();
+    let titles: Vec<String> = Repo::open(&yours)
+        .unwrap()
+        .backlog()
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|item| item.title)
+        .collect();
+    assert_eq!(titles, ["Conflict editor"]);
+
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&yours);
+}
+
+#[test]
 fn two_people_writing_down_two_different_things_do_not_clash() {
     let mine = TempRepo::new("backlog-merge-mine");
     first_commit(&mine);
