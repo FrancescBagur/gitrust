@@ -184,6 +184,49 @@ fn two_subtasks_of_the_same_branch_are_its_children_and_not_each_others() {
 }
 
 #[test]
+fn a_parent_that_kept_working_is_still_the_parent() {
+    let temp = TempRepo::new("subtask-parent-moved");
+    let trunk = start(&temp);
+
+    branch_with(&temp, "report", "r.txt", "one\n");
+    branch_with(&temp, "report-export", "e.txt", "one\n");
+    // The parent carries on, which is the ordinary way of it and is what
+    // makes the two the same shape: one fork, both sides moved on. Nothing in
+    // the commits says which side was there first.
+    temp.open().checkout_branch("report").unwrap();
+    write(&temp, "r.txt", "one\ntwo\n", "feat: more of report");
+    temp.open().checkout_branch(&trunk).unwrap();
+
+    let repo = temp.open();
+    assert_eq!(parent(&repo, "report-export").as_deref(), Some("report"));
+    assert_eq!(parent(&repo, "report"), None);
+    assert_eq!(on(&repo, &trunk), ["report"]);
+    assert_eq!(on(&repo, "report"), ["report-export"]);
+}
+
+#[test]
+fn a_sibling_is_not_mistaken_for_a_parent_once_everyone_has_moved_on() {
+    let temp = TempRepo::new("subtask-sibling-moved");
+    let trunk = start(&temp);
+
+    branch_with(&temp, "report", "r.txt", "one\n");
+    branch_with(&temp, "report-export", "e.txt", "one\n");
+    temp.open().checkout_branch("report").unwrap();
+    branch_with(&temp, "report-print", "p.txt", "one\n");
+    temp.open().checkout_branch("report").unwrap();
+    write(&temp, "r.txt", "one\ntwo\n", "feat: more of report");
+    temp.open().checkout_branch(&trunk).unwrap();
+
+    // All three fork at the same commit and all three have moved on, so the
+    // graph has nothing left to say. The names do.
+    let repo = temp.open();
+    assert_eq!(parent(&repo, "report-export").as_deref(), Some("report"));
+    assert_eq!(parent(&repo, "report-print").as_deref(), Some("report"));
+    assert_eq!(parent(&repo, "report"), None);
+    assert_eq!(on(&repo, "report"), ["report-export", "report-print"]);
+}
+
+#[test]
 fn a_subtask_of_a_subtask_goes_one_board_further_in() {
     let temp = TempRepo::new("subtask-deep");
     let trunk = start(&temp);

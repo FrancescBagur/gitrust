@@ -67,6 +67,10 @@ pub enum Act {
     Drop(String),
     /// Send the backlog to the remote.
     Share,
+    /// Go into that branch's own board.
+    Enter(String),
+    /// Go back out to that step of the trail.
+    Up(usize),
     /// Push that branch to the remote.
     Publish(String),
     /// Open a pull request for it.
@@ -134,6 +138,12 @@ fn column(lane: Lane) -> (&'static str, Color32) {
 }
 
 /// Gives back whatever has been asked about a branch on the board.
+///
+/// `trail` is where you are: the trunk first, then every branch you went into.
+/// It is what makes this the same function at every depth, because going into
+/// a card does not open another screen, it measures this one against another
+/// branch.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     board: &Board,
@@ -141,20 +151,29 @@ pub fn show(
     busy: bool,
     forge: Forge<'_>,
     waiting: Waiting<'_>,
+    trail: &[String],
 ) -> Option<Act> {
-    if board.cards.is_empty() && waiting.backlog.items.is_empty() {
-        theme::empty(
-            ui,
-            "Only the main branch so far: make a branch, or write something down in the backlog",
-        );
-        return None;
-    }
-
     let mut picked = None;
+    let inside = trail.len() > 1;
 
     ui.add_space(10.0);
-    if header_line(ui, board, forge) {
+    let (step, again) = trail_line(ui, board, forge, trail);
+    if again {
         picked = Some(Act::Reload);
+    }
+    if let Some(step) = step {
+        picked = Some(Act::Up(step));
+    }
+
+    // The way out has to be drawn before anything can be empty, or going into
+    // a branch with nothing under it would be going somewhere with no door.
+    if board.cards.is_empty() && (inside || waiting.backlog.items.is_empty()) {
+        let said = match inside {
+            true => "Nothing came out of this branch yet: make a branch from it and it will show up here",
+            false => "Only the main branch so far: make a branch, or write something down in the backlog",
+        };
+        theme::empty(ui, said);
+        return picked;
     }
 
     // The projects are the folders in the branch names: `theme/colors` and
@@ -163,7 +182,7 @@ pub fn show(
     // before it is a branch.
     let mut projects = board.projects();
     for name in waiting.backlog.items.iter().filter_map(|item| item.project.as_deref()) {
-        if !projects.contains(&name) {
+        if !inside && !projects.contains(&name) {
             projects.push(name);
         }
     }
@@ -193,11 +212,20 @@ pub fn show(
     let Waiting { backlog, draft } = waiting;
 
     // The backlog goes first because that is where the reading starts, and
-    // because the work really does flow that way.
-    ui.columns(1 + Lane::ALL.len(), |columns| {
-        let (first, rest) = columns.split_at_mut(1);
-        if let Some(act) = backlog_column(&mut first[0], backlog, draft, filter.as_deref()) {
-            picked = Some(act);
+    // because the work really does flow that way. Inside a branch it is not
+    // there at all: the backlog is the repository's, not this branch's, and
+    // repeating it at every depth would be saying the same thing over and over
+    // in places where it answers nothing.
+    let columns = match inside {
+        true => Lane::ALL.len(),
+        false => 1 + Lane::ALL.len(),
+    };
+    ui.columns(columns, |columns| {
+        let (first, rest) = columns.split_at_mut(usize::from(!inside));
+        if let Some(ui) = first.first_mut() {
+            if let Some(act) = backlog_column(ui, backlog, draft, filter.as_deref()) {
+                picked = Some(act);
+            }
         }
 
         for (ui, lane) in rest.iter_mut().zip(Lane::ALL) {
@@ -265,18 +293,51 @@ pub fn show(
 /// loud; the reason the forge could not be reached waits in the hover, where
 /// it is there for whoever wants it and in nobody's way otherwise.
 ///
-/// Gives back whether the forge should be asked again.
-fn header_line(ui: &mut egui::Ui, board: &Board, forge: Forge<'_>) -> bool {
+/// Gives back the step of the trail clicked, and whether the forge should be
+/// asked again.
+fn trail_line(
+    ui: &mut egui::Ui,
+    board: &Board,
+    forge: Forge<'_>,
+    trail: &[String],
+) -> (Option<usize>, bool) {
     let mut again = false;
+    let mut step = None;
 
     ui.horizontal(|ui| {
         ui.add_space(2.0);
         ui.spacing_mut().item_spacing.x = 5.0;
-        ui.label(
-            RichText::new(format!("Measured against {}", board.trunk))
-                .font(theme::body(11.5))
-                .color(theme::FAINT),
-        );
+        ui.label(RichText::new("Measured against").font(theme::body(11.5)).color(theme::FAINT));
+
+        // Every step but the last is a board that is already there, so it is a
+        // link and not a button: clicking one does nothing to the repository,
+        // it looks somewhere else.
+        let last = trail.len().saturating_sub(1);
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (depth, name) in trail.iter().enumerate() {
+            if depth > 0 {
+                ui.label(RichText::new("›").font(theme::body(11.5)).color(theme::FAINT));
+            }
+
+            let leaf = name.rsplit_once('/').map_or(name.as_str(), |(_, leaf)| leaf);
+            if depth == last {
+                ui.label(RichText::new(leaf).font(theme::medium(11.5)).color(theme::TEXT));
+                continue;
+            }
+
+            let label = egui::Label::new(
+                RichText::new(leaf).font(theme::body(11.5)).color(theme::MUTED),
+            );
+            if ui
+                .add(label.sense(egui::Sense::click()))
+                .on_hover_text(format!("Back out to {name}"))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                step = Some(depth);
+            }
+        }
+        ui.spacing_mut().item_spacing.x = 5.0;
 
         let reviews = board.cards.iter().filter(|card| card.pull.is_some()).count();
         let (said, hint) = match (forge.asking, board.asked, forge.note) {
@@ -307,7 +368,7 @@ fn header_line(ui: &mut egui::Ui, board: &Board, forge: Forge<'_>) -> bool {
         again = response.clicked();
     });
 
-    again
+    (step, again)
 }
 
 fn chip(text: &str, on: bool) -> RichText {
@@ -535,6 +596,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
     };
 
     let mut opened = None;
+    let mut entered = false;
 
     let inner = ui.dnd_drag_source(id, payload.clone(), |ui| {
         frame.show(ui, |ui| {
@@ -549,12 +611,18 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
                         .font(theme::medium(12.5))
                         .color(if card.current { theme::HEAD } else { theme::TEXT }),
                 );
-                // The pull request goes to the far side, where the eye is not
-                // reading. It is a fact about the card, not its name.
-                if let Some(pull) = &card.pull {
+                // What is true about the card, rather than its name, goes to
+                // the far side where the eye is not reading. The way in is the
+                // outermost of them, because it is the one you reach for.
+                if card.children > 0 || card.pull.is_some() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if review_badge(ui, pull) {
-                            opened = Some(pull.url.clone());
+                        if card.children > 0 && subtask_badge(ui, card.children) {
+                            entered = true;
+                        }
+                        if let Some(pull) = &card.pull {
+                            if review_badge(ui, pull) {
+                                opened = Some(pull.url.clone());
+                            }
                         }
                     });
                 }
@@ -563,6 +631,9 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
         });
     });
 
+    if entered {
+        return Some(Act::Enter(card.branch.clone()));
+    }
     if let Some(url) = opened {
         return Some(Act::Open(url));
     }
@@ -609,6 +680,25 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
         return Some(Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }));
     }
     response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
+}
+
+/// How many branches came out of this one, and the way into them.
+///
+/// It is on the card because a branch is on one board only, its parent's.
+/// Without a number here, work could sit somewhere nobody thought to look.
+fn subtask_badge(ui: &mut egui::Ui, count: usize) -> bool {
+    let label = egui::Label::new(
+        RichText::new(format!("{count} ›")).font(theme::mono(10.5)).color(theme::MUTED),
+    );
+    let said = match count {
+        1 => "1 branch came out of this one".to_string(),
+        n => format!("{n} branches came out of this one"),
+    };
+
+    ui.add(label.sense(egui::Sense::click()))
+        .on_hover_text(format!("{said}\n\nClick to go in"))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 /// The pull request's number, in the color of the column it argues for.

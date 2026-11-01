@@ -23,7 +23,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Search the history by message, author or hash
 - [x] A board of columns, worked out from the graph and storing nothing
 - [x] In review means a pull request is open, asked of the forge through `gh`
-- [x] A branch cut from a branch is a subtask, and has a board of its own
+- [x] A branch cut from a branch is a subtask: go into a card and there it is
 - [x] Dragging a card runs the operation that would have moved it
 - [x] A backlog everyone with the repository shares, kept in a reference
 - [x] Everything in English, interface and code alike
@@ -98,8 +98,11 @@ work. Nothing records that either, so it is read off the graph: a branch is a
 child of whichever other branch it shares more history with than it shares
 with the trunk. The board inside a card is then the same board measured
 against a different branch, and "done" for a subtask is having gone into its
-parent. It is a reading and not a fact — a rebase moves the fork — and where
-it is wrong it is wrong out loud, with a test pinning each case.
+parent. It is a reading and not a fact: once a branch keeps committing after
+something was cut from it, the two are the same shape, and the names are what
+decide — `report` under `report-export`, the same convention that already
+groups the cards. Where it is wrong it is wrong out loud, with a test pinning
+each case.
 
 **Worktrees:** one repository can be checked out in several folders at once,
 each with its own branch, sharing one history. A branch can only be open in
@@ -145,8 +148,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and fifty-seven tests,
-a hundred and five of them against real repositories made in `/tmp` and
+files. Those are the ones that carry cover: a hundred and sixty-one tests,
+a hundred and seven of them against real repositories made in `/tmp` and
 deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

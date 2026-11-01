@@ -71,6 +71,9 @@ struct App {
     /// The work laid out in columns, and which project it is filtered by.
     board: Option<Board>,
     project: Option<String>,
+    /// Where you are on the board: the trunk, then every branch you went
+    /// into. The last one is what the columns are measured against.
+    trail: Vec<String>,
     /// The one column that is stored rather than worked out, and what is being
     /// typed into it.
     backlog: Backlog,
@@ -156,7 +159,7 @@ enum Deed {
     DiscardHunk { path: String, hunk: HunkId },
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
-    Land(String),
+    Land { base: String, branch: String },
     Review(String),
 }
 
@@ -181,6 +184,7 @@ impl App {
             ref_filter: String::new(),
             board: None,
             project: None,
+            trail: Vec::new(),
             backlog: Backlog::default(),
             backlog_draft: String::new(),
             pulls: None,
@@ -230,7 +234,7 @@ impl App {
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
-        self.board = repo.board_with(self.pulls.as_ref()).ok();
+        self.read_board(&repo);
         self.backlog = repo.backlog().unwrap_or_default();
         self.stashes = repo.stashes().unwrap_or_default();
 
@@ -668,8 +672,58 @@ impl App {
     /// Lays the columns out again over whatever the forge last said.
     fn rebuild_board(&mut self) {
         if let Ok(repo) = self.repo() {
-            self.board = repo.board_with(self.pulls.as_ref()).ok();
+            self.read_board(&repo);
         }
+    }
+
+    /// The board of wherever you are, dropping any step whose branch has gone.
+    ///
+    /// A branch you went into can stop existing while you are standing in it:
+    /// deleted, or merged and tidied away. Stepping back out is better than
+    /// showing nothing and better than an error about a branch you did not
+    /// ask about.
+    fn read_board(&mut self, repo: &Repo) {
+        if self.trail.is_empty() {
+            match repo.trunk() {
+                Ok(trunk) => self.trail.push(trunk),
+                Err(_) => {
+                    self.board = None;
+                    return;
+                }
+            }
+        }
+
+        loop {
+            let base = self.trail.last().cloned().unwrap_or_default();
+            match repo.board_against(&base, self.pulls.as_ref()) {
+                Ok(board) => {
+                    self.board = Some(board);
+                    return;
+                }
+                Err(_) if self.trail.len() > 1 => {
+                    self.trail.pop();
+                    self.project = None;
+                }
+                // Even the trunk can stop being the trunk, so it is worked
+                // out again on the next reload rather than kept wrong.
+                Err(_) => {
+                    self.trail.clear();
+                    self.board = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Looks at one branch's own board, or at the one it came from.
+    ///
+    /// The project filter is dropped on the way: it was made of the names on
+    /// the board you were looking at, and carrying it in would quietly empty
+    /// the one you are arriving at.
+    fn walk_to(&mut self, trail: Vec<String>) {
+        self.trail = trail;
+        self.project = None;
+        self.rebuild_board();
     }
 
     /// Asks before opening a pull request, which everyone on the repository
@@ -692,28 +746,33 @@ impl App {
         );
     }
 
-    /// Asks before bringing a branch into the main one, which may start by
-    /// moving you somewhere else.
+    /// Asks before bringing a branch into the one whose board you are on,
+    /// which may start by moving you somewhere else.
+    ///
+    /// Not always the main branch. Inside a card it is that card's branch,
+    /// because a subtask is finished when it goes into its parent, and
+    /// merging it into the trunk instead would be doing something else
+    /// entirely while looking like the same gesture.
     fn ask_land(&mut self, branch: String) {
-        let trunk = match &self.board {
+        let base = match &self.board {
             Some(board) => board.trunk.clone(),
             None => return,
         };
 
-        let detail = if self.head == trunk {
-            format!("{branch} is merged into {trunk}. If they clash, nothing is touched and it says where.")
+        let detail = if self.head == base {
+            format!("{branch} is merged into {base}. If they clash, nothing is touched and it says where.")
         } else {
             format!(
-                "You move to {trunk} first, and then {branch} is merged into it. \
-                 If they clash, nothing is merged and you stay on {trunk}."
+                "You move to {base} first, and then {branch} is merged into it. \
+                 If they clash, nothing is merged and you stay on {base}."
             )
         };
 
         self.ask(
-            format!("Bring {branch} into {trunk}?"),
+            format!("Bring {branch} into {base}?"),
             &detail,
             "Merge",
-            Deed::Land(branch),
+            Deed::Land { base, branch },
         );
     }
 
@@ -729,9 +788,9 @@ impl App {
                 let doing = format!("deleting {name}");
                 return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
             }
-            Deed::Land(branch) => {
-                let doing = format!("merging {branch}");
-                return self.spawn(&doing, move |repo| repo.land(&branch));
+            Deed::Land { base, branch } => {
+                let doing = format!("merging {branch} into {base}");
+                return self.spawn(&doing, move |repo| repo.land_into(&base, &branch));
             }
             Deed::Review(branch) => {
                 // What the forge last said no longer holds once there is a new
@@ -1102,6 +1161,7 @@ impl eframe::App for App {
                                 backlog: &self.backlog,
                                 draft: &mut self.backlog_draft,
                             },
+                            &self.trail,
                         ),
                         None => {
                             theme::empty(ui, "Open a repository to see its work");
@@ -1133,6 +1193,20 @@ impl eframe::App for App {
                             self.ask_forge();
                         }
                         Some(board_view::Act::Open(url)) => self.open_in_browser(&url),
+
+                        // Going in and coming back out. Neither touches the
+                        // repository: they measure the same board against a
+                        // different branch.
+                        Some(board_view::Act::Enter(branch)) => {
+                            let mut trail = self.trail.clone();
+                            trail.push(branch);
+                            self.walk_to(trail);
+                        }
+                        Some(board_view::Act::Up(depth)) => {
+                            let mut trail = self.trail.clone();
+                            trail.truncate(depth + 1);
+                            self.walk_to(trail);
+                        }
 
                         // The backlog. Writing is instant and local; sending
                         // it out is the only part that goes near a network.

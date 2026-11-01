@@ -188,12 +188,31 @@ fn lane_of(
 /// already left the trunk shares that branch's extra commits, so it is a
 /// child of it.
 ///
-/// Where it is wrong, said here rather than found out later: **a rebase moves
+/// # Where the graph goes quiet
+///
+/// That reading has a hole, and it is not a small one. The moment a branch
+/// keeps committing after something was cut from it, the two are **the same
+/// shape**: one fork, both sides moved on. Nothing in the commits says which
+/// side was there first, because nothing in a commit says what branch it was
+/// written on.
+///
+/// So where the graph is silent, the one other thing a branch carries is
+/// asked: its name. `report` sitting under `report-export` is how people
+/// write down a piece of a job, and the same convention already decides which
+/// project a card belongs to. It is only ever a tiebreak -- a fork that goes
+/// deeper always wins over a name -- and where the names say nothing the
+/// branch that has moved least past the fork is taken to be the one that was
+/// standing there when the other was cut.
+///
+/// What stays wrong, said here rather than found out later: **a rebase moves
 /// the fork.** Replaying a branch somewhere else leaves no trace of where it
-/// used to hang from, so a rebased branch may come back the child of something
-/// else, or of nothing. Git's own `merge-base --fork-point` has the same
-/// trouble and answers it with the reflog, which never leaves your machine and
-/// expires, so it is no use for a board the whole team reads.
+/// used to hang from, so a rebased branch may come back the child of
+/// something else, or of nothing. Git's own `merge-base --fork-point` has the
+/// same trouble and answers it with the reflog, which never leaves your
+/// machine and expires, so it is no use for a board a whole team reads. And
+/// two branches with unrelated names, forking at one commit, both moved on,
+/// are a coin toss: the graph has nothing left to say and neither has the
+/// naming.
 fn parentage(inner: &Repository, trunk_tip: Oid, tips: &[(String, Oid)]) -> Parents {
     let merges = merges(inner, tips);
     tips.iter()
@@ -259,7 +278,7 @@ fn cut_from(
     merges: &HashMap<Oid, Vec<Oid>>,
 ) -> Option<String> {
     let trunk_base = inner.merge_base(tip, trunk_tip).ok()?;
-    let mut best: Option<(String, Oid, usize)> = None;
+    let mut best: Option<Candidate> = None;
 
     for (other, other_tip) in tips {
         if other == name {
@@ -291,11 +310,18 @@ fn cut_from(
             continue;
         }
 
-        // How far that branch has moved since the fork. It breaks a tie
-        // between two candidates that fork at the same commit, and it breaks
-        // it the right way: you cut from a branch where it was, so the parent
-        // is usually the one still standing at the fork, while a sibling has
-        // walked on.
+        // A branch whose name this one extends is this one's child by the
+        // only convention there is, so it is not also its parent.
+        let told = by_name(name, other);
+        if told == Says::CHILD {
+            continue;
+        }
+
+        // How far that branch has moved since the fork. It is the last word,
+        // after the fork and after the names: between two branches that forked
+        // together and are named nothing alike, the one still standing at the
+        // fork is the likelier to have been standing there when the other was
+        // cut.
         let moved = inner
             .graph_ahead_behind(*other_tip, shared)
             .map(|(ahead, _)| ahead)
@@ -303,17 +329,68 @@ fn cut_from(
 
         let better = match &best {
             None => true,
-            Some((_, kept, kept_moved)) => match shared == *kept {
-                true => moved < *kept_moved,
-                false => inner.graph_descendant_of(shared, *kept).unwrap_or(false),
+            Some(kept) => match shared == kept.fork {
+                // Same fork: the names decide, and then the distance.
+                true => (told, usize::MAX - moved) > (kept.told, usize::MAX - kept.moved),
+                // A deeper fork beats anything a name could say.
+                false => inner.graph_descendant_of(shared, kept.fork).unwrap_or(false),
             },
         };
         if better {
-            best = Some((other.clone(), shared, moved));
+            best = Some(Candidate {
+                name: other.clone(),
+                fork: shared,
+                told,
+                moved,
+            });
         }
     }
 
-    best.map(|(name, _, _)| name)
+    best.map(|candidate| candidate.name)
+}
+
+/// A branch that might be the one another was cut from.
+struct Candidate {
+    name: String,
+    /// Where the two part company.
+    fork: Oid,
+    told: u8,
+    /// Commits it has written since the fork.
+    moved: usize,
+}
+
+/// What the two names say about which came out of which.
+mod says {
+    /// This one's name extends the candidate's: `report` under
+    /// `report-export`, which is how a piece of a job gets written down.
+    pub const PARENT: u8 = 2;
+    /// Neither name says anything.
+    pub const NOTHING: u8 = 1;
+    /// The candidate's name extends this one's, so if anything it is the
+    /// child.
+    pub const CHILD: u8 = 0;
+}
+use says as Says;
+
+fn by_name(name: &str, other: &str) -> u8 {
+    if under(name, other) {
+        return Says::PARENT;
+    }
+    if under(other, name) {
+        return Says::CHILD;
+    }
+    Says::NOTHING
+}
+
+/// Whether `name` reads as something inside `stem`.
+///
+/// The separator has to be there: `report-export` is inside `report`, and
+/// `reporting` is a different word that happens to start the same way.
+fn under(name: &str, stem: &str) -> bool {
+    let Some(rest) = name.strip_prefix(stem) else {
+        return false;
+    };
+    rest.starts_with(['-', '/', '_', '.'])
 }
 
 impl Repo {
@@ -533,6 +610,23 @@ mod tests {
             draft,
             url: String::new(),
         }
+    }
+
+    #[test]
+    fn a_name_says_a_branch_is_inside_another_only_at_a_separator() {
+        assert!(under("report-export", "report"));
+        assert!(under("report/export", "report"));
+        // A different word that happens to start the same way is not a piece
+        // of anything.
+        assert!(!under("reporting", "report"));
+        assert!(!under("report", "report"));
+    }
+
+    #[test]
+    fn the_names_say_which_way_round_it_is_or_say_nothing() {
+        assert_eq!(by_name("report-export", "report"), Says::PARENT);
+        assert_eq!(by_name("report", "report-export"), Says::CHILD);
+        assert_eq!(by_name("report", "invoices"), Says::NOTHING);
     }
 
     #[test]
