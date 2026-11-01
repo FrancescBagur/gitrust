@@ -18,6 +18,7 @@ pub mod repo;
 pub mod stash;
 pub mod status;
 pub mod tag;
+pub mod worktree;
 
 pub use backlog::{Backlog, Item};
 pub use board::{Board, Card, Lane};
@@ -32,3 +33,4 @@ pub use remote::{PullMode, Tracking};
 pub use repo::Repo;
 pub use stash::StashEntry;
 pub use status::{ChangeKind, FileChange, WorkingState};
+pub use worktree::Worktree;

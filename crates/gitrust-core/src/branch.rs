@@ -53,6 +53,14 @@ impl Repo {
         let refname = reference.name().context("the branch has no name")?.to_string();
         let commit = reference.peel_to_commit()?;
 
+        // A branch open in another checkout cannot be opened here as well, and
+        // Git is right about that: two folders writing to one branch are two
+        // different ideas of what it holds. Saying where it is open is worth
+        // more than saying no, because it is an answer you can act on.
+        if let Some(held) = self.held_by(name) {
+            anyhow::bail!("{name} is open in {}", held.path.display());
+        }
+
         self.inner
             .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
             .map_err(|err| blocked(err, name))?;
