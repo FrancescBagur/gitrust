@@ -15,7 +15,7 @@
 
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, Color32, RichText, Stroke};
-use gitrust_core::{Backlog, Board, Card, Item, Lane, PullRequestState};
+use gitrust_core::{Backlog, Board, Card, Item, Lane, PullRequestState, Worktree};
 
 use crate::refs_view::Pick;
 use crate::theme;
@@ -71,6 +71,12 @@ pub enum Act {
     Enter(String),
     /// Go back out to that step of the trail.
     Up(usize),
+    /// Open that branch in a folder of its own.
+    Isolate(String),
+    /// Look at the checkout in that folder.
+    Visit(std::path::PathBuf),
+    /// Take that checkout away.
+    Release(String),
     /// Push that branch to the remote.
     Publish(String),
     /// Open a pull request for it.
@@ -152,6 +158,7 @@ pub fn show(
     forge: Forge<'_>,
     waiting: Waiting<'_>,
     trail: &[String],
+    trees: &[Worktree],
 ) -> Option<Act> {
     let mut picked = None;
     let inside = trail.len() > 1;
@@ -264,7 +271,7 @@ pub fn show(
                                 return;
                             }
                             for card in cards {
-                                if let Some(act) = draw_card(ui, card, busy, asked) {
+                                if let Some(act) = draw_card(ui, card, busy, asked, trees) {
                                     picked = Some(act);
                                 }
                                 ui.add_space(6.0);
@@ -580,7 +587,14 @@ fn paint_drop_zone(ui: &mut egui::Ui, lane: Lane, asked: bool) {
 }
 
 /// A card: the branch, which project it is from, how much it carries and how old it is.
-fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<Act> {
+fn draw_card(
+    ui: &mut egui::Ui,
+    card: &Card,
+    busy: bool,
+    asked: bool,
+    trees: &[Worktree],
+) -> Option<Act> {
+    let open_at = open_at(trees, &card.branch);
     let frame = egui::Frame::NONE
         .fill(theme::PANEL)
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -597,6 +611,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
 
     let mut opened = None;
     let mut entered = false;
+    let mut visited = None;
 
     let inner = ui.dnd_drag_source(id, payload.clone(), |ui| {
         frame.show(ui, |ui| {
@@ -614,7 +629,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
                 // What is true about the card, rather than its name, goes to
                 // the far side where the eye is not reading. The way in is the
                 // outermost of them, because it is the one you reach for.
-                if card.children > 0 || card.pull.is_some() {
+                if card.children > 0 || card.pull.is_some() || open_at.is_some() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if card.children > 0 && subtask_badge(ui, card.children) {
                             entered = true;
@@ -622,6 +637,11 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
                         if let Some(pull) = &card.pull {
                             if review_badge(ui, pull) {
                                 opened = Some(pull.url.clone());
+                            }
+                        }
+                        if let Some(tree) = open_at {
+                            if folder_badge(ui, tree) {
+                                visited = Some(tree.path.clone());
                             }
                         }
                     });
@@ -633,6 +653,9 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
 
     if entered {
         return Some(Act::Enter(card.branch.clone()));
+    }
+    if let Some(path) = visited {
+        return Some(Act::Visit(path));
     }
     if let Some(url) = opened {
         return Some(Act::Open(url));
@@ -664,22 +687,97 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, busy: bool, asked: bool) -> Option<
         ui.painter().rect_filled(bar, 0.0, theme::HEAD);
     }
 
+    // What it can be done to lives here rather than on the card, because a
+    // card you drag has no room for buttons that would fight the drag for the
+    // same press.
+    let mut asked_for = None;
+    response.context_menu(|ui| {
+        match open_at {
+            Some(tree) => {
+                if ui.button("Go to its folder").clicked() {
+                    asked_for = Some(Act::Visit(tree.path.clone()));
+                    ui.close_menu();
+                }
+                if ui.button("Close its folder").clicked() {
+                    asked_for = Some(Act::Release(tree.name.clone()));
+                    ui.close_menu();
+                }
+            }
+            None if !card.current => {
+                if ui
+                    .button("Open in its own folder")
+                    .on_hover_text("a second checkout, beside the repository, so this branch can be worked on without leaving where you are")
+                    .clicked()
+                {
+                    asked_for = Some(Act::Isolate(card.branch.clone()));
+                    ui.close_menu();
+                }
+            }
+            // The branch you are on is already open: you are standing in it.
+            None => {}
+        }
+    });
+    if asked_for.is_some() {
+        return asked_for;
+    }
+
+    // A branch open in another folder cannot be switched to here, so the
+    // double click goes there instead. It is the same intention either way:
+    // take me to that branch.
     let switchable = !card.current && !busy;
     let draggable = allows(&payload, Lane::Done, asked);
-    let hint = match (switchable, draggable) {
-        (true, true) => format!(
+    let hint = match (switchable, open_at, draggable) {
+        (true, Some(tree), _) => format!(
+            "{}\nOpen in {}\nDouble-click to go there",
+            card.branch,
+            tree.path.display()
+        ),
+        (true, None, true) => format!(
             "{}\nDouble-click to switch to it, or drag it to another column",
             card.branch
         ),
-        (true, false) => format!("{}\nDouble-click to switch to this branch", card.branch),
+        (true, None, false) => format!("{}\nDouble-click to switch to this branch", card.branch),
         _ => card.branch.clone(),
     };
     let response = response.on_hover_text(hint);
 
     if switchable && response.double_clicked() {
-        return Some(Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }));
+        return Some(match open_at {
+            Some(tree) => Act::Visit(tree.path.clone()),
+            None => Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }),
+        });
     }
     response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
+}
+
+/// The checkout a branch is open in, when it is open in one of its own.
+fn open_at<'a>(trees: &'a [Worktree], branch: &str) -> Option<&'a Worktree> {
+    trees
+        .iter()
+        .find(|tree| !tree.main && tree.branch.as_deref() == Some(branch))
+}
+
+/// The folder this branch is open in.
+///
+/// A branch can only be checked out in one place, so this is not decoration:
+/// it is the reason the card cannot be switched to from here, said before you
+/// try rather than after.
+fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> bool {
+    let name = match tree.name.len() > 14 {
+        true => format!("{}…", &tree.name[..13]),
+        false => tree.name.clone(),
+    };
+
+    let label = egui::Label::new(
+        RichText::new(name).font(theme::mono(10.5)).color(theme::FAINT),
+    );
+    ui.add(label.sense(egui::Sense::click()))
+        .on_hover_text(format!(
+            "Open in {}\n\nClick to go there",
+            tree.path.display()
+        ))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 /// How many branches came out of this one, and the way into them.

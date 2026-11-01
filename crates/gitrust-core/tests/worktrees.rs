@@ -135,6 +135,29 @@ fn removing_a_checkout_takes_the_folder_and_leaves_the_branch() {
 }
 
 #[test]
+fn the_checkout_you_are_looking_at_is_not_one_you_can_close() {
+    let temp = TempRepo::new("worktree-self");
+    let repo = ready(&temp);
+    repo.add_worktree("fix/footer").unwrap();
+
+    let elsewhere = repo.worktree_path_for("fix/footer");
+    let name = temp.open().worktrees().unwrap()[1].name.clone();
+
+    // Standing in it and asking for it to go. Git would take the folder out
+    // from under the repository that asked.
+    let theirs = Repo::open(&elsewhere).unwrap();
+    let err = theirs.remove_worktree(&name).unwrap_err().to_string();
+    assert!(err.contains("looking at"), "{err}");
+    assert!(elsewhere.is_dir(), "and it is still there");
+
+    // From anywhere else it goes.
+    temp.open().remove_worktree(&name).unwrap();
+    assert!(!elsewhere.exists());
+
+    sweep(&repo);
+}
+
+#[test]
 fn a_folder_deleted_by_hand_is_said_to_be_missing_and_then_forgotten() {
     let temp = TempRepo::new("worktree-prune");
     let repo = ready(&temp);

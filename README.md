@@ -32,7 +32,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Merge a branch into the current one, stopping dead if it clashes
 - [x] Amend the last commit, with a warning if it already went to the remote
 - [x] Tags: make them lightweight or annotated, and delete them
-- [x] Open a branch in a folder of its own, and know where each one is open
+- [x] Open a branch in a folder of its own, and jump between the folders
 - [ ] Conflict editor, interactive rebase
 
 ## Architecture
@@ -105,9 +105,12 @@ groups the cards. Where it is wrong it is wrong out loud, with a test pinning
 each case.
 
 **Worktrees:** one repository can be checked out in several folders at once,
-each with its own branch, sharing one history. A branch can only be open in
-one of them, so switching to one that is open elsewhere says where it is
-rather than refusing. The folders go beside the repository, never inside it.
+each with its own branch, sharing one history. A card says which folder its
+branch is open in and takes you there; right-clicking one that is open
+nowhere offers it a folder of its own. A branch can only be open in one
+place, so switching to one that is open elsewhere says where it is rather
+than refusing, and the checkout you are looking at is not one you can close.
+The folders go beside the repository, never inside it.
 
 **The forge:** Git stores nothing about pull requests, so a branch that is
 merely pushed and one somebody is reviewing look alike from inside the
@@ -148,8 +151,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and sixty-one tests,
-a hundred and seven of them against real repositories made in `/tmp` and
+files. Those are the ones that carry cover: a hundred and sixty-two tests,
+a hundred and eight of them against real repositories made in `/tmp` and
 deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

@@ -21,7 +21,7 @@
 //! folder you opened, which is worth saying out loud before doing it, so
 //! [`Repo::worktree_path_for`] works the path out without creating anything.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use git2::{BranchType, Repository, WorktreeAddOptions, WorktreeLockStatus, WorktreePruneOptions};
@@ -194,6 +194,11 @@ impl Repo {
         }
 
         let path = tree.path().to_path_buf();
+        anyhow::ensure!(
+            !same_place(&path, &self.workdir()),
+            "that is the checkout you are looking at; go to another one first"
+        );
+
         let mut options = WorktreePruneOptions::new();
         options.valid(true).working_tree(true);
         tree.prune(Some(&mut options))
@@ -293,6 +298,19 @@ fn head_of(tree: &git2::Worktree) -> Option<String> {
     let repo = Repository::open_from_worktree(tree).ok()?;
     let head = repo.head().ok()?;
     head.is_branch().then(|| head.shorthand().map(str::to_string))?
+}
+
+/// Whether two paths are the same folder.
+///
+/// Compared after following any links, because the path Git wrote down and
+/// the one the repository was opened through are often spelled differently
+/// and are the same place. Where that cannot be done, the spelling is all
+/// there is.
+fn same_place(one: &Path, other: &Path) -> bool {
+    match (one.canonicalize(), other.canonicalize()) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => one == other,
+    }
 }
 
 /// A branch name turned into one folder name.

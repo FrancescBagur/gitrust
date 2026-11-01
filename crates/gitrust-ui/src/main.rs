@@ -20,6 +20,7 @@ use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
     Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
+    Worktree,
 };
 
 fn main() -> eframe::Result<()> {
@@ -74,6 +75,8 @@ struct App {
     /// Where you are on the board: the trunk, then every branch you went
     /// into. The last one is what the columns are measured against.
     trail: Vec<String>,
+    /// Every folder this repository is checked out in, the main one first.
+    worktrees: Vec<Worktree>,
     /// The one column that is stored rather than worked out, and what is being
     /// typed into it.
     backlog: Backlog,
@@ -159,6 +162,7 @@ enum Deed {
     DiscardHunk { path: String, hunk: HunkId },
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
+    CloseWorktree { name: String },
     Land { base: String, branch: String },
     Review(String),
 }
@@ -185,6 +189,7 @@ impl App {
             board: None,
             project: None,
             trail: Vec::new(),
+            worktrees: Vec::new(),
             backlog: Backlog::default(),
             backlog_draft: String::new(),
             pulls: None,
@@ -236,6 +241,7 @@ impl App {
         self.tracking = repo.tracking();
         self.read_board(&repo);
         self.backlog = repo.backlog().unwrap_or_default();
+        self.worktrees = repo.worktrees().unwrap_or_default();
         self.stashes = repo.stashes().unwrap_or_default();
 
         // The tree's state goes before the graph: whether there is a row of
@@ -746,6 +752,60 @@ impl App {
         );
     }
 
+    /// Looks at another checkout of the same repository.
+    ///
+    /// Same history, same branches, a different HEAD and a different working
+    /// tree. Nothing is written and nothing is fetched: it is the window
+    /// moving, not the repository.
+    fn visit(&mut self, path: std::path::PathBuf) {
+        self.path = path.display().to_string();
+        // What was picked belonged to the other folder's working tree.
+        self.selected_commit = None;
+        self.detail = None;
+        self.detail_file = None;
+        self.detail_diff = None;
+        self.selected = None;
+        self.diff = None;
+
+        self.load();
+        self.said(format!("looking at {}", self.path));
+    }
+
+    /// Asks before taking a checkout away, saying what goes with it.
+    fn ask_release(&mut self, name: String) {
+        let where_it_is = self
+            .worktrees
+            .iter()
+            .find(|tree| tree.name == name)
+            .map(|tree| tree.path.display().to_string())
+            .unwrap_or_else(|| name.clone());
+
+        // What is uncommitted there is the only thing that cannot be had
+        // back, so it is the number that goes in the question.
+        let loose = self.repo().and_then(|repo| repo.worktree_changes(&name)).unwrap_or(0);
+        let detail = match loose {
+            0 => format!(
+                "{where_it_is} is deleted. The branch stays where it is, and \
+                 nothing is lost: there is nothing uncommitted in there."
+            ),
+            1 => format!(
+                "{where_it_is} is deleted, and 1 uncommitted file in it goes too. \
+                 The branch itself stays."
+            ),
+            n => format!(
+                "{where_it_is} is deleted, and {n} uncommitted files in it go too. \
+                 The branch itself stays."
+            ),
+        };
+
+        self.ask(
+            format!("Close the folder {name}?"),
+            &detail,
+            "Close",
+            Deed::CloseWorktree { name },
+        );
+    }
+
     /// Asks before bringing a branch into the one whose board you are on,
     /// which may start by moving you somewhere else.
     ///
@@ -787,6 +847,10 @@ impl App {
             Deed::DeleteBranch { name, remote } if remote => {
                 let doing = format!("deleting {name}");
                 return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
+            }
+            Deed::CloseWorktree { name } => {
+                let doing = format!("closing {name}");
+                return self.spawn(&doing, move |repo| repo.remove_worktree(&name));
             }
             Deed::Land { base, branch } => {
                 let doing = format!("merging {branch} into {base}");
@@ -1150,6 +1214,17 @@ impl eframe::App for App {
                         asking: self.forge.is_some(),
                         note: self.forge_note.as_deref(),
                     };
+
+                    // The checkout you are looking at is not somewhere else,
+                    // so a card for a branch open here says nothing about
+                    // folders: you are standing in it.
+                    let here = std::path::Path::new(&self.path);
+                    let elsewhere: Vec<Worktree> = self
+                        .worktrees
+                        .iter()
+                        .filter(|tree| tree.path != here)
+                        .cloned()
+                        .collect();
                     let picked = match &self.board {
                         Some(board) => board_view::show(
                             ui,
@@ -1162,6 +1237,7 @@ impl eframe::App for App {
                                 draft: &mut self.backlog_draft,
                             },
                             &self.trail,
+                            &elsewhere,
                         ),
                         None => {
                             theme::empty(ui, "Open a repository to see its work");
@@ -1207,6 +1283,16 @@ impl eframe::App for App {
                             trail.truncate(depth + 1);
                             self.walk_to(trail);
                         }
+
+                        // Opening a branch somewhere else writes a whole
+                        // working tree, so it goes off to a thread like the
+                        // rest of what takes a moment.
+                        Some(board_view::Act::Isolate(branch)) => {
+                            let doing = format!("opening {branch} in a folder of its own");
+                            self.spawn(&doing, move |repo| repo.add_worktree(&branch));
+                        }
+                        Some(board_view::Act::Visit(path)) => self.visit(path),
+                        Some(board_view::Act::Release(name)) => self.ask_release(name),
 
                         // The backlog. Writing is instant and local; sending
                         // it out is the only part that goes near a network.
@@ -1346,6 +1432,12 @@ impl App {
             ui.memory_mut(|memory| memory.toggle_popup(id));
         }
 
+        // Cloned out of the way: the path below is being edited through
+        // `&mut self`, and the list cannot be borrowed at the same time.
+        let trees = self.worktrees.clone();
+        let here = std::path::PathBuf::from(&self.path);
+        let mut visit = None;
+
         let open = egui::popup::popup_below_widget(
             ui,
             id,
@@ -1370,7 +1462,21 @@ impl App {
                         || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 });
 
-                if go {
+                // The other folders this same repository is checked out in.
+                // They belong here rather than anywhere else, because this is
+                // the control that answers "where am I", and going to one of
+                // them is the same move as opening a repository: the window
+                // looks somewhere else and nothing is written.
+                if trees.len() > 1 {
+                    theme::rule(ui);
+                    for tree in &trees {
+                        if checkout_row(ui, tree, &here) {
+                            visit = Some(tree.path.clone());
+                        }
+                    }
+                }
+
+                if go || visit.is_some() {
                     ui.memory_mut(|memory| memory.close_popup());
                 }
                 go
@@ -1378,6 +1484,9 @@ impl App {
         )
         .unwrap_or(false);
 
+        if let Some(path) = visit {
+            return self.visit(path);
+        }
         if open {
             self.selected = None;
             self.diff = None;
@@ -1602,4 +1711,64 @@ impl App {
             Err(err) => self.note_error(format!("{err:#}")),
         }
     }
+}
+
+/// One checkout in the repository menu: where it is and what is open there.
+///
+/// The one you are looking at wears HEAD's amber, the same as the branch does
+/// in the bar, because it is the same question answered in the same color:
+/// this is where you are.
+fn checkout_row(ui: &mut egui::Ui, tree: &Worktree, here: &std::path::Path) -> bool {
+    let current = tree.path == here;
+    let name = match tree.main {
+        true => format!("{} (main)", tree.name),
+        false => tree.name.clone(),
+    };
+
+    let mut go = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            egui::RichText::new(name)
+                .font(theme::medium(12.0))
+                .color(if current { theme::HEAD } else { theme::TEXT }),
+        );
+
+        match (&tree.branch, tree.missing) {
+            // Git kept the bookkeeping and the folder is gone, which is what
+            // somebody deleting it by hand leaves behind.
+            (_, true) => ui.label(
+                egui::RichText::new("folder is gone")
+                    .font(theme::body(11.0))
+                    .color(theme::REMOVED),
+            ),
+            (Some(branch), _) => ui.label(
+                egui::RichText::new(branch).font(theme::mono(11.0)).color(theme::MUTED),
+            ),
+            (None, _) => ui.label(
+                egui::RichText::new("detached").font(theme::body(11.0)).color(theme::FAINT),
+            ),
+        };
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if current {
+                ui.label(
+                    egui::RichText::new("you are here")
+                        .font(theme::body(11.0))
+                        .color(theme::FAINT),
+                );
+                return;
+            }
+            if tree.missing {
+                return;
+            }
+            go = ui
+                .button(egui::RichText::new("Go").font(theme::body(11.0)))
+                .on_hover_text(tree.path.display().to_string())
+                .clicked();
+        });
+    });
+    ui.add_space(3.0);
+
+    go
 }
