@@ -13,6 +13,7 @@ mod diff_view;
 mod graph_view;
 mod refs_view;
 mod theme;
+mod toast;
 
 use anyhow::Result;
 use eframe::egui;
@@ -110,6 +111,8 @@ struct App {
     tag: detail_view::TagDraft,
     /// What is waiting for a yes before anything is destroyed.
     confirm: Option<Confirm>,
+    /// The last thing that happened, said where it will be seen.
+    toast: Option<toast::Toast>,
 }
 
 /// A slow operation, running off to one side.
@@ -201,6 +204,7 @@ impl App {
             saved: None,
             tag: detail_view::TagDraft::default(),
             confirm: None,
+            toast: None,
         };
         app.load();
         app
@@ -519,8 +523,7 @@ impl App {
                 match result {
                     Ok(note) => {
                         self.load();
-                        self.status = note;
-                        self.status_failed = false;
+                        self.said(note);
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
@@ -640,8 +643,7 @@ impl App {
     fn open_in_browser(&mut self, url: &str) {
         match std::process::Command::new("xdg-open").arg(url).spawn() {
             Ok(_) => {
-                self.status = format!("opening {url}");
-                self.status_failed = false;
+                self.said(format!("opening {url}"));
             }
             Err(err) => self.note_error(format!("could not open a browser: {err}")),
         }
@@ -657,8 +659,7 @@ impl App {
         match self.repo().and_then(|repo| op(&repo)) {
             Ok(note) => {
                 self.load();
-                self.status = note;
-                self.status_failed = false;
+                self.said(note);
             }
             Err(err) => self.note_error(format!("{err:#}")),
         }
@@ -745,8 +746,7 @@ impl App {
                         // The references change, so the graph and the sidebar
                         // have to be read again.
                         self.load();
-                        self.status = format!("branch {name} deleted");
-                        self.status_failed = false;
+                        self.said(format!("branch {name} deleted"));
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 };
@@ -754,8 +754,7 @@ impl App {
         };
 
         if discarded {
-            self.status = "changes discarded".to_string();
-            self.status_failed = false;
+            self.said("changes discarded".to_string());
         }
     }
 
@@ -836,8 +835,22 @@ impl App {
         }
     }
 
-    /// Leaves a note in the bottom bar, marked as a failure.
+    /// Says that something finished, in the bar and in a toast at once.
+    ///
+    /// Both, not one or the other: the bar is the record of the last thing
+    /// that happened and stays until the next, and the toast is the part that
+    /// gets seen. A sentence said only in the bar is a sentence nobody reads
+    /// while they are looking at the work they just asked about.
+    fn said(&mut self, text: String) {
+        self.toast = Some(toast::Toast::new(text.clone(), false));
+        self.status = text;
+        self.status_failed = false;
+    }
+
+    /// The same, for something that went wrong: the bar marks it as a failure
+    /// and the toast comes up in red and stays up for longer.
     fn note_error(&mut self, message: String) {
+        self.toast = Some(toast::Toast::new(message.clone(), true));
         self.status = message;
         self.status_failed = true;
     }
@@ -946,8 +959,7 @@ impl App {
                         self.selected_commit = Some(oid);
                         self.detail_file = None;
                         self.load();
-                        self.status = "last commit redone".to_string();
-                        self.status_failed = false;
+                        self.said("last commit redone".to_string());
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
@@ -964,8 +976,7 @@ impl App {
                         self.detail_file = None;
                         // The commit changes the history: redraw the graph.
                         self.load();
-                        self.status = format!("commit created on {}", self.head);
-                        self.status_failed = false;
+                        self.said(format!("commit created on {}", self.head));
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
@@ -991,8 +1002,7 @@ impl App {
                 match self.repo().and_then(|repo| repo.branch_here(&name)) {
                     Ok(()) => {
                         self.load();
-                        self.status = format!("you are now on {name}");
-                        self.status_failed = false;
+                        self.said(format!("you are now on {name}"));
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
@@ -1010,8 +1020,7 @@ impl App {
         match self.repo().and_then(|mut repo| op(&mut repo)) {
             Ok(note) => {
                 self.refresh();
-                self.status = note;
-                self.status_failed = false;
+                self.said(note);
             }
             Err(err) => self.note_error(format!("{err:#}")),
         }
@@ -1173,6 +1182,15 @@ impl eframe::App for App {
                     }
                 }
             });
+
+        // Last, over the panels and after whatever has just been pressed, so
+        // that a toast asked for this very frame is up before the frame ends.
+        // It takes itself away when its time is up.
+        if let Some(toast) = &self.toast {
+            if !toast::show(ctx, toast) {
+                self.toast = None;
+            }
+        }
     }
 }
 
@@ -1395,8 +1413,7 @@ impl App {
                 match self.repo().and_then(|repo| repo.delete_tag(&name)) {
                     Ok(()) => {
                         self.load();
-                        self.status = format!("tag {name} deleted");
-                        self.status_failed = false;
+                        self.said(format!("tag {name} deleted"));
                     }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
@@ -1506,8 +1523,7 @@ impl App {
                 // The new tag has to show up in the graph and in the sidebar,
                 // and that only happens by reading the references again.
                 self.load();
-                self.status = format!("tag {name} created");
-                self.status_failed = false;
+                self.said(format!("tag {name} created"));
             }
             Err(err) => self.note_error(format!("{err:#}")),
         }
