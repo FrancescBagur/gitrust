@@ -23,6 +23,14 @@ use gitrust_core::{
     Worktree,
 };
 
+/// How wide the repository menu is, measured inside its frame.
+///
+/// Told, not asked for, for the same reason the action bar's menus are: a
+/// menu that works its own width out from the room it is given answers a
+/// little differently every frame, and the answers drift. Wide enough for a
+/// path you can read and for the folders listed under it.
+const REPO_MENU: f32 = 520.0;
+
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
@@ -1453,7 +1461,7 @@ impl App {
             &button,
             egui::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
-                ui.set_min_width(430.0);
+                ui.set_width(REPO_MENU);
                 let mut go = false;
 
                 ui.horizontal(|ui| {
