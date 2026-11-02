@@ -123,6 +123,12 @@ first time it is opened. Without `gh`, without a login, or on a remote that is
 not GitHub, nothing breaks: the board goes back to reading the graph alone and
 the header says so, because a column that is guessing should admit it.
 
+**An assistant:** not built, and perhaps never. The thinking that was done
+about putting Claude Code inside gitrust is written down in
+[docs/assistant.md](docs/assistant.md) rather than lost: what gitrust knows
+that a terminal does not, the fact that a task here holds no text at all
+today, and why the part worth building first has no assistant in it.
+
 ## Building
 
 System dependencies on Debian/Ubuntu/Pop!_OS:
