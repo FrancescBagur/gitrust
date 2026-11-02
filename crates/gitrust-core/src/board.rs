@@ -40,6 +40,7 @@
 //! the same blindness the columns already own up to, and both are pinned by a
 //! test rather than left to be discovered.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
@@ -215,9 +216,10 @@ fn lane_of(
 /// naming.
 fn parentage(inner: &Repository, trunk_tip: Oid, tips: &[(String, Oid)]) -> Parents {
     let merges = merges(inner, tips);
+    let forks = Forks::new(inner);
     tips.iter()
         .map(|(name, tip)| {
-            let parent = cut_from(inner, name, *tip, trunk_tip, tips, &merges);
+            let parent = cut_from(&forks, name, *tip, trunk_tip, tips, &merges);
             (name.clone(), parent)
         })
         .collect()
@@ -257,27 +259,66 @@ fn merges(inner: &Repository, tips: &[(String, Oid)]) -> HashMap<Oid, Vec<Oid>> 
 /// so the merge commit is the only evidence there is. Without it, finishing a
 /// subtask would take it off its parent's board -- the one place anybody would
 /// go looking for it.
-fn took_in(
-    inner: &Repository,
-    other_tip: Oid,
-    tip: Oid,
-    merges: &HashMap<Oid, Vec<Oid>>,
-) -> bool {
-    merges.get(&tip).into_iter().flatten().any(|merge| {
-        *merge == other_tip || inner.graph_descendant_of(other_tip, *merge).unwrap_or(false)
-    })
+/// Where commits part company, worked out once each.
+///
+/// Every branch is weighed against every other, so the same two come up twice,
+/// once from each side, and the fork points of the branches near the trunk come
+/// up again and again. Asking the repository every time is what made a board of
+/// thirty branches take six seconds to lay out.
+///
+/// Holding is asked the same way on purpose. "This commit holds that one" and
+/// "they part company at that one" are the same question to Git, and asking it
+/// as one question is what lets one answer serve both.
+struct Forks<'a> {
+    inner: &'a Repository,
+    known: RefCell<HashMap<(Oid, Oid), Option<Oid>>>,
+}
+
+impl<'a> Forks<'a> {
+    fn new(inner: &'a Repository) -> Self {
+        Self { inner, known: RefCell::new(HashMap::new()) }
+    }
+
+    /// The last commit the two have in common.
+    fn base(&self, one: Oid, other: Oid) -> Option<Oid> {
+        // Which way round it was asked says nothing, so both ways share a key.
+        let key = match one <= other {
+            true => (one, other),
+            false => (other, one),
+        };
+        if let Some(known) = self.known.borrow().get(&key) {
+            return *known;
+        }
+        let found = self.inner.merge_base(key.0, key.1).ok();
+        self.known.borrow_mut().insert(key, found);
+        found
+    }
+
+    /// Whether `tip` already has `other` behind it. A commit does not hold
+    /// itself, which is Git's own answer and the one the callers want.
+    fn holds(&self, tip: Oid, other: Oid) -> bool {
+        tip != other && self.base(tip, other) == Some(other)
+    }
+}
+
+fn took_in(forks: &Forks, other_tip: Oid, tip: Oid, merges: &HashMap<Oid, Vec<Oid>>) -> bool {
+    merges
+        .get(&tip)
+        .into_iter()
+        .flatten()
+        .any(|merge| *merge == other_tip || forks.holds(other_tip, *merge))
 }
 
 /// The one branch this one most likely came out of, or `None` for the trunk.
 fn cut_from(
-    inner: &Repository,
+    forks: &Forks,
     name: &str,
     tip: Oid,
     trunk_tip: Oid,
     tips: &[(String, Oid)],
     merges: &HashMap<Oid, Vec<Oid>>,
 ) -> Option<String> {
-    let trunk_base = inner.merge_base(tip, trunk_tip).ok()?;
+    let trunk_base = forks.base(tip, trunk_tip)?;
     let mut best: Option<Candidate> = None;
 
     for (other, other_tip) in tips {
@@ -286,7 +327,7 @@ fn cut_from(
         }
         // Work this branch took in is finished work inside it, not where it
         // came from.
-        if took_in(inner, tip, *other_tip, merges) {
+        if took_in(forks, tip, *other_tip, merges) {
             continue;
         }
         // And a branch that already holds everything this one has did not give
@@ -295,18 +336,16 @@ fn cut_from(
         if *other_tip == tip {
             continue;
         }
-        if inner.graph_descendant_of(*other_tip, tip).unwrap_or(false)
-            && !took_in(inner, *other_tip, tip, merges)
-        {
+        if forks.holds(*other_tip, tip) && !took_in(forks, *other_tip, tip, merges) {
             continue;
         }
 
-        let Ok(shared) = inner.merge_base(tip, *other_tip) else {
+        let Some(shared) = forks.base(tip, *other_tip) else {
             continue;
         };
         // Sharing no more with that branch than with the trunk means they left
         // the trunk together: siblings, not parent and child.
-        if shared == trunk_base || !inner.graph_descendant_of(shared, trunk_base).unwrap_or(false) {
+        if shared == trunk_base || !forks.holds(shared, trunk_base) {
             continue;
         }
 
@@ -322,7 +361,8 @@ fn cut_from(
         // together and are named nothing alike, the one still standing at the
         // fork is the likelier to have been standing there when the other was
         // cut.
-        let moved = inner
+        let moved = forks
+            .inner
             .graph_ahead_behind(*other_tip, shared)
             .map(|(ahead, _)| ahead)
             .unwrap_or(usize::MAX);
@@ -333,7 +373,7 @@ fn cut_from(
                 // Same fork: the names decide, and then the distance.
                 true => (told, usize::MAX - moved) > (kept.told, usize::MAX - kept.moved),
                 // A deeper fork beats anything a name could say.
-                false => inner.graph_descendant_of(shared, kept.fork).unwrap_or(false),
+                false => forks.holds(shared, kept.fork),
             },
         };
         if better {
