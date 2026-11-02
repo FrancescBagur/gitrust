@@ -90,6 +90,10 @@ pub struct Card {
     /// How many branches were cut from this one. They are not on this board:
     /// they are on the one inside this card.
     pub children: usize,
+    /// What somebody wrote this branch is for, when anybody did. The branch
+    /// name is only what survives of a sentence once it has been filed down
+    /// to fit a reference; this is the sentence.
+    pub title: Option<String>,
 }
 
 impl Card {
@@ -505,6 +509,9 @@ impl Repo {
         }
 
         let tips = self.branch_tips()?;
+        // Read once for the whole board rather than per card. A repository
+        // with no notes at all is the ordinary case and costs nothing.
+        let notes = self.notes().unwrap_or_default();
         let parents = parentage(&self.inner, trunk_tip, &tips);
 
         let mut children: HashMap<&str, usize> = HashMap::new();
@@ -547,6 +554,7 @@ impl Repo {
                 project: name.rsplit_once('/').map(|(folder, _)| folder.to_string()),
                 current: head.as_deref() == Some(name.as_str()),
                 children: children.get(name.as_str()).copied().unwrap_or(0),
+                title: notes.get(&name).map(|note| note.title.clone()),
                 branch: name,
                 lane,
                 ahead,

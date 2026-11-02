@@ -127,6 +127,8 @@ struct App {
     tag: detail_view::TagDraft,
     /// What is waiting for a yes before anything is destroyed.
     confirm: Option<Confirm>,
+    /// The note being written, when one is.
+    describing: Option<Describing>,
     /// The last thing that happened, said where it will be seen.
     toast: Option<toast::Toast>,
 }
@@ -166,6 +168,20 @@ struct Forge {
 /// so a slow board can never land on top of a quick one.
 struct Laying {
     done: std::sync::mpsc::Receiver<Result<Board>>,
+}
+
+/// A note being written about a branch.
+///
+/// It is held here and not in the view for the same reason the confirm is:
+/// a view that drew it would have to remember it between frames, and the
+/// views here remember nothing.
+struct Describing {
+    branch: String,
+    title: String,
+    body: String,
+    /// Whether there was one already, which is the difference between
+    /// cancelling and being able to take it away.
+    had: bool,
 }
 
 /// Something destructive that is waiting for a yes.
@@ -239,6 +255,7 @@ impl App {
             saved: None,
             tag: detail_view::TagDraft::default(),
             confirm: None,
+            describing: None,
             toast: None,
         };
         app.load();
@@ -1027,6 +1044,137 @@ impl App {
         }
     }
 
+    /// Opens the note for a branch, with whatever is already written in it.
+    fn describe(&mut self, branch: String) {
+        let found = self.repo().ok().and_then(|repo| repo.note(&branch).ok().flatten());
+        self.describing = Some(Describing {
+            had: found.is_some(),
+            title: found.as_ref().map(|note| note.title.clone()).unwrap_or_default(),
+            body: found.as_ref().map(|note| note.body.clone()).unwrap_or_default(),
+            branch,
+        });
+    }
+
+    /// What a branch is for, in the words somebody would use out loud.
+    ///
+    /// Two boxes and not one: a line that has to be read at a glance on a
+    /// card, and underneath it as much as anybody wants to write, which the
+    /// card never shows.
+    fn note_dialog(&mut self, ctx: &egui::Context) {
+        let Some(note) = &mut self.describing else {
+            return;
+        };
+
+        let branch = note.branch.clone();
+        let had = note.had;
+        let (mut save, mut clear) = (false, false);
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let modal = egui::Modal::new(egui::Id::new("note"))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::same(18))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(452.0);
+                ui.label(
+                    egui::RichText::new("What is this branch for?")
+                        .font(theme::strong(14.0))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(&branch).font(theme::mono(11.0)).color(theme::MUTED),
+                );
+                ui.add_space(12.0);
+
+                ui.add(
+                    egui::TextEdit::singleline(&mut note.title)
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::vec2(8.0, 6.0))
+                        .font(theme::body(12.5))
+                        .hint_text(
+                            egui::RichText::new("in the words you would use out loud")
+                                .color(theme::FAINT),
+                        ),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    egui::TextEdit::multiline(&mut note.body)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(5)
+                        .margin(egui::vec2(8.0, 6.0))
+                        .font(theme::body(12.0))
+                        .hint_text(
+                            egui::RichText::new("anything else worth saying, or nothing")
+                                .color(theme::FAINT),
+                        ),
+                );
+                ui.add_space(16.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(88.0, 28.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    // Only offered when there is one to take away, so the
+                    // dialog never shows a button that would do nothing.
+                    if had
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Take it away").color(theme::MUTED),
+                                )
+                                .min_size(egui::vec2(104.0, 28.0)),
+                            )
+                            .on_hover_text(
+                                "the reference keeps its own history, so the words are still in it",
+                            )
+                            .clicked()
+                    {
+                        clear = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(
+                            egui::RichText::new("Save")
+                                .font(theme::medium(13.0))
+                                .color(theme::TEXT),
+                        )
+                        .fill(theme::CHOSEN)
+                        .min_size(egui::vec2(104.0, 28.0));
+
+                        if ui.add(button).clicked() {
+                            save = true;
+                        }
+                    });
+                });
+            });
+
+        if modal.backdrop_response.clicked() {
+            close = true;
+        }
+
+        if save || clear {
+            let Some(note) = self.describing.take() else {
+                return;
+            };
+            match clear {
+                true => self.note_down(|repo| repo.note_clear(&note.branch)),
+                false => {
+                    self.note_down(|repo| repo.note_set(&note.branch, &note.title, &note.body))
+                }
+            }
+        } else if close {
+            self.describing = None;
+        }
+    }
+
     /// Says that something finished, in the bar and in a toast at once.
     ///
     /// Both, not one or the other: the bar is the record of the last thing
@@ -1226,6 +1374,7 @@ impl eframe::App for App {
         self.poll_board(ctx);
         self.top_bar(ctx);
         self.confirm_dialog(ctx);
+        self.note_dialog(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
@@ -1361,6 +1510,7 @@ impl eframe::App for App {
                         // Opening a branch somewhere else writes a whole
                         // working tree, so it goes off to a thread like the
                         // rest of what takes a moment.
+                        Some(board_view::Act::Describe(branch)) => self.describe(branch),
                         Some(board_view::Act::Isolate(branch)) => {
                             let doing = format!("opening {branch} in a folder of its own");
                             self.spawn(&doing, move |repo| repo.add_worktree(&branch));

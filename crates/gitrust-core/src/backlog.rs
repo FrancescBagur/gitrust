@@ -38,9 +38,16 @@
 use anyhow::{Context, Result};
 use git2::{Commit, Oid, Signature};
 
+use crate::note::Note;
 use crate::repo::Repo;
 
-/// Where the backlog lives.
+/// Where what is written down about work lives: the backlog, and the notes
+/// on branches that have already started.
+///
+/// The name is narrower than what it holds, and it is kept anyway. It is
+/// already pushed to people's remotes, and a rename would be a migration for
+/// everybody to gain a better word. See [`crate::note`] for what shares it
+/// and why it shares it rather than taking a reference of its own.
 pub const REF: &str = "refs/gitrust/backlog";
 
 /// Where the remote's copy is put when it comes down, so the two can be
@@ -167,7 +174,7 @@ impl Repo {
     /// thing here, because there is nothing to tell the two apart and nothing
     /// anyone would do differently.
     pub fn backlog(&self) -> Result<Backlog> {
-        let items = match self.backlog_tip() {
+        let items = match self.board_tip() {
             Some(commit) => self.items_of(&commit)?,
             None => Vec::new(),
         };
@@ -202,7 +209,7 @@ impl Repo {
 
         let mut items = self.backlog()?.items;
         items.push(item);
-        self.write_backlog(&items, &signature, &format!("add: {title}"))?;
+        self.write_board(&items, &self.notes_kept()?, &signature, &format!("add: {title}"))?;
         Ok(format!("'{title}' is in the backlog"))
     }
 
@@ -221,7 +228,7 @@ impl Repo {
 
         let kept: Vec<Item> = items.into_iter().filter(|item| item.id != id).collect();
         let signature = self.who()?;
-        self.write_backlog(&kept, &signature, &format!("drop: {gone}"))?;
+        self.write_board(&kept, &self.notes_kept()?, &signature, &format!("drop: {gone}"))?;
         Ok(format!("'{gone}' dropped from the backlog"))
     }
 
@@ -241,9 +248,23 @@ impl Repo {
         let branch = item.branch();
         self.branch_here(&branch)?;
 
+        // The sentence that was written is what the branch is for, and the
+        // branch name is only what survives of it after being filed down to
+        // fit a reference. It moves across in the same commit that takes the
+        // item out, so there is no moment where those words belong to
+        // nothing -- which is exactly what used to happen to them.
+        let note = Note {
+            branch: branch.clone(),
+            title: item.title.clone(),
+            body: String::new(),
+            added: item.added,
+            by: item.by.clone(),
+        };
+        let notes = [self.notes_without(&branch)?, vec![note]].concat();
+
         let kept: Vec<Item> = items.into_iter().filter(|item| item.id != id).collect();
         let signature = self.who()?;
-        self.write_backlog(&kept, &signature, &format!("start: {}", item.title))?;
+        self.write_board(&kept, &notes, &signature, &format!("start: {}", item.title))?;
         Ok(format!("you are on {branch} now, started from the backlog"))
     }
 
@@ -257,7 +278,7 @@ impl Repo {
         self.fetch_from(&remote_name)?;
 
         let tip = self
-            .backlog_tip()
+            .board_tip()
             .context("there is nothing in the backlog to share")?
             .id();
 
@@ -295,7 +316,7 @@ impl Repo {
             return Ok(());
         };
 
-        let Some(ours) = self.backlog_tip() else {
+        let Some(ours) = self.board_tip() else {
             self.inner
                 .reference(REF, theirs.id(), true, "backlog: first copy from the remote")?;
             return Ok(());
@@ -338,8 +359,8 @@ impl Repo {
         format!("+refs/gitrust/backlog*:refs/gitrust/remotes/{remote}/backlog*")
     }
 
-    /// The commit the backlog is at, if it has ever been written to.
-    fn backlog_tip(&self) -> Option<Commit<'_>> {
+    /// The commit the written-down work is at, if anything was ever written.
+    pub(crate) fn board_tip(&self) -> Option<Commit<'_>> {
         self.inner.find_reference(REF).ok()?.peel_to_commit().ok()
     }
 
@@ -381,9 +402,10 @@ impl Repo {
     /// and is not: Git stores each item's blob once however many times it is
     /// written, and what matters for the merge is the tree that comes out, not
     /// how it was built.
-    fn write_backlog(
+    pub(crate) fn write_board(
         &self,
         items: &[Item],
+        notes: &[Note],
         signature: &Signature<'_>,
         message: &str,
     ) -> Result<()> {
@@ -399,8 +421,18 @@ impl Repo {
             root.insert("items", folder, 0o040_000)?;
         }
 
+        if !notes.is_empty() {
+            let mut folder = self.inner.treebuilder(None)?;
+            for note in notes {
+                let blob = self.inner.blob(note.render().as_bytes())?;
+                folder.insert(&note.file(), blob, 0o100_644)?;
+            }
+            let folder = folder.write()?;
+            root.insert("notes", folder, 0o040_000)?;
+        }
+
         let tree = self.inner.find_tree(root.write()?)?;
-        let parent = self.backlog_tip();
+        let parent = self.board_tip();
         let parents: Vec<&Commit<'_>> = parent.iter().collect();
 
         self.inner
@@ -421,7 +453,7 @@ impl Repo {
         // Never having written one is the only case with nothing to say. An
         // empty backlog is not that case: emptying it is itself a change the
         // remote has not been told about.
-        let ours = self.backlog_tip().and_then(|commit| commit.tree().ok());
+        let ours = self.board_tip().and_then(|commit| commit.tree().ok());
         let Some(ours) = ours else {
             return 0;
         };
@@ -449,7 +481,7 @@ impl Repo {
         names.first().map(|name| name.to_string())
     }
 
-    fn who(&self) -> Result<Signature<'_>> {
+    pub(crate) fn who(&self) -> Result<Signature<'_>> {
         self.inner
             .signature()
             .context("set user.name and user.email in Git first")

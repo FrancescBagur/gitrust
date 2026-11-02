@@ -172,8 +172,12 @@ rather than to a terminal tab that was closed on Tuesday.
 
 If it is ever built, this order:
 
-1. **The note.** No assistant, no network, no new dependency. The only step
-   that pays even if the rest never happens.
+1. **The note.** ~~No assistant, no network, no new dependency. The only step
+   that pays even if the rest never happens.~~ **Built, 2 November 2026.**
+   One thing came out differently: it did not take a reference of its own. It
+   shares the backlog's, because starting an item has to take the item out
+   and write its note together or not at all, and one tree is one commit.
+   See `crates/gitrust-core/src/note.rs`.
 2. **A conversation per task.** A UUID per branch, kept in a reference that is
    never pushed — session ids are local to a machine and mean nothing on
    anybody else's. "Continue with Claude" opens a terminal in that folder.

@@ -26,6 +26,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] A branch cut from a branch is a subtask: go into a card and there it is
 - [x] Dragging a card runs the operation that would have moved it
 - [x] A backlog everyone with the repository shares, kept in a reference
+- [x] A branch can say what it is for, in words, and the card shows them
 - [x] Everything in English, interface and code alike
 - [x] Switch branch, including to one that only exists on the remote
 - [x] Delete branches, here or on the remote, saying what is lost
@@ -49,6 +50,7 @@ crates/
     graph.rs        the lane algorithm, and the uncommitted-changes row
     board.rs        which column each branch falls in, and what came from what
     backlog.rs      the work with no branch yet, and how it travels
+    note.rs         what a branch is for, in the words somebody used
     worktree.rs     the same repository checked out in several places
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
@@ -95,6 +97,20 @@ per item, so two people writing down two different things merge without
 noticing. What keeps it from rotting is a rule rather than a mechanism: an item
 lives there only until it becomes a branch, and from that moment it is read off
 the graph like everything else.
+
+**What a branch is for:** a branch name is what is left of a sentence after
+it has been filed down to fit a reference, and until now it was all the
+written intention a repository held — starting a backlog item turned the
+sentence you wrote into a slug and lost it. A note gives it back: a line in
+your own words, and a paragraph under it if there is more to say. It lives in
+the backlog's own reference, under `notes/` beside its `items/`, because
+starting an item has to take it out of the waiting room *and* write its note,
+and across two references that is two commits with a half-done state between
+them. One file per branch, named after the branch with its slashes turned
+into `~`, which Git will not have in a reference name and so cannot be
+confused for one. A note is not tidied away when its branch goes: a branch
+can come back and a deletion can be a mistake, and that is worth more than
+the clutter.
 
 **Subtasks:** a branch cut from another branch is a piece of that branch's
 work. Nothing records that either, so it is read off the graph: a branch is a
@@ -161,8 +177,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and sixty-two tests,
-a hundred and eight of them against real repositories made in `/tmp` and
+files. Those are the ones that carry cover: a hundred and eighty tests,
+a hundred and twenty-one of them against real repositories made in `/tmp` and
 deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

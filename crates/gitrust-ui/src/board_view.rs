@@ -72,6 +72,8 @@ pub enum Act {
     /// Go back out to that step of the trail.
     Up(usize),
     /// Open that branch in a folder of its own.
+    /// Say, or say again, what a branch is for.
+    Describe(String),
     Isolate(String),
     /// Look at the checkout in that folder.
     Visit(std::path::PathBuf),
@@ -640,9 +642,10 @@ fn draw_card(
                     // color. Cut short rather than wrapped, because a card
                     // whose height depends on its name makes a ragged column.
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let heading = card.title.as_deref().unwrap_or_else(|| card.leaf());
                         ui.add(
                             egui::Label::new(
-                                RichText::new(card.leaf())
+                                RichText::new(heading)
                                     .font(theme::medium(12.5))
                                     .color(match card.current {
                                         true => theme::HEAD,
@@ -710,6 +713,19 @@ fn draw_card(
             }
         }
 
+        let says = match card.title {
+            Some(_) => "Edit what it is for",
+            None => "Say what it is for",
+        };
+        if ui
+            .button(says)
+            .on_hover_text("a branch name is what is left of a sentence; this is the sentence")
+            .clicked()
+        {
+            asked_for = Some(Act::Describe(card.branch.clone()));
+            ui.close_menu();
+        }
+
         match open_at {
             Some(tree) => {
                 if ui.button("Go to its folder").clicked() {
@@ -763,6 +779,10 @@ fn draw_card(
         0 => hint,
         1 => format!("{hint}\nOne branch came out of this one: the › badge goes in"),
         n => format!("{hint}\n{n} branches came out of this one: the › badge goes in"),
+    };
+    let hint = match &card.title {
+        Some(title) => format!("{hint}\n\n{title}"),
+        None => hint,
     };
     let hint = match &card.pull {
         Some(pull) if !pull.url.is_empty() => {
@@ -924,8 +944,16 @@ fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> Option<e
 fn note(card: &Card) -> String {
     let mut parts = Vec::new();
 
-    if let Some(project) = &card.project {
-        parts.push(project.clone());
+    // When a sentence is standing where the name was, the name has to be
+    // somewhere: it is what you type at a prompt, and the folder it is in is
+    // part of it anyway.
+    match card.title {
+        Some(_) => parts.push(card.leaf().to_string()),
+        None => {
+            if let Some(project) = &card.project {
+                parts.push(project.clone());
+            }
+        }
     }
 
     // With nothing of its own, the date is that of the commit the branch was
