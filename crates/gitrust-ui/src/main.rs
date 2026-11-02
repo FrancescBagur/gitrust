@@ -689,17 +689,22 @@ impl App {
     /// showing nothing and better than an error about a branch you did not
     /// ask about.
     fn read_board(&mut self, repo: &Repo) {
-        if self.trail.is_empty() {
-            match repo.trunk() {
-                Ok(trunk) => self.trail.push(trunk),
-                Err(_) => {
-                    self.board = None;
-                    return;
-                }
-            }
-        }
+        // Working the trunk out again is worth exactly one try. The bottom
+        // step can be a branch of the repository that was open before this
+        // one, and then nothing above it means anything here either; but if
+        // the trunk itself will not lay out, no other step was going to.
+        let mut derived = false;
 
         loop {
+            if self.trail.is_empty() {
+                let Ok(trunk) = repo.trunk() else {
+                    self.board = None;
+                    return;
+                };
+                self.trail.push(trunk);
+                derived = true;
+            }
+
             let base = self.trail.last().cloned().unwrap_or_default();
             match repo.board_against(&base, self.pulls.as_ref()) {
                 Ok(board) => {
@@ -710,8 +715,12 @@ impl App {
                     self.trail.pop();
                     self.project = None;
                 }
-                // Even the trunk can stop being the trunk, so it is worked
-                // out again on the next reload rather than kept wrong.
+                // Even the trunk can stop being the trunk, and opening
+                // another repository leaves one behind that never was.
+                Err(_) if !derived => {
+                    self.trail.clear();
+                    self.project = None;
+                }
                 Err(_) => {
                     self.trail.clear();
                     self.board = None;
@@ -1492,6 +1501,10 @@ impl App {
             self.diff = None;
             self.selected_commit = None;
             self.detail = None;
+            // Another repository is somewhere you have not gone into yet,
+            // even when it happens to have a branch of the same name.
+            self.trail.clear();
+            self.project = None;
             self.load();
         }
     }
