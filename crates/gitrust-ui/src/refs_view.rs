@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, RichText};
-use gitrust_core::{Oid, RefEntry, RefKind};
+use gitrust_core::{Move, Oid, RefEntry, RefKind};
 
 use crate::theme;
 
@@ -23,6 +23,32 @@ pub enum Pick {
     DeleteBranch { name: String, remote: bool },
     /// Bring that branch into the one you are on.
     Merge(String),
+    /// Move the branch you are on up to that one, refusing to write a merge.
+    FastForward(String),
+    /// Put the branch you are on back on top of that one.
+    Rebase(String),
+    /// Bring down whatever the remote has for the branch you are on.
+    Pull,
+    /// Send that branch to the remote.
+    Push(String),
+    /// Say which remote branch a local one follows, or that it follows none.
+    Follow { branch: String, upstream: Option<String> },
+    /// Open that branch in a folder of its own.
+    Isolate(String),
+    /// Go to that commit, off any branch.
+    GoTo(Oid),
+    /// Ask for a name, then make a branch at that commit.
+    BranchAt(Oid),
+    /// Write what that commit did onto the branch you are on, again.
+    CherryPick(Oid),
+    /// Write a commit that undoes that one.
+    Revert(Oid),
+    /// Move the branch you are on to that commit.
+    MoveTo(Oid, Move),
+    /// Ask for a name, then rename that branch.
+    Rename(String),
+    /// Put that text on the clipboard.
+    Copy(String),
 }
 
 /// Gives back whatever has been asked about a reference.
@@ -50,6 +76,15 @@ pub fn show(
     );
     ui.add_space(8.0);
 
+    // Which remote branch each local one would follow, by the only
+    // convention there is: the same name on a remote. Worked out once here
+    // rather than per row, and empty when the remote has nothing like it.
+    let on_remotes: Vec<&str> = refs
+        .iter()
+        .filter(|entry| entry.kind == RefKind::RemoteBranch)
+        .map(|entry| entry.name.as_str())
+        .collect();
+
     let needle = filter.trim().to_lowercase();
     let matching: Vec<&RefEntry> = refs
         .iter()
@@ -75,7 +110,7 @@ pub fn show(
                 ("Remotes", RefKind::RemoteBranch),
                 ("Tags", RefKind::Tag),
             ] {
-                section(ui, title, kind, &matching, selected, head, busy, &mut picked);
+                section(ui, title, kind, &matching, &on_remotes, selected, head, busy, &mut picked);
             }
             ui.add_space(12.0);
         });
@@ -89,6 +124,7 @@ fn section(
     title: &str,
     kind: RefKind,
     refs: &[&RefEntry],
+    on_remotes: &[&str],
     selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
@@ -121,7 +157,7 @@ fn section(
     for entry in &entries {
         match entry.folder() {
             Some(folder) => folders.entry(folder).or_default().push(entry),
-            None => leaf(ui, entry, selected, head, busy, picked),
+            None => leaf(ui, entry, on_remotes, selected, head, busy, picked),
         }
     }
 
@@ -134,7 +170,7 @@ fn section(
             .default_open(group.len() <= 8)
             .show(ui, |ui| {
                 for entry in group {
-                    leaf(ui, entry, selected, head, busy, picked);
+                    leaf(ui, entry, on_remotes, selected, head, busy, picked);
                 }
             });
     }
@@ -146,6 +182,7 @@ fn section(
 fn leaf(
     ui: &mut egui::Ui,
     entry: &RefEntry,
+    on_remotes: &[&str],
     selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
@@ -188,70 +225,231 @@ fn leaf(
     // A tag leads nowhere, but it can be taken out of the way.
     let removable = entry.kind == RefKind::Tag && !busy;
 
-    if switchable || removable {
-        let remote = entry.kind == RefKind::RemoteBranch;
-        response.context_menu(|ui| {
-            if switchable {
-                let button = ui.button("Switch to this branch");
-                let button = if remote {
-                    button.on_hover_text("creates the local branch here if it is not there yet")
-                } else {
-                    button
-                };
-                if button.clicked() {
-                    *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
-                    ui.close_menu();
-                }
-            }
+    let remote = entry.kind == RefKind::RemoteBranch;
+    let upstream: Option<String> = on_remotes
+        .iter()
+        .find(|remote| remote.rsplit_once('/').is_some_and(|(_, leaf)| leaf == entry.name))
+        .map(|remote| remote.to_string());
 
-            // Bringing it into the one you are on. With no branch checked out
-            // there is nowhere to bring it, so then it is not even offered.
-            if let Some(head) = head.filter(|_| switchable) {
-                if ui
-                    .button(format!("Merge into {head}"))
-                    .on_hover_text("if they clash, nothing is touched and it says where")
-                    .clicked()
-                {
-                    *picked = Some(Pick::Merge(entry.name.clone()));
-                    ui.close_menu();
-                }
-            }
+    response.context_menu(|ui| {
+        menu(ui, entry, upstream.as_deref(), head, busy, switchable, removable, picked);
+    });
 
-            if switchable {
-                let label = if remote {
-                    "Delete the branch on the remote"
-                } else {
-                    "Delete the branch"
-                };
-                let hint = if remote {
-                    "deleted on the server: everyone will see it"
-                } else {
-                    "only the one here; anything on a remote stays"
-                };
-                if ui.button(label).on_hover_text(hint).clicked() {
-                    *picked = Some(Pick::DeleteBranch { name: entry.name.clone(), remote });
-                    ui.close_menu();
-                }
-            }
-
-            if removable
-                && ui
-                    .button("Delete the tag")
-                    .on_hover_text("only the one here; the remote's stays put")
-                    .clicked()
-            {
-                *picked = Some(Pick::DeleteTag(entry.name.clone()));
-                ui.close_menu();
-            }
-        });
-
-        if switchable && response.double_clicked() {
-            *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
-            return;
-        }
+    if switchable && response.double_clicked() {
+        *picked = Some(Pick::Switch { name: entry.name.clone(), remote });
+        return;
     }
 
     if response.clicked() {
         *picked = Some(Pick::Show(entry.target));
+    }
+}
+
+/// Everything that can be done to a reference from where you are.
+///
+/// Its own function rather than a closure inside the row: it is the longest
+/// thing in this file by far, and a row that also drew it was hard to read
+/// for the one thing a row is about, which is the row.
+#[allow(clippy::too_many_arguments)]
+fn menu(
+    ui: &mut egui::Ui,
+    entry: &RefEntry,
+    upstream: Option<&str>,
+    head: Option<&str>,
+    busy: bool,
+    switchable: bool,
+    removable: bool,
+    picked: &mut Option<Pick>,
+) {
+    let local = entry.kind == RefKind::LocalBranch;
+    let remote = entry.kind == RefKind::RemoteBranch;
+    let target = entry.target;
+    let name = entry.name.clone();
+
+    ui.set_width(286.0);
+
+    // Where you can go. First, because it is what the menu is opened for
+    // nine times out of ten.
+    if switchable {
+        let button = ui.button("Switch to this branch");
+        let button = match remote {
+            true => button.on_hover_text("makes the local branch here if it is not there yet"),
+            false => button,
+        };
+        if button.clicked() {
+            *picked = Some(Pick::Switch { name: name.clone(), remote });
+            ui.close_menu();
+        }
+    }
+    if local && !entry.is_head && !busy && ui.button("Open it in its own folder").clicked() {
+        *picked = Some(Pick::Isolate(name.clone()));
+        ui.close_menu();
+    }
+    if !busy
+        && ui
+            .button("Go to this commit")
+            .on_hover_text("off any branch: a commit written there belongs to nothing")
+            .clicked()
+    {
+        *picked = Some(Pick::GoTo(target));
+        ui.close_menu();
+    }
+
+    // What it can be joined with. Only against a branch you are on, and
+    // never against itself.
+    if let Some(head) = head.filter(|_| switchable) {
+        theme::rule(ui);
+        if ui
+            .button(format!("Move {head} up to this"))
+            .on_hover_text("and nothing else: if a merge would be needed it says so instead")
+            .clicked()
+        {
+            *picked = Some(Pick::FastForward(name.clone()));
+            ui.close_menu();
+        }
+        if ui
+            .button(format!("Merge it into {head}"))
+            .on_hover_text("if they clash, nothing is touched and it says where")
+            .clicked()
+        {
+            *picked = Some(Pick::Merge(name.clone()));
+            ui.close_menu();
+        }
+        if ui
+            .button(format!("Rebase {head} onto this"))
+            .on_hover_text("rewrites your commits: do not do it to anything others have")
+            .clicked()
+        {
+            *picked = Some(Pick::Rebase(name.clone()));
+            ui.close_menu();
+        }
+    }
+
+    // The remote.
+    if !busy && (local || remote) {
+        theme::rule(ui);
+        if entry.is_head && ui.button("Pull").clicked() {
+            *picked = Some(Pick::Pull);
+            ui.close_menu();
+        }
+        if local && ui.button("Push it").clicked() {
+            *picked = Some(Pick::Push(name.clone()));
+            ui.close_menu();
+        }
+        if local {
+            if let Some(candidate) = &upstream {
+                if ui
+                    .button(format!("Make it follow {candidate}"))
+                    .on_hover_text("following is what makes 'two ahead' mean anything")
+                    .clicked()
+                {
+                    *picked = Some(Pick::Follow {
+                        branch: name.clone(),
+                        upstream: Some(candidate.to_string()),
+                    });
+                    ui.close_menu();
+                }
+            }
+            if ui.button("Make it follow nothing").clicked() {
+                *picked = Some(Pick::Follow { branch: name.clone(), upstream: None });
+                ui.close_menu();
+            }
+        }
+    }
+
+    // What can be done to this commit from where you are.
+    if !busy {
+        theme::rule(ui);
+        if ui.button("Branch from this commit…").clicked() {
+            *picked = Some(Pick::BranchAt(target));
+            ui.close_menu();
+        }
+        if head.is_some() {
+            if ui
+                .button("Take this commit along")
+                .on_hover_text("writes what it did here too; it stays where it is")
+                .clicked()
+            {
+                *picked = Some(Pick::CherryPick(target));
+                ui.close_menu();
+            }
+            if ui
+                .button("Undo this commit")
+                .on_hover_text("writes one that says it backwards; nothing is rewritten")
+                .clicked()
+            {
+                *picked = Some(Pick::Revert(target));
+                ui.close_menu();
+            }
+        }
+        if let Some(head) = head {
+            ui.menu_button(format!("Move {head} to this commit"), |ui| {
+                ui.set_width(250.0);
+                for how in [Move::Keep, Move::Unstage, Move::Discard] {
+                    let label = match how {
+                        Move::Keep => "Keep everything staged",
+                        Move::Unstage => "Keep the files, unstage them",
+                        Move::Discard => "Throw away what is not committed",
+                    };
+                    let text = match how {
+                        Move::Discard => RichText::new(label).color(theme::REMOVED),
+                        _ => RichText::new(label),
+                    };
+                    if ui.button(text).clicked() {
+                        *picked = Some(Pick::MoveTo(target, how));
+                        ui.close_menu();
+                    }
+                }
+            });
+        }
+    }
+
+    // Naming, and unnaming.
+    if !busy && (local || remote || removable) {
+        theme::rule(ui);
+        if local && ui.button("Rename it…").clicked() {
+            *picked = Some(Pick::Rename(name.clone()));
+            ui.close_menu();
+        }
+        if switchable {
+            let (label, hint) = match remote {
+                true => (
+                    "Delete the branch on the remote",
+                    "deleted on the server: everyone will see it",
+                ),
+                false => (
+                    "Delete the branch",
+                    "only the one here; anything on a remote stays",
+                ),
+            };
+            if ui
+                .button(RichText::new(label).color(theme::REMOVED))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                *picked = Some(Pick::DeleteBranch { name: name.clone(), remote });
+                ui.close_menu();
+            }
+        }
+        if removable
+            && ui
+                .button(RichText::new("Delete the tag").color(theme::REMOVED))
+                .on_hover_text("only the one here; the remote's stays put")
+                .clicked()
+        {
+            *picked = Some(Pick::DeleteTag(name.clone()));
+            ui.close_menu();
+        }
+    }
+
+    // Things to take elsewhere.
+    theme::rule(ui);
+    if ui.button("Copy its name").clicked() {
+        *picked = Some(Pick::Copy(name.clone()));
+        ui.close_menu();
+    }
+    if ui.button("Copy the commit hash").clicked() {
+        *picked = Some(Pick::Copy(target.to_string()));
+        ui.close_menu();
     }
 }

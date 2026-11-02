@@ -18,7 +18,7 @@ mod toast;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
+    compose, layout, layout_with_working, Move, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
     Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
     Worktree,
 };
@@ -129,6 +129,8 @@ struct App {
     confirm: Option<Confirm>,
     /// The note being written, when one is.
     describing: Option<Describing>,
+    /// The name being asked for, when one is.
+    naming: Option<Naming>,
     /// The last thing that happened, said where it will be seen.
     toast: Option<toast::Toast>,
 }
@@ -184,6 +186,24 @@ struct Describing {
     had: bool,
 }
 
+/// A name being asked for before something is made or renamed.
+///
+/// The two that need one are the same shape -- a box, a verb, and what to do
+/// with what was typed -- so they share a dialog rather than having one each.
+struct Naming {
+    title: String,
+    hint: String,
+    verb: String,
+    draft: String,
+    deed: Named,
+}
+
+/// What the name will be used for.
+enum Named {
+    BranchAt(Oid),
+    Rename(String),
+}
+
 /// Something destructive that is waiting for a yes.
 ///
 /// Everything that cannot be undone comes through here. The view asks for the
@@ -204,6 +224,7 @@ enum Deed {
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
     CloseWorktree { name: String },
+    MoveTo { oid: Oid, how: Move },
     Land { base: String, branch: String },
     Review(String),
 }
@@ -256,6 +277,7 @@ impl App {
             tag: detail_view::TagDraft::default(),
             confirm: None,
             describing: None,
+            naming: None,
             toast: None,
         };
         app.load();
@@ -892,6 +914,48 @@ impl App {
         );
     }
 
+    /// Moves the branch you are on to a commit, asking first when the move
+    /// would take your files with it.
+    ///
+    /// Only the one that discards asks. The other two keep everything you had
+    /// not committed -- staged or not -- so there is nothing to warn about
+    /// and nothing a question would protect.
+    fn ask_move(&mut self, oid: Oid, how: Move) {
+        if how != Move::Discard {
+            let doing = format!("moving to {}", &oid.to_string()[..7]);
+            return self.spawn(&doing, move |repo| repo.move_branch(oid, how));
+        }
+
+        let loose = self.work.staged.len() + self.work.unstaged.len();
+        let detail = match loose {
+            0 => format!(
+                "{} moves back to {}. The commits after it stop being shown, and \
+                 nothing of yours goes with them: there is nothing uncommitted.",
+                self.head,
+                &oid.to_string()[..7]
+            ),
+            1 => format!(
+                "{} moves back to {}, and the one file you have not committed is \
+                 thrown away with it. No stash holds it and nothing gives it back.",
+                self.head,
+                &oid.to_string()[..7]
+            ),
+            n => format!(
+                "{} moves back to {}, and the {n} files you have not committed are \
+                 thrown away with it. No stash holds them and nothing gives them back.",
+                self.head,
+                &oid.to_string()[..7]
+            ),
+        };
+
+        self.ask(
+            format!("Move {} and throw the rest away?", self.head),
+            &detail,
+            "Move and discard",
+            Deed::MoveTo { oid, how },
+        );
+    }
+
     /// Asks before bringing a branch into the one whose board you are on,
     /// which may start by moving you somewhere else.
     ///
@@ -933,6 +997,10 @@ impl App {
             Deed::DeleteBranch { name, remote } if remote => {
                 let doing = format!("deleting {name}");
                 return self.spawn(&doing, move |repo| repo.delete_remote_branch(&name));
+            }
+            Deed::MoveTo { oid, how } => {
+                let doing = format!("moving to {}", &oid.to_string()[..7]);
+                return self.spawn(&doing, move |repo| repo.move_branch(oid, how));
             }
             Deed::CloseWorktree { name } => {
                 let doing = format!("closing {name}");
@@ -1175,6 +1243,90 @@ impl App {
         }
     }
 
+    /// Asks for a name, for whatever is about to be given one.
+    fn name_dialog(&mut self, ctx: &egui::Context) {
+        let Some(naming) = &mut self.naming else {
+            return;
+        };
+
+        let (title, hint, verb) =
+            (naming.title.clone(), naming.hint.clone(), naming.verb.clone());
+        let mut go = false;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let modal = egui::Modal::new(egui::Id::new("naming"))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::same(18))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(372.0);
+                ui.label(
+                    egui::RichText::new(&title).font(theme::strong(14.0)).color(theme::TEXT),
+                );
+                ui.add_space(10.0);
+
+                let entry = ui.add(
+                    egui::TextEdit::singleline(&mut naming.draft)
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::vec2(8.0, 6.0))
+                        .font(theme::mono(12.0))
+                        .hint_text(egui::RichText::new(&hint).color(theme::FAINT)),
+                );
+                entry.request_focus();
+                if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    go = true;
+                }
+
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(88.0, 28.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(
+                            egui::RichText::new(&verb)
+                                .font(theme::medium(13.0))
+                                .color(theme::TEXT),
+                        )
+                        .fill(theme::CHOSEN)
+                        .min_size(egui::vec2(104.0, 28.0));
+                        if ui.add(button).clicked() {
+                            go = true;
+                        }
+                    });
+                });
+            });
+
+        if modal.backdrop_response.clicked() {
+            close = true;
+        }
+
+        if go {
+            let Some(naming) = self.naming.take() else {
+                return;
+            };
+            let name = naming.draft.trim().to_string();
+            if name.is_empty() {
+                return self.note_error("it needs a name".to_string());
+            }
+            match naming.deed {
+                Named::BranchAt(oid) => self.note_down(move |repo| repo.branch_at(&name, oid)),
+                Named::Rename(old) => {
+                    self.note_down(move |repo| repo.rename_branch(&old, &name))
+                }
+            }
+        } else if close {
+            self.naming = None;
+        }
+    }
+
     /// Says that something finished, in the bar and in a toast at once.
     ///
     /// Both, not one or the other: the bar is the record of the last thing
@@ -1375,6 +1527,7 @@ impl eframe::App for App {
         self.top_bar(ctx);
         self.confirm_dialog(ctx);
         self.note_dialog(ctx);
+        self.name_dialog(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
@@ -1819,6 +1972,62 @@ impl App {
             }
             Some(refs_view::Pick::DeleteBranch { name, remote }) => {
                 self.ask_delete_branch(name, remote)
+            }
+            Some(refs_view::Pick::FastForward(name)) => {
+                self.note_down(move |repo| repo.fast_forward_to(&name))
+            }
+            Some(refs_view::Pick::Rebase(name)) => {
+                let doing = format!("rebasing onto {name}");
+                self.spawn(&doing, move |repo| repo.rebase_onto(&name));
+            }
+            Some(refs_view::Pick::Pull) => {
+                self.spawn("pulling", move |repo| repo.pull(PullMode::Merge));
+            }
+            Some(refs_view::Pick::Push(name)) => {
+                let doing = format!("pushing {name}");
+                self.spawn(&doing, move |repo| repo.push_branch(&name));
+            }
+            Some(refs_view::Pick::Follow { branch, upstream }) => {
+                self.note_down(move |repo| repo.set_upstream(&branch, upstream.as_deref()))
+            }
+            Some(refs_view::Pick::Isolate(name)) => {
+                let doing = format!("opening {name} in a folder of its own");
+                self.spawn(&doing, move |repo| repo.add_worktree(&name));
+            }
+            Some(refs_view::Pick::GoTo(oid)) => {
+                let doing = format!("going to {}", &oid.to_string()[..7]);
+                self.spawn(&doing, move |repo| repo.checkout_commit(oid));
+            }
+            Some(refs_view::Pick::BranchAt(oid)) => {
+                self.naming = Some(Naming {
+                    title: format!("A branch at {}", &oid.to_string()[..7]),
+                    hint: "feat/something".to_string(),
+                    verb: "Make it".to_string(),
+                    draft: String::new(),
+                    deed: Named::BranchAt(oid),
+                });
+            }
+            Some(refs_view::Pick::Rename(name)) => {
+                self.naming = Some(Naming {
+                    title: format!("Rename {name}"),
+                    hint: name.clone(),
+                    verb: "Rename".to_string(),
+                    draft: name.clone(),
+                    deed: Named::Rename(name),
+                });
+            }
+            Some(refs_view::Pick::CherryPick(oid)) => {
+                let doing = format!("taking {} along", &oid.to_string()[..7]);
+                self.spawn(&doing, move |repo| repo.cherry_pick(oid));
+            }
+            Some(refs_view::Pick::Revert(oid)) => {
+                let doing = format!("undoing {}", &oid.to_string()[..7]);
+                self.spawn(&doing, move |repo| repo.revert(oid));
+            }
+            Some(refs_view::Pick::MoveTo(oid, how)) => self.ask_move(oid, how),
+            Some(refs_view::Pick::Copy(text)) => {
+                ctx.copy_text(text.clone());
+                self.said(format!("{text} copied"));
             }
             Some(refs_view::Pick::DeleteTag(name)) => {
                 match self.repo().and_then(|repo| repo.delete_tag(&name)) {
