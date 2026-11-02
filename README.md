@@ -74,9 +74,12 @@ carries it out. That keeps the painting free of side effects.
 The core knows nothing of the UI. If egui ever stops fitting, `gitrust-ui` is
 replaced and the Git logic is left intact.
 
-What goes out on the network — fetching and pushing — leaves for a thread of
-its own, which opens its own repository and sends back a sentence over a
-channel. The painting thread waits for nobody.
+What takes time leaves for a thread of its own, which opens its own repository
+and sends back one answer over a channel: fetching and pushing, because the
+network takes as long as it takes, and laying the board out, because weighing
+thirty branches against each other is well over a second. The board already on
+screen stays up until the new one arrives. The painting thread waits for
+nobody.
 
 **Git backend:** `git2` (libgit2) for the bulk of the operations. For
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
@@ -102,7 +105,8 @@ parent. It is a reading and not a fact: once a branch keeps committing after
 something was cut from it, the two are the same shape, and the names are what
 decide — `report` under `report-export`, the same convention that already
 groups the cards. Where it is wrong it is wrong out loud, with a test pinning
-each case.
+each case. A card carries the count of what came out of it, and that badge is
+the way in.
 
 **Worktrees:** one repository can be checked out in several folders at once,
 each with its own branch, sharing one history. A card says which folder its

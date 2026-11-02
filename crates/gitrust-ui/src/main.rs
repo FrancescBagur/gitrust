@@ -92,6 +92,8 @@ struct App {
     /// What the forge last said, and the asking of it.
     pulls: Option<PullRequests>,
     forge: Option<Forge>,
+    /// The board being worked out, when one is.
+    laying: Option<Laying>,
     /// Why the forge could not answer, if it could not. It is kept so the
     /// board can say why it is guessing instead of quietly guessing.
     forge_note: Option<String>,
@@ -151,6 +153,21 @@ struct Forge {
     done: std::sync::mpsc::Receiver<Result<PullRequests>>,
 }
 
+/// The board, worked out off to one side.
+///
+/// Laying a board out means weighing every branch against every other, and on
+/// a repository with thirty of them that is well over a second. Spent on the
+/// painting thread it is a window that does not move, after every operation.
+/// So it goes the way fetching goes: its own thread, its own repository, and
+/// the board that was already there stays up until the new one arrives.
+///
+/// Only the newest one is ever listened to. Starting another drops this one,
+/// and an answer nobody is holding a receiver for is an answer nobody reads,
+/// so a slow board can never land on top of a quick one.
+struct Laying {
+    done: std::sync::mpsc::Receiver<Result<Board>>,
+}
+
 /// Something destructive that is waiting for a yes.
 ///
 /// Everything that cannot be undone comes through here. The view asks for the
@@ -202,6 +219,7 @@ impl App {
             backlog_draft: String::new(),
             pulls: None,
             forge: None,
+            laying: None,
             forge_note: None,
             pull_mode: PullMode::Merge,
             tracking: None,
@@ -247,7 +265,7 @@ impl App {
         self.path = repo.workdir().display().to_string();
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
-        self.read_board(&repo);
+        self.lay_out();
         self.backlog = repo.backlog().unwrap_or_default();
         self.worktrees = repo.worktrees().unwrap_or_default();
         self.stashes = repo.stashes().unwrap_or_default();
@@ -685,55 +703,89 @@ impl App {
 
     /// Lays the columns out again over whatever the forge last said.
     fn rebuild_board(&mut self) {
-        if let Ok(repo) = self.repo() {
-            self.read_board(&repo);
-        }
+        self.lay_out();
     }
 
-    /// The board of wherever you are, dropping any step whose branch has gone.
+    /// Sends the board off to be laid out against wherever the trail ends.
+    fn lay_out(&mut self) {
+        if self.trail.is_empty() {
+            let trunk = self.repo().ok().and_then(|repo| repo.trunk().ok());
+            match trunk {
+                Some(trunk) => self.trail.push(trunk),
+                None => {
+                    self.board = None;
+                    self.laying = None;
+                    return;
+                }
+            }
+        }
+
+        let base = self.trail.last().cloned().unwrap_or_default();
+        let path = self.path.clone();
+        let pulls = self.pulls.clone();
+        let (send, done) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let _ = send.send(
+                Repo::open(&path).and_then(|repo| repo.board_against(&base, pulls.as_ref())),
+            );
+        });
+
+        self.laying = Some(Laying { done });
+    }
+
+    /// Looks at whether the board has been worked out, and puts it up if so.
     ///
     /// A branch you went into can stop existing while you are standing in it:
     /// deleted, or merged and tidied away. Stepping back out is better than
     /// showing nothing and better than an error about a branch you did not
     /// ask about.
-    fn read_board(&mut self, repo: &Repo) {
-        // Working the trunk out again is worth exactly one try. The bottom
-        // step can be a branch of the repository that was open before this
-        // one, and then nothing above it means anything here either; but if
-        // the trunk itself will not lay out, no other step was going to.
-        let mut derived = false;
+    fn poll_board(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
 
-        loop {
-            if self.trail.is_empty() {
-                let Ok(trunk) = repo.trunk() else {
-                    self.board = None;
-                    return;
-                };
-                self.trail.push(trunk);
-                derived = true;
+        let Some(laying) = &self.laying else {
+            return;
+        };
+
+        match laying.done.try_recv() {
+            Ok(Ok(board)) => {
+                self.laying = None;
+                self.board = Some(board);
             }
+            Ok(Err(_)) => {
+                self.laying = None;
 
-            let base = self.trail.last().cloned().unwrap_or_default();
-            match repo.board_against(&base, self.pulls.as_ref()) {
-                Ok(board) => {
-                    self.board = Some(board);
-                    return;
-                }
-                Err(_) if self.trail.len() > 1 => {
+                // A step you went into has gone: step back out of it and lay
+                // the one below out instead.
+                if self.trail.len() > 1 {
                     self.trail.pop();
                     self.project = None;
-                }
-                // Even the trunk can stop being the trunk, and opening
-                // another repository leaves one behind that never was.
-                Err(_) if !derived => {
-                    self.trail.clear();
-                    self.project = None;
-                }
-                Err(_) => {
-                    self.trail.clear();
-                    self.board = None;
+                    self.lay_out();
                     return;
                 }
+
+                // The bottom step was never this repository's trunk, which is
+                // what opening another repository leaves behind. Work it out
+                // again -- but only if it comes back different, or this would
+                // ask the same question forever.
+                let trunk = self.repo().ok().and_then(|repo| repo.trunk().ok());
+                match trunk {
+                    Some(trunk) if self.trail.first() != Some(&trunk) => {
+                        self.trail = vec![trunk];
+                        self.project = None;
+                        self.lay_out();
+                    }
+                    _ => {
+                        self.trail.clear();
+                        self.board = None;
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.laying = None;
             }
         }
     }
@@ -1171,6 +1223,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
         self.poll_forge(ctx);
+        self.poll_board(ctx);
         self.top_bar(ctx);
         self.confirm_dialog(ctx);
         self.status_bar(ctx);
@@ -1256,6 +1309,10 @@ impl eframe::App for App {
                             &self.trail,
                             &elsewhere,
                         ),
+                        None if self.laying.is_some() => {
+                            theme::empty(ui, "Working the board out…");
+                            None
+                        }
                         None => {
                             theme::empty(ui, "Open a repository to see its work");
                             None
