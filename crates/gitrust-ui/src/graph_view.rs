@@ -15,7 +15,9 @@ use chrono::{Local, TimeZone};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Shape, Stroke,
 };
-use gitrust_core::{Graph, Oid, RefKind, Row, WorkingState};
+use gitrust_core::{Graph, Oid, RefEntry, RefKind, Row, WorkingState};
+
+use crate::refs_view::{self, Named, On, Pick};
 
 use crate::theme;
 
@@ -131,18 +133,37 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
 /// The working tree's state is needed to label the uncommitted-changes row,
 /// when the graph carries it. `needle` dims what does not match, and `bring`
 /// brings a row into view in one jump.
+/// What the graph was asked for: a commit to show, and whatever its menu
+/// wanted done.
+#[derive(Default)]
+pub struct Asked {
+    pub show: Option<Oid>,
+    pub pick: Option<Pick>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
+    refs: &[RefEntry],
     selected: Option<Oid>,
     work: &WorkingState,
     needle: &str,
     bring: Option<usize>,
-) -> Option<Oid> {
+    head: Option<&str>,
+    busy: bool,
+) -> Asked {
     if graph.rows.is_empty() {
         theme::empty(ui, "Open a repository to see its history");
-        return None;
+        return Asked::default();
     }
+
+    let mut picked = None;
+    let on_remotes: Vec<&str> = refs
+        .iter()
+        .filter(|entry| entry.kind == RefKind::RemoteBranch)
+        .map(|entry| entry.name.as_str())
+        .collect();
 
     // How far the uncommitted changes' line comes down: from its row to
     // HEAD's, which is its parent. Whatever passes through that lane before
@@ -198,6 +219,42 @@ pub fn show(
             };
 
             let hovered = response.hover_pos().and_then(|pos| row_at(pos.y));
+
+            // The menu is about the row the pointer was on when it opened,
+            // not wherever it has wandered to since, so which row that was is
+            // remembered rather than asked again each frame.
+            let held = egui::Id::new("graph-menu-row");
+            if response.secondary_clicked() {
+                if let Some(index) = response.interact_pointer_pos().and_then(|p| row_at(p.y)) {
+                    ui.data_mut(|data| data.insert_temp(held, index));
+                }
+            }
+            if let Some(index) = ui
+                .data(|data| data.get_temp::<usize>(held))
+                .filter(|index| *index < graph.rows.len())
+            {
+                let commit = &graph.rows[index].commit;
+                // The uncommitted row is not a commit and nothing in the menu
+                // means anything for it.
+                if !commit.is_working() {
+                    let reference = named_of(&graph.rows[index], head);
+                    let upstream = reference.as_ref().and_then(|named| {
+                        on_remotes
+                            .iter()
+                            .find(|remote| {
+                                remote
+                                    .rsplit_once('/')
+                                    .is_some_and(|(_, leaf)| leaf == named.name)
+                            })
+                            .map(|remote| remote.to_string())
+                    });
+                    let on = On { target: commit.id, reference };
+
+                    response.context_menu(|ui| {
+                        refs_view::menu(ui, &on, upstream.as_deref(), head, busy, &mut picked);
+                    });
+                }
+            }
             if response.clicked() {
                 if let Some(index) = response.interact_pointer_pos().and_then(|p| row_at(p.y)) {
                     clicked = Some(graph.rows[index].commit.id);
@@ -315,7 +372,7 @@ pub fn show(
             }
         });
 
-    clicked
+    Asked { show: clicked, pick: picked }
 }
 
 fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
@@ -653,4 +710,28 @@ fn elide(ui: &egui::Ui, text: &str, max_w: f32, font: &FontId) -> String {
     }
     out.push('…');
     out
+}
+
+/// Which reference a row in the graph is about, when it is clear which.
+///
+/// Exactly one local branch on the row is clear: that is the branch, even
+/// with its remote counterpart sitting beside it. Several of them is not, and
+/// then the menu is about the commit alone rather than guessing at one.
+fn named_of(row: &Row, head: Option<&str>) -> Option<Named> {
+    let mut locals = row
+        .commit
+        .refs
+        .iter()
+        .filter(|label| label.kind == RefKind::LocalBranch);
+
+    let first = locals.next()?;
+    if locals.next().is_some() {
+        return None;
+    }
+
+    Some(Named {
+        is_head: head == Some(first.name.as_str()),
+        name: first.name.clone(),
+        kind: first.kind,
+    })
 }

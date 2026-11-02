@@ -1551,6 +1551,9 @@ impl eframe::App for App {
             .frame(frame)
             .show(ctx, |ui| match self.tab {
                 Tab::History => {
+                    // With a detached HEAD there is no branch for the menu to
+                    // merge into or move up, the same as in the sidebar.
+                    let on_branch = self.refs.iter().any(|entry| entry.is_head);
                     match graph_view::finder(ui, &mut self.needle, self.found.len(), self.at) {
                         graph_view::Found::Changed => {
                             self.recount();
@@ -1562,16 +1565,22 @@ impl eframe::App for App {
                     }
 
                     let needle = self.needle.trim().to_lowercase();
-                    let clicked = graph_view::show(
+                    let asked = graph_view::show(
                         ui,
                         &self.graph,
+                        &self.refs,
                         self.selected_commit,
                         &self.work,
                         &needle,
                         self.bring.take(),
+                        on_branch.then_some(self.head.as_str()),
+                        self.job.is_some(),
                     );
-                    if let Some(oid) = clicked {
+                    if let Some(oid) = asked.show {
                         self.select_commit(oid);
+                    }
+                    if let Some(picked) = asked.pick {
+                        self.act_on_ref(picked, ctx);
                     }
                 }
                 Tab::Board => {
@@ -1959,46 +1968,57 @@ impl App {
                 );
             });
 
+        if let Some(picked) = picked {
+            self.act_on_ref(picked, ctx);
+        }
+    }
+
+    /// Carries out whatever was asked of a reference.
+    ///
+    /// The sidebar and the graph offer the same menu, so they answer to the
+    /// same place: anything added here is in both at once, which is the point
+    /// of them sharing it.
+    fn act_on_ref(&mut self, picked: refs_view::Pick, ctx: &egui::Context) {
         match picked {
-            Some(refs_view::Pick::Show(oid)) => {
+            refs_view::Pick::Show(oid) => {
                 self.reveal_commit(oid);
                 self.tab = Tab::History;
             }
-            Some(refs_view::Pick::Switch { name, remote }) => self.switch(name, remote),
-            Some(refs_view::Pick::Merge(name)) => {
+            refs_view::Pick::Switch { name, remote } => self.switch(name, remote),
+            refs_view::Pick::Merge(name) => {
                 // It can rewrite the whole tree, so it goes apart.
                 let doing = format!("merging {name}");
                 self.spawn(&doing, move |repo| repo.merge(&name));
             }
-            Some(refs_view::Pick::DeleteBranch { name, remote }) => {
+            refs_view::Pick::DeleteBranch { name, remote } => {
                 self.ask_delete_branch(name, remote)
             }
-            Some(refs_view::Pick::FastForward(name)) => {
+            refs_view::Pick::FastForward(name) => {
                 self.note_down(move |repo| repo.fast_forward_to(&name))
             }
-            Some(refs_view::Pick::Rebase(name)) => {
+            refs_view::Pick::Rebase(name) => {
                 let doing = format!("rebasing onto {name}");
                 self.spawn(&doing, move |repo| repo.rebase_onto(&name));
             }
-            Some(refs_view::Pick::Pull) => {
+            refs_view::Pick::Pull => {
                 self.spawn("pulling", move |repo| repo.pull(PullMode::Merge));
             }
-            Some(refs_view::Pick::Push(name)) => {
+            refs_view::Pick::Push(name) => {
                 let doing = format!("pushing {name}");
                 self.spawn(&doing, move |repo| repo.push_branch(&name));
             }
-            Some(refs_view::Pick::Follow { branch, upstream }) => {
+            refs_view::Pick::Follow { branch, upstream } => {
                 self.note_down(move |repo| repo.set_upstream(&branch, upstream.as_deref()))
             }
-            Some(refs_view::Pick::Isolate(name)) => {
+            refs_view::Pick::Isolate(name) => {
                 let doing = format!("opening {name} in a folder of its own");
                 self.spawn(&doing, move |repo| repo.add_worktree(&name));
             }
-            Some(refs_view::Pick::GoTo(oid)) => {
+            refs_view::Pick::GoTo(oid) => {
                 let doing = format!("going to {}", &oid.to_string()[..7]);
                 self.spawn(&doing, move |repo| repo.checkout_commit(oid));
             }
-            Some(refs_view::Pick::BranchAt(oid)) => {
+            refs_view::Pick::BranchAt(oid) => {
                 self.naming = Some(Naming {
                     title: format!("A branch at {}", &oid.to_string()[..7]),
                     hint: "feat/something".to_string(),
@@ -2007,7 +2027,7 @@ impl App {
                     deed: Named::BranchAt(oid),
                 });
             }
-            Some(refs_view::Pick::Rename(name)) => {
+            refs_view::Pick::Rename(name) => {
                 self.naming = Some(Naming {
                     title: format!("Rename {name}"),
                     hint: name.clone(),
@@ -2016,20 +2036,20 @@ impl App {
                     deed: Named::Rename(name),
                 });
             }
-            Some(refs_view::Pick::CherryPick(oid)) => {
+            refs_view::Pick::CherryPick(oid) => {
                 let doing = format!("taking {} along", &oid.to_string()[..7]);
                 self.spawn(&doing, move |repo| repo.cherry_pick(oid));
             }
-            Some(refs_view::Pick::Revert(oid)) => {
+            refs_view::Pick::Revert(oid) => {
                 let doing = format!("undoing {}", &oid.to_string()[..7]);
                 self.spawn(&doing, move |repo| repo.revert(oid));
             }
-            Some(refs_view::Pick::MoveTo(oid, how)) => self.ask_move(oid, how),
-            Some(refs_view::Pick::Copy(text)) => {
+            refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
+            refs_view::Pick::Copy(text) => {
                 ctx.copy_text(text.clone());
                 self.said(format!("{text} copied"));
             }
-            Some(refs_view::Pick::DeleteTag(name)) => {
+            refs_view::Pick::DeleteTag(name) => {
                 match self.repo().and_then(|repo| repo.delete_tag(&name)) {
                     Ok(()) => {
                         self.load();
@@ -2038,7 +2058,6 @@ impl App {
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
-            None => {}
         }
     }
 

@@ -222,17 +222,22 @@ fn leaf(
         entry.name.clone()
     });
 
-    // A tag leads nowhere, but it can be taken out of the way.
-    let removable = entry.kind == RefKind::Tag && !busy;
-
     let remote = entry.kind == RefKind::RemoteBranch;
     let upstream: Option<String> = on_remotes
         .iter()
         .find(|remote| remote.rsplit_once('/').is_some_and(|(_, leaf)| leaf == entry.name))
         .map(|remote| remote.to_string());
 
+    let on = On {
+        target: entry.target,
+        reference: Some(Named {
+            name: entry.name.clone(),
+            kind: entry.kind,
+            is_head: entry.is_head,
+        }),
+    };
     response.context_menu(|ui| {
-        menu(ui, entry, upstream.as_deref(), head, busy, switchable, removable, picked);
+        menu(ui, &on, upstream.as_deref(), head, busy, picked);
     });
 
     if switchable && response.double_clicked() {
@@ -245,26 +250,50 @@ fn leaf(
     }
 }
 
-/// Everything that can be done to a reference from where you are.
+/// What a menu is being opened on: a commit, and the reference sitting on it
+/// when it is clear which one that is.
+///
+/// A sidebar row is always a reference. A row in the graph is always a
+/// commit, and may have no reference at all or several, so the branch part is
+/// optional and everything that needs one is simply not offered without it.
+pub struct On {
+    pub target: Oid,
+    pub reference: Option<Named>,
+}
+
+/// The reference the menu is about, flattened out of wherever it came from.
+pub struct Named {
+    pub name: String,
+    pub kind: RefKind,
+    pub is_head: bool,
+}
+
+/// Everything that can be done to a commit, and to the branch on it.
 ///
 /// Its own function rather than a closure inside the row: it is the longest
-/// thing in this file by far, and a row that also drew it was hard to read
-/// for the one thing a row is about, which is the row.
-#[allow(clippy::too_many_arguments)]
-fn menu(
+/// thing in this file by far, a row that also drew it was unreadable for the
+/// one thing a row is about, and the graph wants the same menu.
+pub fn menu(
     ui: &mut egui::Ui,
-    entry: &RefEntry,
+    on: &On,
     upstream: Option<&str>,
     head: Option<&str>,
     busy: bool,
-    switchable: bool,
-    removable: bool,
     picked: &mut Option<Pick>,
 ) {
-    let local = entry.kind == RefKind::LocalBranch;
-    let remote = entry.kind == RefKind::RemoteBranch;
-    let target = entry.target;
-    let name = entry.name.clone();
+    let kind = on.reference.as_ref().map(|named| named.kind);
+    let local = kind == Some(RefKind::LocalBranch);
+    let remote = kind == Some(RefKind::RemoteBranch);
+    let is_head = on.reference.as_ref().is_some_and(|named| named.is_head);
+
+    // You can go to a branch. To the one you are already on there is nowhere
+    // to go, and to a tag not here: that leaves HEAD off any branch, which
+    // the commit items below say outright and this would not.
+    let switchable = (local || remote) && !is_head && !busy;
+    let removable = kind == Some(RefKind::Tag) && !busy;
+
+    let target = on.target;
+    let name = on.reference.as_ref().map(|named| named.name.clone()).unwrap_or_default();
 
     ui.set_width(286.0);
 
@@ -281,7 +310,7 @@ fn menu(
             ui.close_menu();
         }
     }
-    if local && !entry.is_head && !busy && ui.button("Open it in its own folder").clicked() {
+    if local && !is_head && !busy && ui.button("Open it in its own folder").clicked() {
         *picked = Some(Pick::Isolate(name.clone()));
         ui.close_menu();
     }
@@ -328,7 +357,7 @@ fn menu(
     // The remote.
     if !busy && (local || remote) {
         theme::rule(ui);
-        if entry.is_head && ui.button("Pull").clicked() {
+        if is_head && ui.button("Pull").clicked() {
             *picked = Some(Pick::Pull);
             ui.close_menu();
         }
@@ -444,7 +473,9 @@ fn menu(
 
     // Things to take elsewhere.
     theme::rule(ui);
-    if ui.button("Copy its name").clicked() {
+    // A commit with no reference on it has no name to copy, and offering it
+    // would put an empty string on the clipboard.
+    if !name.is_empty() && ui.button("Copy its name").clicked() {
         *picked = Some(Pick::Copy(name.clone()));
         ui.close_menu();
     }
