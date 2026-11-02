@@ -609,9 +609,7 @@ fn draw_card(
         reviewed: card.pull.is_some(),
     };
 
-    let mut opened = None;
-    let mut entered = false;
-    let mut visited = None;
+    let mut badges = Badges::default();
 
     let inner = ui.dnd_drag_source(id, payload.clone(), |ui| {
         frame.show(ui, |ui| {
@@ -627,18 +625,14 @@ fn draw_card(
                     // to the far side where the eye is not reading. The way in
                     // is the outermost of them, because it is the one you
                     // reach for.
-                    if card.children > 0 && subtask_badge(ui, card.children) {
-                        entered = true;
+                    if card.children > 0 {
+                        badges.subtasks = Some(subtask_badge(ui, card.children));
                     }
                     if let Some(pull) = &card.pull {
-                        if review_badge(ui, pull) {
-                            opened = Some(pull.url.clone());
-                        }
+                        badges.review = review_badge(ui, pull);
                     }
                     if let Some(tree) = open_at {
-                        if folder_badge(ui, tree) {
-                            visited = Some(tree.path.clone());
-                        }
+                        badges.folder = Some(folder_badge(ui, tree));
                     }
 
                     // The branch you are on wears HEAD's amber, as in the graph
@@ -664,22 +658,20 @@ fn draw_card(
         });
     });
 
-    if entered {
-        return Some(Act::Enter(card.branch.clone()));
-    }
-    if let Some(path) = visited {
-        return Some(Act::Visit(path));
-    }
-    if let Some(url) = opened {
-        return Some(Act::Open(url));
-    }
-
     let response = inner.response.interact(egui::Sense::click());
 
     // While it is in the air the card is painted on another layer and shifted,
     // so anything added here on top would land in the hole it left.
     if dragging {
         return None;
+    }
+
+    // The drag covers the whole card, so a badge cannot change the cursor
+    // from inside: it is changed out here, where the drag has had its say.
+    if let Some(pos) = response.hover_pos() {
+        if badges.anywhere(pos) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     }
 
     // The highlight goes on the border, not the fill: a fill on top would
@@ -765,10 +757,18 @@ fn draw_card(
         (true, None, false) => format!("{}\nDouble-click to switch to this branch", card.branch),
         _ => card.branch.clone(),
     };
+    // The badges are drawn inside the drag source and cannot be hovered on
+    // their own, so everything there is to say about them is said here.
     let hint = match card.children {
         0 => hint,
         1 => format!("{hint}\nOne branch came out of this one: the › badge goes in"),
         n => format!("{hint}\n{n} branches came out of this one: the › badge goes in"),
+    };
+    let hint = match &card.pull {
+        Some(pull) if !pull.url.is_empty() => {
+            format!("{hint}\nPull request #{}: the number opens it", pull.number)
+        }
+        _ => hint,
     };
     let response = response.on_hover_text(hint);
 
@@ -778,7 +778,70 @@ fn draw_card(
             None => Act::Pick(Pick::Switch { name: card.branch.clone(), remote: false }),
         });
     }
-    response.clicked().then(|| Act::Pick(Pick::Show(card.target)))
+    if response.clicked() {
+        let landed = response.interact_pointer_pos().map(|pos| badges.at(pos));
+        match landed {
+            Some(Hit::Subtasks) => return Some(Act::Enter(card.branch.clone())),
+            Some(Hit::Review) => {
+                if let Some(pull) = &card.pull {
+                    return Some(Act::Open(pull.url.clone()));
+                }
+            }
+            Some(Hit::Folder) => {
+                if let Some(tree) = open_at {
+                    return Some(Act::Visit(tree.path.clone()));
+                }
+            }
+            _ => {}
+        }
+        return Some(Act::Pick(Pick::Show(card.target)));
+    }
+
+    None
+}
+
+/// Where a card's badges ended up.
+///
+/// A card is dragged as a whole, so the drag source covers everything drawn
+/// inside it: nothing in there can be a control of its own, and for a while
+/// none of these three did anything at all. They are places on the card
+/// instead, and what was pressed is worked out from where the press landed.
+#[derive(Default)]
+struct Badges {
+    subtasks: Option<egui::Rect>,
+    review: Option<egui::Rect>,
+    folder: Option<egui::Rect>,
+}
+
+/// What a press landed on. The card itself is the answer for most of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hit {
+    Subtasks,
+    Review,
+    Folder,
+    Card,
+}
+
+impl Badges {
+    /// Asked in the order they are drawn, outermost first. They do not
+    /// overlap, so the order decides nothing except which one answers when
+    /// two of them meet along an edge.
+    fn at(&self, pos: egui::Pos2) -> Hit {
+        if self.subtasks.is_some_and(|rect| rect.contains(pos)) {
+            return Hit::Subtasks;
+        }
+        if self.review.is_some_and(|rect| rect.contains(pos)) {
+            return Hit::Review;
+        }
+        if self.folder.is_some_and(|rect| rect.contains(pos)) {
+            return Hit::Folder;
+        }
+        Hit::Card
+    }
+
+    fn anywhere(&self, pos: egui::Pos2) -> bool {
+        self.at(pos) != Hit::Card
+    }
 }
 
 /// The checkout a branch is open in, when it is open in one of its own.
@@ -793,7 +856,7 @@ fn open_at<'a>(trees: &'a [Worktree], branch: &str) -> Option<&'a Worktree> {
 /// A branch can only be checked out in one place, so this is not decoration:
 /// it is the reason the card cannot be switched to from here, said before you
 /// try rather than after.
-fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> bool {
+fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> egui::Rect {
     let name = match tree.name.len() > 14 {
         true => format!("{}…", &tree.name[..13]),
         false => tree.name.clone(),
@@ -802,25 +865,14 @@ fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> bool {
     let label = egui::Label::new(
         RichText::new(name).font(theme::mono(10.5)).color(theme::FAINT),
     );
-    ui.add(label.sense(egui::Sense::click()))
-        .on_hover_text(format!(
-            "Open in {}\n\nClick to go there",
-            tree.path.display()
-        ))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    ui.add(label).rect
 }
 
 /// How many branches came out of this one, and the way into them.
 ///
 /// It is on the card because a branch is on one board only, its parent's.
 /// Without a number here, work could sit somewhere nobody thought to look.
-fn subtask_badge(ui: &mut egui::Ui, count: usize) -> bool {
-    let said = match count {
-        1 => "1 branch came out of this one".to_string(),
-        n => format!("{n} branches came out of this one"),
-    };
-
+fn subtask_badge(ui: &mut egui::Ui, count: usize) -> egui::Rect {
     // It wears a pill rather than going bare. It is the only way into the
     // board inside this card, and as plain text nobody read it as a way into
     // anything. A label and not a button: a button would fight the drag for
@@ -834,13 +886,9 @@ fn subtask_badge(ui: &mut egui::Ui, count: usize) -> bool {
         .stroke(Stroke::new(1.0, theme::EDGE))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS))
         .inner_margin(egui::Margin::symmetric(5, 1))
-        .show(ui, |ui| {
-            ui.add(label.sense(egui::Sense::click()))
-                .on_hover_text(format!("{said}\n\nClick to go in"))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-        })
-        .inner
+        .show(ui, |ui| ui.add(label))
+        .response
+        .rect
 }
 
 /// The pull request's number, in the color of the column it argues for.
@@ -848,8 +896,8 @@ fn subtask_badge(ui: &mut egui::Ui, count: usize) -> bool {
 /// A draft and a closed one go muted: they are both pull requests that are not
 /// asking anybody for anything, and the card they sit on is not in review.
 /// Gives back whether it was clicked, which means open it in a browser.
-fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> bool {
-    let (color, says) = match (pull.state, pull.draft) {
+fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> Option<egui::Rect> {
+    let (color, _says) = match (pull.state, pull.draft) {
         (PullRequestState::Merged, _) => (theme::lane(1), "merged"),
         (PullRequestState::Open, false) => (theme::lane(6), "open"),
         (PullRequestState::Open, true) => (theme::MUTED, "a draft"),
@@ -862,19 +910,14 @@ fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> bool {
             .color(color),
     );
 
+    let rect = ui.add(label).rect;
+
     // Without a URL there is nowhere to go, so it does not pretend to be a
     // link: it stays a number that says which pull request this is.
-    if pull.url.is_empty() {
-        ui.add(label).on_hover_text(format!("Pull request {says}"));
-        return false;
+    match pull.url.is_empty() {
+        true => None,
+        false => Some(rect),
     }
-
-    let response = ui
-        .add(label.sense(egui::Sense::click()))
-        .on_hover_text(format!("Pull request {says}\n{}\n\nClick to open it", pull.url))
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    response.clicked()
 }
 
 /// "theme - 3 commits - 2 h ago", saying nothing of what is not there.
@@ -941,6 +984,61 @@ mod tests {
             lane,
             reviewed,
         }
+    }
+
+    fn badges() -> Badges {
+        // Laid out right to left along the top of a card, as they are drawn.
+        Badges {
+            subtasks: Some(egui::Rect::from_min_max(
+                egui::pos2(180.0, 10.0),
+                egui::pos2(210.0, 26.0),
+            )),
+            review: Some(egui::Rect::from_min_max(
+                egui::pos2(140.0, 10.0),
+                egui::pos2(176.0, 26.0),
+            )),
+            folder: Some(egui::Rect::from_min_max(
+                egui::pos2(90.0, 10.0),
+                egui::pos2(136.0, 26.0),
+            )),
+        }
+    }
+
+    #[test]
+    fn a_press_on_a_badge_is_a_press_on_that_badge_and_not_on_the_card() {
+        let badges = badges();
+        assert_eq!(badges.at(egui::pos2(195.0, 18.0)), Hit::Subtasks);
+        assert_eq!(badges.at(egui::pos2(158.0, 18.0)), Hit::Review);
+        assert_eq!(badges.at(egui::pos2(110.0, 18.0)), Hit::Folder);
+    }
+
+    #[test]
+    fn a_press_anywhere_else_on_the_card_is_a_press_on_the_card() {
+        let badges = badges();
+        // The name, to the left of them all.
+        assert_eq!(badges.at(egui::pos2(20.0, 18.0)), Hit::Card);
+        // The line underneath.
+        assert_eq!(badges.at(egui::pos2(195.0, 40.0)), Hit::Card);
+        // The gaps between them, which belong to nobody.
+        assert_eq!(badges.at(egui::pos2(178.0, 18.0)), Hit::Card);
+        assert!(!badges.anywhere(egui::pos2(20.0, 18.0)));
+    }
+
+    #[test]
+    fn a_card_without_badges_answers_the_card_wherever_it_is_pressed() {
+        let bare = Badges::default();
+        for pos in [egui::pos2(0.0, 0.0), egui::pos2(195.0, 18.0), egui::pos2(999.0, 999.0)] {
+            assert_eq!(bare.at(pos), Hit::Card, "{pos:?}");
+            assert!(!bare.anywhere(pos));
+        }
+    }
+
+    /// A pull request with no address is a number and nothing more, so there
+    /// is no rectangle for a press to land on.
+    #[test]
+    fn a_pull_request_with_nowhere_to_go_is_not_somewhere_to_press() {
+        let badges = Badges { review: None, ..badges() };
+        assert_eq!(badges.at(egui::pos2(158.0, 18.0)), Hit::Card);
     }
 
     fn item() -> Dragged {
