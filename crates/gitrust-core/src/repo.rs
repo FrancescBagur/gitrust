@@ -37,7 +37,17 @@ impl Repo {
     }
 
     /// The current branch's name, or the short hash if HEAD is detached.
+    /// The commit HEAD is on, whether or not that is a branch.
+    pub fn head_oid(&self) -> Option<crate::Oid> {
+        self.inner.head().ok()?.peel_to_commit().ok().map(|commit| commit.id())
+    }
+
     pub fn head_name(&self) -> String {
+        // Off a branch, libgit2 gives "HEAD" as the shorthand, which reads
+        // like a branch called HEAD. Asking outright is the only way to tell.
+        if self.inner.head_detached().unwrap_or(false) {
+            return "detached HEAD".to_string();
+        }
         match self.inner.head() {
             Ok(head) => head
                 .shorthand()

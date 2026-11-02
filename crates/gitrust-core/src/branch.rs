@@ -33,6 +33,94 @@ impl Repo {
         Ok(())
     }
 
+    /// Makes a branch at a commit, without switching to it.
+    ///
+    /// The one you are on does not move and nothing is written to your disk:
+    /// this only puts a name on a commit that was already there.
+    pub fn branch_at(&self, name: &str, oid: git2::Oid) -> Result<String> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "the branch needs a name");
+        anyhow::ensure!(
+            self.inner.find_branch(name, BranchType::Local).is_err(),
+            "there is already a branch called '{name}'"
+        );
+
+        let commit = self
+            .inner
+            .find_commit(oid)
+            .with_context(|| format!("no commit {oid}"))?;
+        self.inner
+            .branch(name, &commit, false)
+            .with_context(|| format!("could not create '{name}'"))?;
+
+        Ok(format!("{name} starts at {}", &oid.to_string()[..7]))
+    }
+
+    /// Gives a branch another name.
+    ///
+    /// A branch open in a folder of its own is refused rather than renamed:
+    /// that folder's HEAD names the branch, and renaming it from here would
+    /// leave the folder pointing at a name that is no longer there.
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<String> {
+        let new = new.trim();
+        anyhow::ensure!(!new.is_empty(), "the branch needs a name");
+        anyhow::ensure!(old != new, "that is the name it has already");
+        anyhow::ensure!(
+            self.inner.find_branch(new, BranchType::Local).is_err(),
+            "there is already a branch called '{new}'"
+        );
+        if let Some(held) = self.held_by(old) {
+            anyhow::bail!(
+                "{old} is open in {}; close that folder first",
+                held.path.display()
+            );
+        }
+
+        // Worked out before anything moves, because afterwards the old name
+        // is gone and there is nothing left to compare against.
+        let on_it = self.head_name() == old;
+
+        let mut branch = self
+            .inner
+            .find_branch(old, BranchType::Local)
+            .with_context(|| format!("no branch called '{old}'"))?;
+        branch
+            .rename(new, false)
+            .with_context(|| format!("could not rename '{old}'"))?;
+
+        // The reference moved; HEAD is ours to keep pointing at something
+        // that exists.
+        if on_it {
+            self.inner.set_head(&format!("refs/heads/{new}"))?;
+        }
+
+        Ok(format!("{old} is called {new} now"))
+    }
+
+    /// Goes to a commit without being on a branch.
+    ///
+    /// Git calls this a detached HEAD. The thing worth knowing about it is
+    /// that a commit written here belongs to no branch and nothing will point
+    /// at it: make a branch before writing anything worth keeping.
+    pub fn checkout_commit(&self, oid: git2::Oid) -> Result<String> {
+        let commit = self
+            .inner
+            .find_commit(oid)
+            .with_context(|| format!("no commit {oid}"))?;
+
+        // The tree first, HEAD after, as everywhere else here: if unsaved
+        // changes are in the way, HEAD never moved.
+        self.inner
+            .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
+            .context("unsaved changes are in the way; commit them or stash them")?;
+        self.inner.set_head_detached(oid)?;
+
+        Ok(format!(
+            "you are at {} now, on no branch",
+            &oid.to_string()[..7]
+        ))
+    }
+
     /// Switches to a local branch that already exists.
     ///
     /// The tree first, HEAD after. If the tree fails -- because unsaved changes

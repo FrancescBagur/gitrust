@@ -72,6 +72,30 @@ impl Repo {
     }
 
     /// Brings down whatever is on the remote without touching the working tree.
+    /// Says which remote branch a local one follows, or that it follows none.
+    ///
+    /// Following is what makes the distance above the graph mean anything:
+    /// without it there is no "two ahead" because there is nothing to be
+    /// ahead of.
+    pub fn set_upstream(&self, branch: &str, upstream: Option<&str>) -> Result<String> {
+        let mut local = self
+            .inner
+            .find_branch(branch, git2::BranchType::Local)
+            .with_context(|| format!("no branch called '{branch}'"))?;
+
+        local
+            .set_upstream(upstream)
+            .with_context(|| match upstream {
+                Some(name) => format!("could not make {branch} follow {name}"),
+                None => format!("could not stop {branch} following anything"),
+            })?;
+
+        Ok(match upstream {
+            Some(name) => format!("{branch} follows {name} now"),
+            None => format!("{branch} follows nothing now"),
+        })
+    }
+
     pub fn fetch(&self) -> Result<String> {
         let (remote, _) = self.upstream()?;
         self.fetch_from(&remote)?;

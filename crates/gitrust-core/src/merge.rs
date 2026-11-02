@@ -106,6 +106,44 @@ impl Repo {
     ///
     /// If the switch fails nothing has been touched. If the merge fails you
     /// stay on the main branch, which is where you were going: the warning says so.
+    /// Moves the current branch up to another one, and nothing else.
+    ///
+    /// What it refuses is the point. A merge will write a merge commit when
+    /// the two have both moved; this says there is no moving up to be done
+    /// and leaves the repository alone, which is what somebody who asked for
+    /// a fast forward and not a merge wanted to hear.
+    pub fn fast_forward_to(&self, name: &str) -> Result<String> {
+        let head = self.inner.head().context("the repository has no commits")?;
+        let refname = head.name().context("HEAD has no name")?.to_string();
+        let current = head.shorthand().unwrap_or("HEAD").to_string();
+        anyhow::ensure!(current != name, "{name} is the branch you are on");
+
+        let reference = self
+            .inner
+            .resolve_reference_from_short_name(name)
+            .with_context(|| format!("no branch called '{name}'"))?;
+        let theirs = self.inner.reference_to_annotated_commit(&reference)?;
+
+        let (analysis, _) = self.inner.merge_analysis(&[&theirs])?;
+        if analysis.is_up_to_date() {
+            return Ok(format!("{current} already has everything {name} has"));
+        }
+        anyhow::ensure!(
+            analysis.is_fast_forward(),
+            "{current} has moved since it left {name}: this would take a merge"
+        );
+
+        let commit = self.inner.find_commit(theirs.id())?;
+        self.inner
+            .checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
+            .context("unsaved changes are in the way; commit them or stash them")?;
+        self.inner
+            .find_reference(&refname)?
+            .set_target(theirs.id(), "merge: fast-forward")?;
+
+        Ok(format!("{current} moves up to {name}"))
+    }
+
     pub fn land(&self, branch: &str) -> Result<String> {
         let trunk = self.trunk()?;
         anyhow::ensure!(branch != trunk, "{branch} is the main branch");
