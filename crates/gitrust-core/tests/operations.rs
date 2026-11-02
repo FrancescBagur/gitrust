@@ -1201,8 +1201,20 @@ fn pushing_a_branch_you_are_not_on() {
     temp.open().checkout_branch(&trunk).unwrap();
 
     // From the main branch, the other is brought in without moving.
-    temp.open().push_branch("other").unwrap();
+    //
+    // What it says matters as much as what it does. The trunk is in step with
+    // its remote, and for a while this counted the trunk's distance rather
+    // than the pushed branch's, so a push that carried a commit announced that
+    // it had carried none.
+    let said = temp.open().push_branch("other").unwrap();
+    assert!(!said.contains("0 commits"), "{said}");
+    assert!(said.contains("other"), "{said}");
     assert_eq!(temp.open().head_name(), trunk);
+
+    // Pushed again with nothing new, now that it follows something, it can
+    // say so with a number.
+    let again = temp.open().push_branch("other").unwrap();
+    assert!(again.contains("0 commits"), "{again}");
 
     let remote = git2::Repository::open(&bare).unwrap();
     assert_eq!(remote.find_reference("refs/heads/other").unwrap().target(), Some(theirs));

@@ -202,7 +202,12 @@ impl Repo {
         // called in the vast majority of repositories.
         let remote_name = self.remote_of(&refname);
 
-        let ahead = self.tracking().map(|t| t.ahead).unwrap_or(0);
+        // This branch's distance, not HEAD's. A card is pushed from the board
+        // while you are standing wherever you were standing, so asking
+        // `tracking` would count whatever branch that is -- and from a trunk
+        // that is in step with its remote, every push reported no commits at
+        // all while quietly pushing them.
+        let ahead = self.ahead_of(&refname);
         let mut remote = self
             .inner
             .find_remote(&remote_name)
@@ -239,7 +244,35 @@ impl Repo {
             let _ = local.set_upstream(Some(&format!("{remote_name}/{branch}")));
         }
 
-        Ok(format!("{} to {remote_name}/{branch}", commits(ahead)))
+        Ok(match ahead {
+            Some(count) => format!("{} to {remote_name}/{branch}", commits(count)),
+            // Nothing was being followed, so there was no distance to measure:
+            // a count here would be made up, and "0 commits" reads as a push
+            // that did nothing.
+            None => format!("{branch} is on {remote_name} now"),
+        })
+    }
+
+    /// How far a branch is ahead of whatever it follows.
+    ///
+    /// `None` when it follows nothing, which is every branch's first push.
+    fn ahead_of(&self, refname: &str) -> Option<usize> {
+        let upstream = self.inner.branch_upstream_name(refname).ok()?;
+        let theirs = self
+            .inner
+            .find_reference(upstream.as_str()?)
+            .ok()?
+            .peel(ObjectType::Commit)
+            .ok()?
+            .id();
+        let ours = self
+            .inner
+            .find_reference(refname)
+            .ok()?
+            .peel(ObjectType::Commit)
+            .ok()?
+            .id();
+        self.inner.graph_ahead_behind(ours, theirs).ok().map(|(ahead, _)| ahead)
     }
 
     /// Pushes the branch over whatever is there, but only if what is there is
