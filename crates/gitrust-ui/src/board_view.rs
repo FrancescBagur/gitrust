@@ -618,34 +618,47 @@ fn draw_card(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 3.0;
 
+            // The badges are laid out before the name, so they take the room
+            // they need and the name takes what is left. The other way round
+            // a long branch name ran straight over the top of them.
             ui.horizontal(|ui| {
-                // The branch you are on wears HEAD's amber, as in the graph and
-                // in the bar: it is the same question answered in the same color.
-                ui.label(
-                    RichText::new(card.leaf())
-                        .font(theme::medium(12.5))
-                        .color(if card.current { theme::HEAD } else { theme::TEXT }),
-                );
-                // What is true about the card, rather than its name, goes to
-                // the far side where the eye is not reading. The way in is the
-                // outermost of them, because it is the one you reach for.
-                if card.children > 0 || card.pull.is_some() || open_at.is_some() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if card.children > 0 && subtask_badge(ui, card.children) {
-                            entered = true;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // What is true about the card, rather than its name, goes
+                    // to the far side where the eye is not reading. The way in
+                    // is the outermost of them, because it is the one you
+                    // reach for.
+                    if card.children > 0 && subtask_badge(ui, card.children) {
+                        entered = true;
+                    }
+                    if let Some(pull) = &card.pull {
+                        if review_badge(ui, pull) {
+                            opened = Some(pull.url.clone());
                         }
-                        if let Some(pull) = &card.pull {
-                            if review_badge(ui, pull) {
-                                opened = Some(pull.url.clone());
-                            }
+                    }
+                    if let Some(tree) = open_at {
+                        if folder_badge(ui, tree) {
+                            visited = Some(tree.path.clone());
                         }
-                        if let Some(tree) = open_at {
-                            if folder_badge(ui, tree) {
-                                visited = Some(tree.path.clone());
-                            }
-                        }
+                    }
+
+                    // The branch you are on wears HEAD's amber, as in the graph
+                    // and in the bar: the same question answered in the same
+                    // color. Cut short rather than wrapped, because a card
+                    // whose height depends on its name makes a ragged column.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(card.leaf())
+                                    .font(theme::medium(12.5))
+                                    .color(match card.current {
+                                        true => theme::HEAD,
+                                        false => theme::TEXT,
+                                    }),
+                            )
+                            .truncate(),
+                        );
                     });
-                }
+                });
             });
             ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::MUTED));
         });
@@ -692,6 +705,19 @@ fn draw_card(
     // same press.
     let mut asked_for = None;
     response.context_menu(|ui| {
+        // Said in words as well as drawn, because the badge is small and the
+        // board inside a card is easy to not know about at all.
+        if card.children > 0 {
+            let says = match card.children {
+                1 => "Go into its subtask".to_string(),
+                n => format!("Go into its {n} subtasks"),
+            };
+            if ui.button(says).clicked() {
+                asked_for = Some(Act::Enter(card.branch.clone()));
+                ui.close_menu();
+            }
+        }
+
         match open_at {
             Some(tree) => {
                 if ui.button("Go to its folder").clicked() {
@@ -739,6 +765,11 @@ fn draw_card(
         (true, None, false) => format!("{}\nDouble-click to switch to this branch", card.branch),
         _ => card.branch.clone(),
     };
+    let hint = match card.children {
+        0 => hint,
+        1 => format!("{hint}\nOne branch came out of this one: the › badge goes in"),
+        n => format!("{hint}\n{n} branches came out of this one: the › badge goes in"),
+    };
     let response = response.on_hover_text(hint);
 
     if switchable && response.double_clicked() {
@@ -785,18 +816,31 @@ fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> bool {
 /// It is on the card because a branch is on one board only, its parent's.
 /// Without a number here, work could sit somewhere nobody thought to look.
 fn subtask_badge(ui: &mut egui::Ui, count: usize) -> bool {
-    let label = egui::Label::new(
-        RichText::new(format!("{count} ›")).font(theme::mono(10.5)).color(theme::MUTED),
-    );
     let said = match count {
         1 => "1 branch came out of this one".to_string(),
         n => format!("{n} branches came out of this one"),
     };
 
-    ui.add(label.sense(egui::Sense::click()))
-        .on_hover_text(format!("{said}\n\nClick to go in"))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    // It wears a pill rather than going bare. It is the only way into the
+    // board inside this card, and as plain text nobody read it as a way into
+    // anything. A label and not a button: a button would fight the drag for
+    // the same press, which is why nothing on a card is one.
+    let label = egui::Label::new(
+        RichText::new(format!("{count} ›")).font(theme::mono(10.5)).color(theme::TEXT),
+    );
+
+    egui::Frame::NONE
+        .fill(theme::RAISED)
+        .stroke(Stroke::new(1.0, theme::EDGE))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.add(label.sense(egui::Sense::click()))
+                .on_hover_text(format!("{said}\n\nClick to go in"))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        })
+        .inner
 }
 
 /// The pull request's number, in the color of the column it argues for.
