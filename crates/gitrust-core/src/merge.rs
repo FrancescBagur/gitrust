@@ -97,15 +97,105 @@ impl Repo {
     }
 }
 
+/// What dropping one branch onto another is asking for.
+///
+/// All three read the same way round, and it is the way round the gesture
+/// means: the branch you dropped **on** is the one that moves, and the branch
+/// you dragged is where the commits come from. Drag `feature` onto `main` and
+/// it is `main` that ends up different.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Join {
+    /// Write a commit that has both sides.
+    Merge,
+    /// Replay the target's own commits on top of the other, leaving one line
+    /// instead of two and a knot.
+    Rebase,
+    /// Move the target up, writing nothing. Only possible when it has not
+    /// moved on its own since the two parted.
+    FastForward,
+}
+
+impl Join {
+    /// What it would do, in the words somebody deciding would want. `from` is
+    /// the branch dragged, `onto` the one it was dropped on.
+    pub fn says(self, from: &str, onto: &str) -> String {
+        match self {
+            Join::Merge => format!("Merge {from} into {onto}"),
+            Join::Rebase => format!("Rebase {onto} onto {from}"),
+            Join::FastForward => format!("Move {onto} up to {from}"),
+        }
+    }
+
+    /// The same thing while it is happening, for whatever says what the
+    /// application is busy with.
+    pub fn doing(self, from: &str, onto: &str) -> String {
+        match self {
+            Join::Merge => format!("merging {from} into {onto}"),
+            Join::Rebase => format!("rebasing {onto} onto {from}"),
+            Join::FastForward => format!("moving {onto} up to {from}"),
+        }
+    }
+}
+
 impl Repo {
-    /// Brings a branch into the main one, switching to it if need be.
+    /// Does to two named branches what the three above do to the current one.
     ///
-    /// It is what you would do by hand: stand on the main branch and merge.
-    /// Dragging a card to "done" is a single intention, so it is said in a
-    /// single operation and not in two that can be left half-finished.
+    /// Every one of them works on whatever branch you are standing on, so this
+    /// stands on the right one first. That is the whole of it: there is no
+    /// second way of merging, only a different place to be standing when it
+    /// happens.
     ///
-    /// If the switch fails nothing has been touched. If the merge fails you
-    /// stay on the main branch, which is where you were going: the warning says so.
+    /// If the switch fails nothing has been touched. If what comes after fails
+    /// you are left on `onto`, which is where you were going anyway -- and the
+    /// warning says so, because the next thing you do would otherwise happen
+    /// on a branch you did not know you were on.
+    pub fn join(&self, from: &str, onto: &str, how: Join) -> Result<String> {
+        anyhow::ensure!(from != onto, "{from} is the branch it would go into");
+
+        let moved = self.head_name() != onto;
+        if moved {
+            self.checkout_branch(onto)?;
+        }
+
+        let note = match how {
+            Join::Merge => self.merge(from),
+            Join::Rebase => self.rebase_onto(from),
+            Join::FastForward => self.fast_forward_to(from),
+        };
+
+        match (note, moved) {
+            (Ok(note), true) => Ok(format!("{note}, and you are now on {onto}")),
+            (Ok(note), false) => Ok(note),
+            (Err(err), true) => Err(err.context(format!("you are now on {onto}"))),
+            (Err(err), false) => Err(err),
+        }
+    }
+
+    /// Whether one branch could move up to another without writing anything.
+    ///
+    /// True only when the first has nothing of its own since the two parted.
+    /// It is what somebody has to know *before* they press anything: offering
+    /// a button that can only answer "there is a merge to write here" is
+    /// asking a question whose answer was already known.
+    pub fn has_room(&self, branch: &str, up_to: &str) -> Result<bool> {
+        let ours = self
+            .inner
+            .resolve_reference_from_short_name(branch)
+            .with_context(|| format!("no branch called '{branch}'"))?
+            .peel_to_commit()?
+            .id();
+        let theirs = self
+            .inner
+            .resolve_reference_from_short_name(up_to)
+            .with_context(|| format!("no branch called '{up_to}'"))?
+            .peel_to_commit()?
+            .id();
+
+        // A commit is not its own descendant, and two branches on the same
+        // commit have no room between them either way.
+        Ok(ours != theirs && self.inner.graph_descendant_of(theirs, ours)?)
+    }
+
     /// Moves the current branch up to another one, and nothing else.
     ///
     /// What it refuses is the point. A merge will write a merge commit when
@@ -157,18 +247,7 @@ impl Repo {
     /// and not always the main branch. Dragging a card to "done" means the
     /// same thing at every depth; what changes is where "done" is.
     pub fn land_into(&self, base: &str, branch: &str) -> Result<String> {
-        anyhow::ensure!(branch != base, "{branch} is the branch it would go into");
-
-        let moved = self.head_name() != base;
-        if moved {
-            self.checkout_branch(base)?;
-        }
-
-        let note = self.merge(branch)?;
-        Ok(match moved {
-            true => format!("{note}, and you are now on {base}"),
-            false => note,
-        })
+        self.join(branch, base, Join::Merge)
     }
 
     /// Replays the current branch's commits on top of another.

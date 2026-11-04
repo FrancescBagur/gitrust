@@ -49,6 +49,21 @@ pub enum Pick {
     Rename(String),
     /// Put that text on the clipboard.
     Copy(String),
+    /// One branch was dropped on another. Which of the three things that
+    /// could mean is not decided here: the gesture asks the question and
+    /// something else puts it to somebody.
+    Join { from: String, onto: String },
+}
+
+/// The branch being dragged.
+///
+/// It travels as a type of its own rather than as a bare `String` so that
+/// nothing else dropped anywhere in the window can be mistaken for it: egui
+/// hands a payload back by type, and the board is dragging cards around at
+/// the same time.
+#[derive(Clone)]
+struct Carried {
+    name: String,
 }
 
 /// Gives back whatever has been asked about a reference.
@@ -115,7 +130,45 @@ pub fn show(
             ui.add_space(12.0);
         });
 
+    carried_chip(ui);
+
     picked
+}
+
+/// The name of the branch being dragged, following the cursor.
+///
+/// egui's own drag source paints the widget itself under the pointer. This
+/// one wraps nothing, so there would be nothing to see: you would be dragging
+/// across a window that looks exactly as it did, with only the cursor to say
+/// anything was happening.
+fn carried_chip(ui: &egui::Ui) {
+    let ctx = ui.ctx();
+    let Some(carried) = egui::DragAndDrop::payload::<Carried>(ctx) else {
+        return;
+    };
+    let Some(pointer) = ctx.pointer_latest_pos() else {
+        return;
+    };
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("carried-branch"),
+    ));
+    let text = painter.layout_no_wrap(carried.name.clone(), theme::body(12.0), theme::TEXT);
+
+    // Below and to the right of the pointer, so the chip never covers the row
+    // being aimed at.
+    let corner = pointer + egui::vec2(14.0, 10.0);
+    let rect = egui::Rect::from_min_size(corner, text.size() + egui::vec2(14.0, 7.0));
+    let radius = egui::CornerRadius::same(theme::RADIUS);
+    painter.rect_filled(rect, radius, theme::PANEL);
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, theme::HEAD),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(corner + egui::vec2(7.0, 3.5), text, theme::TEXT);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -216,11 +269,53 @@ fn leaf(
     let branch = matches!(entry.kind, RefKind::LocalBranch | RefKind::RemoteBranch);
     let switchable = branch && !entry.is_head && !busy;
 
-    let response = response.on_hover_text(if switchable {
-        format!("{}\nDouble-click to switch to this branch", entry.name)
-    } else {
-        entry.name.clone()
-    });
+    // The row has to become a drag source and a drop target without ceasing
+    // to be a button. Wrapping it in `dnd_drag_source` would have taken the
+    // click, the double click and the menu with it: that call registers its
+    // own interaction on top of everything it drew, and sits over the lot.
+    // Raising the sense of the label already there costs none of them.
+    let draggable = branch && !busy;
+    let response = response.interact(egui::Sense::click_and_drag());
+    if draggable {
+        response.dnd_set_drag_payload(Carried { name: entry.name.clone() });
+    }
+
+    // Only a local branch can be dropped on. Whichever of the three things
+    // the answer turns out to be, it is the branch underneath that ends up
+    // somewhere else, and a remote branch or a tag is not one to move here.
+    let takes_drops = entry.kind == RefKind::LocalBranch && !busy;
+    let arriving = match takes_drops {
+        true => response.dnd_hover_payload::<Carried>(),
+        false => None,
+    };
+    if arriving.is_some_and(|carried| carried.name != entry.name) {
+        ui.painter().rect_stroke(
+            response.rect.expand(2.0),
+            egui::CornerRadius::same(theme::RADIUS),
+            egui::Stroke::new(1.0, theme::HEAD),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if takes_drops {
+        if let Some(carried) = response.dnd_release_payload::<Carried>() {
+            if carried.name != entry.name {
+                *picked = Some(Pick::Join {
+                    from: carried.name.clone(),
+                    onto: entry.name.clone(),
+                });
+                return;
+            }
+        }
+    }
+
+    let mut hint = entry.name.clone();
+    if switchable {
+        hint.push_str("\nDouble-click to switch to it");
+    }
+    if draggable {
+        hint.push_str("\nDrag it onto a branch to merge, rebase or move it up");
+    }
+    let response = response.on_hover_text(hint);
 
     let remote = entry.kind == RefKind::RemoteBranch;
     let upstream: Option<String> = on_remotes

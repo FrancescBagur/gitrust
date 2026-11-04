@@ -30,6 +30,7 @@ pub use diff::{DiffLine, FileDiff, Hunk, HunkId};
 pub use forge::{PullRequest, PullRequestState, PullRequests};
 pub use graph::{layout, layout_with_working};
 pub use history::Move;
+pub use merge::Join;
 pub use message::{blocks, compose, Block, SUBJECT_LIMIT};
 pub use model::{Commit, Graph, Link, RefKind, RefLabel, Row};
 pub use note::Note;

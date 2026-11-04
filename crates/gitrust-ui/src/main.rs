@@ -18,7 +18,7 @@ mod toast;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, Move, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
+    compose, layout, layout_with_working, Join, Move, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
     Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
     Worktree,
 };
@@ -131,6 +131,9 @@ struct App {
     describing: Option<Describing>,
     /// The name being asked for, when one is.
     naming: Option<Naming>,
+    /// The two branches one was dropped on the other, waiting to be told
+    /// which of the three things that meant.
+    joining: Option<Joining>,
     /// The last thing that happened, said where it will be seen.
     toast: Option<toast::Toast>,
 }
@@ -202,6 +205,21 @@ struct Naming {
 enum Named {
     BranchAt(Oid),
     Rename(String),
+}
+
+/// One branch dropped on another, with the question not yet put.
+///
+/// The gesture says which two branches and which way round. It does not say
+/// whether that meant a merge, a rebase or a move up, and guessing would be
+/// guessing at the one part that cannot be taken back.
+struct Joining {
+    /// The branch dragged: where the commits come from.
+    from: String,
+    /// The branch dropped on: the one that ends up somewhere else.
+    onto: String,
+    /// Whether `onto` could simply move up. Worked out once, when the gesture
+    /// lands, rather than every frame the dialog is on screen.
+    room: bool,
 }
 
 /// Something destructive that is waiting for a yes.
@@ -278,6 +296,7 @@ impl App {
             confirm: None,
             describing: None,
             naming: None,
+            joining: None,
             toast: None,
         };
         app.load();
@@ -1244,6 +1263,139 @@ impl App {
     }
 
     /// Asks for a name, for whatever is about to be given one.
+    /// Puts the question a drop asks but cannot answer.
+    ///
+    /// Dropping one branch on another is one gesture with three meanings, and
+    /// they are not near-misses of each other: a merge keeps both histories,
+    /// a rebase writes one of them again, and a move up writes nothing at
+    /// all. Nothing in the gesture says which, so nothing here guesses.
+    fn ask_join(&mut self, from: String, onto: String) {
+        // Asked now rather than while the dialog is up: it is one question
+        // about two branches that cannot change while somebody is reading.
+        let room = self
+            .repo()
+            .and_then(|repo| repo.has_room(&onto, &from))
+            .unwrap_or(false);
+        self.joining = Some(Joining { from, onto, room });
+    }
+
+    fn join_dialog(&mut self, ctx: &egui::Context) {
+        let Some(joining) = &self.joining else {
+            return;
+        };
+        let (from, onto, room) = (joining.from.clone(), joining.onto.clone(), joining.room);
+
+        // What each one would really do, said before it is done rather than
+        // in the message afterwards.
+        let options: Vec<(Join, String, bool)> = vec![
+            (
+                Join::Merge,
+                "One commit holding both sides. Nothing already written changes."
+                    .to_string(),
+                true,
+            ),
+            (
+                Join::Rebase,
+                format!(
+                    "{onto}'s own commits are written again on top of {from}, so the \
+                     history comes out as one line. They are new commits: anyone who \
+                     already has the old ones ends up with both."
+                ),
+                true,
+            ),
+            (
+                Join::FastForward,
+                match room {
+                    true => format!(
+                        "{onto} has nothing of its own since the two parted, so it just \
+                         moves. No commit is written."
+                    ),
+                    false => format!(
+                        "{onto} has commits that {from} does not, so there is no moving \
+                         up to be done here."
+                    ),
+                },
+                room,
+            ),
+        ];
+
+        let mut chosen = None;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let modal = egui::Modal::new(egui::Id::new("joining"))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::same(18))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(430.0);
+                ui.label(
+                    egui::RichText::new(format!("{from} dropped on {onto}"))
+                        .font(theme::strong(14.0))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(5.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{onto} is the one that ends up somewhere else, and you are left \
+                         standing on it."
+                    ))
+                    .font(theme::body(12.0))
+                    .color(theme::MUTED),
+                );
+                ui.add_space(14.0);
+
+                for (how, why, can) in options {
+                    let button = egui::Button::new(
+                        egui::RichText::new(how.says(&from, &onto))
+                            .font(theme::medium(13.0))
+                            .color(match can {
+                                true => theme::TEXT,
+                                false => theme::FAINT,
+                            }),
+                    )
+                    .min_size(egui::vec2(ui.available_width(), 30.0));
+
+                    if ui.add_enabled(can, button).clicked() {
+                        chosen = Some(how);
+                    }
+                    ui.add_space(3.0);
+                    ui.label(
+                        egui::RichText::new(why)
+                            .font(theme::body(11.5))
+                            .color(theme::FAINT),
+                    );
+                    ui.add_space(12.0);
+                }
+
+                ui.add_space(2.0);
+                if ui
+                    .add(egui::Button::new("Cancel").min_size(egui::vec2(88.0, 28.0)))
+                    .clicked()
+                {
+                    close = true;
+                }
+            });
+
+        if modal.backdrop_response.clicked() {
+            close = true;
+        }
+
+        if let Some(how) = chosen {
+            self.joining = None;
+            let doing = how.doing(&from, &onto);
+            self.spawn(&doing, move |repo| repo.join(&from, &onto, how));
+            return;
+        }
+
+        if close {
+            self.joining = None;
+        }
+    }
+
     fn name_dialog(&mut self, ctx: &egui::Context) {
         let Some(naming) = &mut self.naming else {
             return;
@@ -1528,6 +1680,7 @@ impl eframe::App for App {
         self.confirm_dialog(ctx);
         self.note_dialog(ctx);
         self.name_dialog(ctx);
+        self.join_dialog(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
@@ -2045,6 +2198,7 @@ impl App {
                 self.spawn(&doing, move |repo| repo.revert(oid));
             }
             refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
+            refs_view::Pick::Join { from, onto } => self.ask_join(from, onto),
             refs_view::Pick::Copy(text) => {
                 ctx.copy_text(text.clone());
                 self.said(format!("{text} copied"));

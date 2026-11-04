@@ -262,3 +262,136 @@ fn moving_up_when_there_is_room_moves_without_writing_a_commit() {
     assert_eq!(tip(&temp.open()), ahead);
     assert_eq!(temp.open().commits(50).unwrap().len(), 2);
 }
+
+// Dropping one branch on another.
+//
+// The gesture reads one way round and the tests say so out loud: the branch
+// you drop *on* is the one that ends up different.
+
+#[test]
+fn merging_onto_a_branch_you_are_not_on_stands_on_it_first() {
+    let temp = TempRepo::new("join-merge");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    let theirs = commit(&temp, "b.txt", "two\n", "feat: two");
+    temp.open().checkout_branch(&trunk).unwrap();
+    commit(&temp, "c.txt", "three\n", "feat: three");
+    // Back on the side branch, so the drop has somewhere to travel from.
+    temp.open().checkout_branch("side").unwrap();
+
+    temp.open().join(&trunk, "side", gitrust_core::Join::Merge).unwrap();
+
+    // It is the branch dropped on that moved, and we are standing on it.
+    assert_eq!(temp.open().head_name(), "side");
+    assert_eq!(read(&temp, "c.txt"), "three\n");
+    assert!(temp.open().commits(50).unwrap().iter().any(|c| c.id == theirs));
+}
+
+#[test]
+fn the_branch_dropped_on_is_the_one_that_is_replayed() {
+    let temp = TempRepo::new("join-rebase");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    commit(&temp, "b.txt", "two\n", "feat: two");
+    temp.open().checkout_branch(&trunk).unwrap();
+    let theirs = commit(&temp, "c.txt", "three\n", "feat: three");
+    temp.open().checkout_branch("side").unwrap();
+
+    // Standing on the trunk, drop the trunk on "side": "side" is replayed.
+    temp.open().checkout_branch(&trunk).unwrap();
+    temp.open().join(&trunk, "side", gitrust_core::Join::Rebase).unwrap();
+
+    assert_eq!(temp.open().head_name(), "side");
+    // One straight line: the trunk's commit is now underneath the side's.
+    let walk = temp.open().commits(50).unwrap();
+    assert!(walk.iter().any(|c| c.id == theirs));
+    assert_eq!(walk.len(), 3);
+}
+
+#[test]
+fn moving_a_branch_up_to_another_writes_nothing_when_there_is_room() {
+    let temp = TempRepo::new("join-ff");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    let ahead = commit(&temp, "b.txt", "two\n", "feat: two");
+    temp.open().checkout_branch(&trunk).unwrap();
+
+    temp.open().join("side", &trunk, gitrust_core::Join::FastForward).unwrap();
+
+    assert_eq!(temp.open().head_name(), trunk);
+    assert_eq!(temp.open().head_oid().unwrap(), ahead);
+    assert_eq!(temp.open().commits(50).unwrap().len(), 2);
+}
+
+/// Dropping a branch on itself is the easiest misdrop there is, and it has to
+/// cost nothing.
+#[test]
+fn a_branch_dropped_on_itself_is_refused_before_any_switching() {
+    let temp = TempRepo::new("join-itself");
+    let trunk = start(&temp);
+
+    for how in [gitrust_core::Join::Merge, gitrust_core::Join::Rebase] {
+        let err = temp.open().join(&trunk, &trunk, how).unwrap_err().to_string();
+        assert!(err.contains("would go into"), "{err}");
+    }
+    assert_eq!(temp.open().head_name(), trunk);
+}
+
+/// The switch happened even though the rest did not, and that has to be said:
+/// the next thing you do would otherwise happen somewhere you did not expect.
+#[test]
+fn a_join_that_fails_says_which_branch_it_left_you_on() {
+    let temp = TempRepo::new("join-stranded");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    commit(&temp, "a.txt", "theirs\n", "feat: theirs");
+    temp.open().checkout_branch(&trunk).unwrap();
+    commit(&temp, "a.txt", "ours\n", "feat: ours");
+
+    // From the trunk, drop the trunk onto "side": they clash.
+    let err = temp
+        .open()
+        .join(&trunk, "side", gitrust_core::Join::Merge)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("you are now on side"), "{err}");
+    assert_eq!(temp.open().head_name(), "side");
+}
+
+/// What the dialog puts in front of somebody has to name both branches the
+/// right way round, because that is the whole of what they are deciding.
+#[test]
+fn what_a_join_says_it_will_do_names_both_branches() {
+    use gitrust_core::Join;
+    assert_eq!(Join::Merge.says("feat", "main"), "Merge feat into main");
+    assert_eq!(Join::Rebase.says("feat", "main"), "Rebase main onto feat");
+    assert_eq!(Join::FastForward.says("feat", "main"), "Move main up to feat");
+}
+
+#[test]
+fn there_is_room_to_move_up_only_while_the_branch_has_nothing_of_its_own() {
+    let temp = TempRepo::new("join-room");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    commit(&temp, "b.txt", "two\n", "feat: two");
+    temp.open().checkout_branch(&trunk).unwrap();
+
+    // The trunk has not moved since side left it, so it can simply go up.
+    assert!(temp.open().has_room(&trunk, "side").unwrap());
+    // The other way round there is nothing above to go up to.
+    assert!(!temp.open().has_room("side", &trunk).unwrap());
+
+    // Once the trunk commits something of its own there is a merge to write,
+    // and moving up stops being an answer.
+    commit(&temp, "c.txt", "three\n", "feat: three");
+    assert!(!temp.open().has_room(&trunk, "side").unwrap());
+
+    // A branch has no room to move up to itself.
+    assert!(!temp.open().has_room(&trunk, &trunk).unwrap());
+}
