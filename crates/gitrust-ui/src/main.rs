@@ -31,6 +31,13 @@ use gitrust_core::{
 /// path you can read and for the folders listed under it.
 const REPO_MENU: f32 = 520.0;
 
+/// How wide the menu a drop opens is.
+///
+/// Set, not merely asked for: a minimum leaves egui free to remember a wider
+/// rectangle from last time and hand it back a notch wider on every opening,
+/// which is exactly what the repository menu above used to do.
+const JOIN_MENU: f32 = 300.0;
+
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
@@ -218,8 +225,16 @@ struct Joining {
     /// The branch dropped on: the one that ends up somewhere else.
     onto: String,
     /// Whether `onto` could simply move up. Worked out once, when the gesture
-    /// lands, rather than every frame the dialog is on screen.
+    /// lands, rather than every frame the menu is on screen.
     room: bool,
+    /// Where it was dropped, which is where the menu goes. A menu that opens
+    /// in the middle of the window makes you look away from the two branches
+    /// you were just aiming at.
+    at: egui::Pos2,
+    /// Whether it has been on screen for a frame. Until it has, a click
+    /// cannot be meant for anything outside it -- and the release that
+    /// dropped the branch is still in the same frame.
+    armed: bool,
 }
 
 /// Something destructive that is waiting for a yes.
@@ -1269,29 +1284,44 @@ impl App {
     /// they are not near-misses of each other: a merge keeps both histories,
     /// a rebase writes one of them again, and a move up writes nothing at
     /// all. Nothing in the gesture says which, so nothing here guesses.
-    fn ask_join(&mut self, from: String, onto: String) {
-        // Asked now rather than while the dialog is up: it is one question
+    fn ask_join(&mut self, from: String, onto: String, ctx: &egui::Context) {
+        // Asked now rather than while the menu is up: it is one question
         // about two branches that cannot change while somebody is reading.
         let room = self
             .repo()
             .and_then(|repo| repo.has_room(&onto, &from))
             .unwrap_or(false);
-        self.joining = Some(Joining { from, onto, room });
+        let at = ctx.pointer_latest_pos().unwrap_or_default();
+        self.joining = Some(Joining { from, onto, room, at, armed: false });
     }
 
-    fn join_dialog(&mut self, ctx: &egui::Context) {
+    /// The menu the drop opens, where the drop happened.
+    ///
+    /// It is the same menu as the one on a right click, and deliberately so:
+    /// a drop and a right click are two ways of asking the same question, and
+    /// two different-looking answers to it would be two things to learn.
+    fn join_menu(&mut self, ctx: &egui::Context) {
         let Some(joining) = &self.joining else {
             return;
         };
-        let (from, onto, room) = (joining.from.clone(), joining.onto.clone(), joining.room);
+        let (from, onto, room, at, armed) = (
+            joining.from.clone(),
+            joining.onto.clone(),
+            joining.room,
+            joining.at,
+            joining.armed,
+        );
 
-        // What each one would really do, said before it is done rather than
-        // in the message afterwards.
+        // What each one would really do. It is not on the face of the menu --
+        // three sentences would not be a menu -- but it is one hover away,
+        // including the reason the greyed-out one is greyed out.
         let options: Vec<(Join, String, bool)> = vec![
             (
                 Join::Merge,
-                "One commit holding both sides. Nothing already written changes."
-                    .to_string(),
+                format!(
+                    "One commit holding both sides. Nothing already written changes, \
+                     and you are left on {onto}."
+                ),
                 true,
             ),
             (
@@ -1322,66 +1352,58 @@ impl App {
         let mut chosen = None;
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
-        let modal = egui::Modal::new(egui::Id::new("joining"))
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::RAISED)
-                    .inner_margin(egui::Margin::same(18))
-                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
-            )
+        let area = egui::Area::new(egui::Id::new("joining"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            // Dropped near the bottom of the window, the menu would otherwise
+            // open below it and be unreachable.
+            .constrain(true)
             .show(ctx, |ui| {
-                ui.set_width(430.0);
-                ui.label(
-                    egui::RichText::new(format!("{from} dropped on {onto}"))
-                        .font(theme::strong(14.0))
-                        .color(theme::TEXT),
-                );
-                ui.add_space(5.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{onto} is the one that ends up somewhere else, and you are left \
-                         standing on it."
-                    ))
-                    .font(theme::body(12.0))
-                    .color(theme::MUTED),
-                );
-                ui.add_space(14.0);
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.set_width(JOIN_MENU);
 
-                for (how, why, can) in options {
-                    let button = egui::Button::new(
-                        egui::RichText::new(how.says(&from, &onto))
-                            .font(theme::medium(13.0))
-                            .color(match can {
-                                true => theme::TEXT,
-                                false => theme::FAINT,
-                            }),
-                    )
-                    .min_size(egui::vec2(ui.available_width(), 30.0));
+                    // A row in a menu is not a button with a box round it.
+                    // Inside an area of our own the ordinary widget style
+                    // applies, so the two lines egui's own menus set are set
+                    // here: no fill and no outline until the pointer is on it.
+                    let widgets = &mut ui.style_mut().visuals.widgets;
+                    widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    widgets.inactive.bg_stroke = egui::Stroke::NONE;
 
-                    if ui.add_enabled(can, button).clicked() {
-                        chosen = Some(how);
+                    for (how, why, can) in options {
+                        // The one that writes nothing goes under a rule: it
+                        // is a different kind of answer from the two above,
+                        // which both leave a commit behind.
+                        if how == Join::FastForward {
+                            theme::rule(ui);
+                        }
+
+                        let button = egui::Button::new(
+                            egui::RichText::new(how.says(&from, &onto))
+                                .font(theme::body(12.5)),
+                        )
+                        .min_size(egui::vec2(ui.available_width(), 24.0));
+
+                        let button = ui
+                            .add_enabled(can, button)
+                            .on_hover_text(&why)
+                            .on_disabled_hover_text(&why);
+                        if button.clicked() {
+                            chosen = Some(how);
+                        }
                     }
-                    ui.add_space(3.0);
-                    ui.label(
-                        egui::RichText::new(why)
-                            .font(theme::body(11.5))
-                            .color(theme::FAINT),
-                    );
-                    ui.add_space(12.0);
-                }
-
-                ui.add_space(2.0);
-                if ui
-                    .add(egui::Button::new("Cancel").min_size(egui::vec2(88.0, 28.0)))
-                    .clicked()
-                {
-                    close = true;
-                }
+                });
             });
 
-        if modal.backdrop_response.clicked() {
-            close = true;
+        // Clicking anywhere else puts it away, the way a menu does. Not on
+        // the frame it opened: the pointer release that dropped the branch
+        // is still that frame's, and it would close before it was seen.
+        if armed {
+            let outside = ctx.input(|i| i.pointer.any_click())
+                && !ctx
+                    .pointer_latest_pos()
+                    .is_some_and(|pos| area.response.rect.contains(pos));
+            close |= outside;
         }
 
         if let Some(how) = chosen {
@@ -1391,8 +1413,13 @@ impl App {
             return;
         }
 
-        if close {
-            self.joining = None;
+        match close {
+            true => self.joining = None,
+            false => {
+                if let Some(joining) = &mut self.joining {
+                    joining.armed = true;
+                }
+            }
         }
     }
 
@@ -1680,7 +1707,7 @@ impl eframe::App for App {
         self.confirm_dialog(ctx);
         self.note_dialog(ctx);
         self.name_dialog(ctx);
-        self.join_dialog(ctx);
+        self.join_menu(ctx);
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
@@ -2198,7 +2225,7 @@ impl App {
                 self.spawn(&doing, move |repo| repo.revert(oid));
             }
             refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
-            refs_view::Pick::Join { from, onto } => self.ask_join(from, onto),
+            refs_view::Pick::Join { from, onto } => self.ask_join(from, onto, ctx),
             refs_view::Pick::Copy(text) => {
                 ctx.copy_text(text.clone());
                 self.said(format!("{text} copied"));
