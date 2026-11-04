@@ -11,6 +11,7 @@ mod changes_view;
 mod detail_view;
 mod diff_view;
 mod graph_view;
+mod picker;
 mod refs_view;
 mod theme;
 mod toast;
@@ -72,21 +73,133 @@ struct App {
     /// How many tabs have ever been opened. It is where each one's egui salt
     /// comes from, so it counts up and never counts down.
     opened: u64,
-    /// The path being typed into the new-tab box, while one is.
-    adding: Option<String>,
+    /// The screen for choosing a repository, while it is up. The plus opens
+    /// it; it is the one screen here that is not about a repository.
+    picking: Option<picker::Picker>,
+    /// The repositories this machine knows, read when the screen opens so the
+    /// rows are not asking the disk sixty times a second.
+    known: Vec<gitrust_core::Known>,
+    /// What each of them was at, worked out at the same time.
+    glance: std::collections::HashMap<std::path::PathBuf, String>,
+    /// A clone on its way down, when one is.
+    cloning: Option<Cloning>,
+}
+
+/// A repository being brought down, and where it is going.
+struct Cloning {
+    into: std::path::PathBuf,
+    done: std::sync::mpsc::Receiver<Result<String>>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
         theme::install(&cc.egui_ctx);
-        Self { open: vec![Open::new(path, 0)], at: 0, opened: 1, adding: None }
+        let mut app = Self {
+            open: vec![Open::new(path, 0)],
+            at: 0,
+            opened: 1,
+            picking: None,
+            known: Vec::new(),
+            glance: std::collections::HashMap::new(),
+            cloning: None,
+        };
+        app.remember(0);
+        app
     }
 
     fn add(&mut self, path: String) {
         self.open.push(Open::new(path, self.opened));
         self.opened += 1;
         self.at = self.open.len() - 1;
-        self.adding = None;
+        self.picking = None;
+        self.remember(self.at);
+    }
+
+    /// Writes down that a repository was opened, so the screen can offer it
+    /// again next time.
+    ///
+    /// A path that is not a repository is not remembered and does not
+    /// complain: the tab it was opened in will say what is wrong with it,
+    /// and saying it twice in two places helps nobody.
+    fn remember(&mut self, which: usize) {
+        let Some(open) = self.open.get(which) else {
+            return;
+        };
+        let path = std::path::PathBuf::from(&open.path);
+        if Repo::open(&open.path).is_err() {
+            return;
+        }
+        let now = chrono::Local::now().timestamp();
+        let _ = gitrust_core::known::seen(&path, now);
+    }
+
+    /// Opens the screen, reading the list and a line about each one.
+    ///
+    /// Done here, once, rather than in the view: a row that asked the disk
+    /// what branch it was on would ask it again every frame, for every
+    /// repository on the list.
+    fn pick(&mut self) {
+        self.known = gitrust_core::known::all();
+        self.glance = self
+            .known
+            .iter()
+            .filter(|known| known.there())
+            .filter_map(|known| {
+                let repo = Repo::open(&known.path.display().to_string()).ok()?;
+                let head = repo.head_name();
+                let line = match repo.tracking() {
+                    Some(t) if t.ahead > 0 && t.behind > 0 => {
+                        format!("{head}  \u{2191}{}  \u{2193}{}", t.ahead, t.behind)
+                    }
+                    Some(t) if t.ahead > 0 => format!("{head}  \u{2191}{}", t.ahead),
+                    Some(t) if t.behind > 0 => format!("{head}  \u{2193}{}", t.behind),
+                    _ => head,
+                };
+                Some((known.path.clone(), line))
+            })
+            .collect();
+        self.picking = Some(picker::Picker::default());
+    }
+
+    /// Acts on what the screen asked for.
+    fn act_on_pick(&mut self, act: picker::Act) {
+        match act {
+            picker::Act::Open(path) => {
+                // Already in a tab: go to it rather than opening a second one
+                // on the same folder, which would be two windows onto one
+                // working tree with no way to tell them apart.
+                match self.open.iter().position(|open| std::path::Path::new(&open.path) == path) {
+                    Some(which) => {
+                        self.at = which;
+                        self.picking = None;
+                    }
+                    None => self.add(path.display().to_string()),
+                }
+            }
+            picker::Act::Start(path) => match gitrust_core::start::init(&path) {
+                Ok(_) => self.add(path.display().to_string()),
+                Err(err) => self.complain(err),
+            },
+            // The only slow one, and the only one that goes near a network.
+            // It runs where it will not hold the window still, and the tab it
+            // lands in is opened when it is there.
+            picker::Act::Clone { url, into } => self.start_clone(url, into),
+            picker::Act::Star { path, starred } => {
+                let _ = gitrust_core::known::star(&path, starred);
+                self.known = gitrust_core::known::all();
+            }
+            picker::Act::Forget(path) => {
+                let _ = gitrust_core::known::forget(&path);
+                self.known = gitrust_core::known::all();
+            }
+            picker::Act::Close => self.picking = None,
+        }
+    }
+
+    fn complain(&mut self, err: anyhow::Error) {
+        if let Some(open) = self.open.get_mut(self.at) {
+            open.note_error(format!("{err:#}"));
+        }
     }
 
     /// Takes a tab away.
@@ -184,14 +297,8 @@ impl App {
         }
     }
 
-    /// The button that opens another repository, and the box behind it.
-    ///
-    /// A path typed in, which is what the repository menu in the bar below
-    /// already asks for. There is no folder picker because there is no file
-    /// dialog in here: it would be a sixth dependency in a project that has
-    /// five on purpose.
+    /// The button that opens the screen for choosing a repository.
     fn plus(&mut self, ui: &mut egui::Ui) {
-        let id = ui.make_persistent_id("new-tab");
         let button = ui.add(
             egui::Button::new(
                 egui::RichText::new("+").font(theme::body(14.0)).color(theme::MUTED),
@@ -199,55 +306,86 @@ impl App {
             .frame(false)
             .min_size(egui::vec2(22.0, 20.0)),
         );
-        let button = button.on_hover_text("Open another repository");
-        if button.clicked() {
-            self.adding = Some(String::new());
-            ui.memory_mut(|memory| memory.toggle_popup(id));
+        if button.on_hover_text("Open another repository").clicked() {
+            self.pick();
         }
+    }
 
-        let Some(draft) = &mut self.adding else {
+    /// Brings a repository down, off to one side.
+    ///
+    /// The only thing in this window that can take minutes, and the only one
+    /// that goes near a network without a repository behind it. The tab is
+    /// opened when the clone is there, not when it is asked for: a tab onto a
+    /// folder that is still filling up has nothing to show and no way to say
+    /// why.
+    fn start_clone(&mut self, url: String, into: std::path::PathBuf) {
+        let (send, done) = std::sync::mpsc::channel();
+        let where_to = into.clone();
+        std::thread::spawn(move || {
+            let _ = send.send(gitrust_core::start::clone(&url, &where_to));
+        });
+        self.cloning = Some(Cloning { into, done });
+    }
+
+    /// Looks at whether the clone has finished.
+    fn poll_clone(&mut self, ctx: &egui::Context) {
+        let Some(cloning) = &self.cloning else {
+            return;
+        };
+        match cloning.done.try_recv() {
+            Ok(result) => {
+                let into = cloning.into.clone();
+                self.cloning = None;
+                match result {
+                    Ok(_) => self.add(into.display().to_string()),
+                    Err(err) => self.complain(err),
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Without this egui goes to sleep as soon as nobody touches
+                // the mouse, and a clone that finished would sit there unseen
+                // until something else woke the window.
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.cloning = None,
+        }
+    }
+
+    /// The screen, drawn over everything instead of a repository.
+    fn picker(&mut self, ctx: &egui::Context) {
+        let Some(state) = &mut self.picking else {
             return;
         };
 
-        let mut open = None;
-        egui::popup::popup_below_widget(
-            ui,
-            id,
-            &button,
-            egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_width(REPO_MENU);
-                ui.horizontal(|ui| {
-                    let entry = ui.add(
-                        egui::TextEdit::singleline(draft)
-                            .desired_width(ui.available_width() - 66.0)
-                            .margin(egui::vec2(8.0, 5.0))
-                            .font(theme::mono(11.5))
-                            .hint_text(
-                                egui::RichText::new("path to a repository")
-                                    .color(theme::FAINT),
-                            ),
-                    );
-                    // Only while nothing else has it. Asking for it every
-                    // frame outright would be taking it back off the Open
-                    // button the moment the pointer put it there.
-                    if ui.memory(|memory| memory.focused().is_none()) {
-                        entry.request_focus();
-                    }
-                    if ui.button("Open").clicked()
-                        || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        open = Some(draft.clone());
-                    }
-                });
-            },
-        );
+        let open_now: Vec<std::path::PathBuf> =
+            self.open.iter().map(|open| std::path::PathBuf::from(&open.path)).collect();
+        let known = std::mem::take(&mut self.known);
+        let glance = std::mem::take(&mut self.glance);
 
-        if let Some(path) = open {
-            if !path.trim().is_empty() {
-                self.add(path.trim().to_string());
-            }
-            ui.memory_mut(|memory| memory.close_popup());
+        let mut act = None;
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::CANVAS)
+                    .inner_margin(egui::Margin::symmetric(14, 0)),
+            )
+            .show(ctx, |ui| {
+                act = picker::show(ui, state, &known, &glance, &open_now);
+
+                if let Some(cloning) = &self.cloning {
+                    ui.add_space(4.0);
+                    theme::empty(
+                        ui,
+                        &format!("Cloning into {}\u{2026}", cloning.into.display()),
+                    );
+                }
+            });
+
+        self.known = known;
+        self.glance = glance;
+
+        if let Some(act) = act {
+            self.act_on_pick(act);
         }
     }
 }
@@ -268,9 +406,17 @@ impl eframe::App for App {
         // strip that appears only once you have two tabs is a way of opening
         // a second tab that you can only reach by having one.
         self.strip(ctx);
+        self.poll_clone(ctx);
 
-        if let Some(open) = self.open.get_mut(self.at) {
-            open.draw(ctx);
+        // One or the other, never both: the screen is not a dialog over a
+        // repository, it is what is there when you have not picked one.
+        match self.picking.is_some() {
+            true => self.picker(ctx),
+            false => {
+                if let Some(open) = self.open.get_mut(self.at) {
+                    open.draw(ctx);
+                }
+            }
         }
     }
 }

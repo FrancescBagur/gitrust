@@ -55,6 +55,8 @@ crates/
     backlog.rs      the work with no branch yet, and how it travels
     note.rs         what a branch is for, in the words somebody used
     worktree.rs     the same repository checked out in several places
+    start.rs        cloning one down, or starting an empty one
+    known.rs        the repositories this machine has opened
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
@@ -65,7 +67,8 @@ crates/
     main.rs         window, state and carrying actions out
     theme.rs        color, typography and spacing
     action_bar.rs   pull, push, branch and stash
-    refs_view.rs    the sidebar of branches and tags
+    refs_view.rs    the sidebar of branches, tags and checkouts
+    picker.rs       choosing a repository, cloning one, starting one
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
@@ -180,8 +183,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: a hundred and ninety-six tests,
-a hundred and thirty-seven of them against real repositories made in `/tmp` and
+files. Those are the ones that carry cover: two hundred and fourteen tests,
+a hundred and forty-five of them against real repositories made in `/tmp` and
 deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over
