@@ -214,6 +214,11 @@ impl App {
     ///
     /// On a thread, because it does not come back until somebody has looked
     /// at the dialog and decided, and that can be minutes.
+    /// Whether the screen is asking where to start an empty repository.
+    fn starting(&self) -> bool {
+        self.picking.as_ref().is_some_and(|state| state.starting())
+    }
+
     fn browse(&mut self, beside: bool) {
         if self.browsing.is_some() {
             return;
@@ -236,15 +241,27 @@ impl App {
                 match found {
                     // Cancelled. An ordinary answer, and nothing to say about it.
                     Ok(None) => {}
-                    Ok(Some(path)) => {
-                        if let Some(state) = &mut self.picking {
-                            let box_ = match beside {
-                                true => &mut state.beside,
-                                false => &mut state.draft,
-                            };
-                            *box_ = path.display().to_string();
+                    // Choosing a folder in a dialog called "choose a
+                    // repository folder" is the decision. Putting it in a box
+                    // and waiting for a second Open was a step that asked
+                    // somebody to say yes to what they had just said yes to.
+                    //
+                    // The two boxes that are not that are left filled in
+                    // instead: a clone still needs its address, and starting
+                    // an empty repository usually means a folder inside the
+                    // one that was picked, with a name yet to be typed.
+                    Ok(Some(path)) => match (beside, self.starting()) {
+                        (false, false) => self.act_on_pick(picker::Act::Open(path)),
+                        _ => {
+                            if let Some(state) = &mut self.picking {
+                                let box_ = match beside {
+                                    true => &mut state.beside,
+                                    false => &mut state.draft,
+                                };
+                                *box_ = path.display().to_string();
+                            }
                         }
-                    }
+                    },
                     Err(err) => self.complain(err),
                 }
             }

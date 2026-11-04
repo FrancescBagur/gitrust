@@ -73,6 +73,15 @@ pub struct Picker {
 }
 
 impl Picker {
+    /// Whether what is being asked for is a place to make a new repository.
+    ///
+    /// It is the one case where a folder that was picked is not the answer
+    /// but the start of one: a chooser only offers folders that exist, and
+    /// the new one usually goes inside the one that was picked.
+    pub fn starting(&self) -> bool {
+        self.asking == Some(Asking::Start)
+    }
+
     /// Where a clone typed in right now would go.
     fn landing(&self) -> Option<PathBuf> {
         gitrust_core::start::folder_for(&self.draft, Path::new(self.beside.trim()))

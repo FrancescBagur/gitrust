@@ -93,8 +93,29 @@ pub fn folder(title: &str) -> Result<Option<PathBuf>> {
     // Without it any other application's dialog closing would look like ours.
     let handle = between(&String::from_utf8_lossy(&asked.stdout), "objectpath '", "'");
 
+    // Read on a thread so the wait below can give up. Reading the pipe
+    // directly would wait for a line that may never come, and the thread
+    // this is on would be gone for the rest of the session with nothing to
+    // show for it and nothing said.
+    let (send, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if send.send(line).is_err() {
+                return;
+            }
+        }
+    });
+
+    let mut answered = false;
     let mut found = None;
-    for line in BufReader::new(out).lines().map_while(Result::ok) {
+    let deadline = std::time::Instant::now() + PATIENCE;
+
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        let Ok(line) = lines.recv_timeout(left) else {
+            // The pipe ended or the time ran out. Either way nothing is
+            // coming, and which of the two it was changes nothing.
+            break;
+        };
         if !line.contains("::Response") {
             continue;
         }
@@ -104,15 +125,34 @@ pub fn folder(title: &str) -> Result<Option<PathBuf>> {
             }
         }
         // Cancelling answers too, with a code and no address in it. Either
-        // way the waiting is over.
+        // way the waiting is over, and it is an answer: that is what tells it
+        // apart from never hearing back at all.
+        answered = true;
         found = between(&line, "file://", "'").and_then(|uri| unescape(&uri)).map(PathBuf::from);
         break;
     }
 
     let _ = monitor.kill();
     let _ = monitor.wait();
+
+    // Silence and "cancelled" look the same from here, and they are not the
+    // same thing at all: one is somebody deciding, the other is this not
+    // working. Saying so is the difference between a button that does
+    // nothing and a button that tells you why.
+    anyhow::ensure!(
+        answered,
+        "the desktop never answered about the folder. Type the path instead, \
+         or drag the folder onto the window"
+    );
     Ok(found)
 }
+
+/// How long somebody is allowed to take over the dialog before this gives up
+/// on hearing back at all.
+///
+/// Generous, because looking for a folder is looking, and short enough that a
+/// reply that is never coming is said out loud the same session.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Whether there is any point offering the button.
 ///
