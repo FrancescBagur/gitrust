@@ -56,14 +56,242 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+/// The window: the repositories open in it, and which one is being looked at.
+///
+/// Everything else lives in [`Open`], and that is not a judgement call -- when
+/// the time came to split this in two, every single thing the window
+/// remembered turned out to be about a repository: the graph, the working
+/// tree, what is half-typed into the commit box, the operation running off to
+/// one side. Nothing was left over to be shared. So tabs are a list of those
+/// and a finger on one of them, and not a layer over something common.
+struct App {
+    open: Vec<Open>,
+    /// Which one is on top. Kept inside the list by `close`, the only thing
+    /// that can make the list shorter.
+    at: usize,
+    /// How many tabs have ever been opened. It is where each one's egui salt
+    /// comes from, so it counts up and never counts down.
+    opened: u64,
+    /// The path being typed into the new-tab box, while one is.
+    adding: Option<String>,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
+        theme::install(&cc.egui_ctx);
+        Self { open: vec![Open::new(path, 0)], at: 0, opened: 1, adding: None }
+    }
+
+    fn add(&mut self, path: String) {
+        self.open.push(Open::new(path, self.opened));
+        self.opened += 1;
+        self.at = self.open.len() - 1;
+        self.adding = None;
+    }
+
+    /// Takes a tab away.
+    ///
+    /// The last one does not close. A window with no repository in it would
+    /// have nothing to draw and nothing to say, and "quit" is a thing the
+    /// window manager already does better.
+    fn close(&mut self, which: usize) {
+        if self.open.len() < 2 {
+            return;
+        }
+        self.open.remove(which);
+        // Standing on a tab to the right of the one that went, you were
+        // looking at a repository that has now shifted one place left.
+        if self.at >= which {
+            self.at = self.at.saturating_sub(1);
+        }
+        self.at = self.at.min(self.open.len() - 1);
+    }
+
+    /// The strip of tabs, and the box for opening another.
+    fn strip(&mut self, ctx: &egui::Context) {
+        let mut go = None;
+        let mut shut = None;
+
+        egui::TopBottomPanel::top("tabs")
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::CANVAS)
+                    .inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 0 }),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+
+                    for (which, open) in self.open.iter().enumerate() {
+                        let here = which == self.at;
+                        // The folder's own name. The whole path is too long
+                        // for a tab and the part that differs is the end.
+                        let name = std::path::Path::new(&open.path)
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_else(|| open.path.clone());
+
+                        let label = ui
+                            .selectable_label(
+                                here,
+                                egui::RichText::new(name)
+                                    .font(match here {
+                                        true => theme::medium(12.5),
+                                        false => theme::body(12.5),
+                                    })
+                                    .color(match here {
+                                        true => theme::TEXT,
+                                        false => theme::MUTED,
+                                    }),
+                            )
+                            .on_hover_text(&open.path);
+                        if label.clicked() {
+                            go = Some(which);
+                        }
+
+                        // The cross is on the tab you are on and on whatever
+                        // the pointer is over, so the strip is not a row of
+                        // crosses asking to be pressed by accident.
+                        let shown = here || label.hovered();
+                        if shown && self.open.len() > 1 {
+                            let cross = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{00d7}")
+                                        .font(theme::body(13.0))
+                                        .color(theme::FAINT),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(16.0, 16.0)),
+                            );
+                            if cross.on_hover_text("Close this tab").clicked() {
+                                shut = Some(which);
+                            }
+                        }
+                        ui.add_space(6.0);
+                    }
+
+                    self.plus(ui);
+                });
+                ui.add_space(4.0);
+            });
+
+        if let Some(which) = shut {
+            self.close(which);
+            return;
+        }
+        if let Some(which) = go {
+            self.at = which;
+        }
+    }
+
+    /// The button that opens another repository, and the box behind it.
+    ///
+    /// A path typed in, which is what the repository menu in the bar below
+    /// already asks for. There is no folder picker because there is no file
+    /// dialog in here: it would be a sixth dependency in a project that has
+    /// five on purpose.
+    fn plus(&mut self, ui: &mut egui::Ui) {
+        let id = ui.make_persistent_id("new-tab");
+        let button = ui.add(
+            egui::Button::new(
+                egui::RichText::new("+").font(theme::body(14.0)).color(theme::MUTED),
+            )
+            .frame(false)
+            .min_size(egui::vec2(22.0, 20.0)),
+        );
+        let button = button.on_hover_text("Open another repository");
+        if button.clicked() {
+            self.adding = Some(String::new());
+            ui.memory_mut(|memory| memory.toggle_popup(id));
+        }
+
+        let Some(draft) = &mut self.adding else {
+            return;
+        };
+
+        let mut open = None;
+        egui::popup::popup_below_widget(
+            ui,
+            id,
+            &button,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_width(REPO_MENU);
+                ui.horizontal(|ui| {
+                    let entry = ui.add(
+                        egui::TextEdit::singleline(draft)
+                            .desired_width(ui.available_width() - 66.0)
+                            .margin(egui::vec2(8.0, 5.0))
+                            .font(theme::mono(11.5))
+                            .hint_text(
+                                egui::RichText::new("path to a repository")
+                                    .color(theme::FAINT),
+                            ),
+                    );
+                    // Only while nothing else has it. Asking for it every
+                    // frame outright would be taking it back off the Open
+                    // button the moment the pointer put it there.
+                    if ui.memory(|memory| memory.focused().is_none()) {
+                        entry.request_focus();
+                    }
+                    if ui.button("Open").clicked()
+                        || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        open = Some(draft.clone());
+                    }
+                });
+            },
+        );
+
+        if let Some(path) = open {
+            if !path.trim().is_empty() {
+                self.add(path.trim().to_string());
+            }
+            ui.memory_mut(|memory| memory.close_popup());
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Every tab is polled, not only the one on top. An operation left
+        // running in another one has to finish whether or not you are looking
+        // at it; otherwise coming back to it would find it still saying
+        // "pushing…" with the push long since done.
+        for open in &mut self.open {
+            open.poll(ctx);
+            open.poll_forge(ctx);
+            open.poll_board(ctx);
+        }
+
+        // Always, even with one repository open: the plus lives in it, and a
+        // strip that appears only once you have two tabs is a way of opening
+        // a second tab that you can only reach by having one.
+        self.strip(ctx);
+
+        if let Some(open) = self.open.get_mut(self.at) {
+            open.draw(ctx);
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
-enum Tab {
+enum View {
     History,
     Changes,
     Board,
 }
 
-struct App {
+struct Open {
+    /// What keeps this tab's egui state apart from the other tabs'. Scroll
+    /// positions, folded sections and open popups are remembered by widget
+    /// id, and without something to tell two tabs apart they would all
+    /// remember one window between them.
+    ///
+    /// It is handed out on creation and never reused, rather than being the
+    /// tab's position: closing a tab would otherwise shift every tab after it
+    /// onto somebody else's remembered state.
+    salt: u64,
     path: String,
     head: String,
     /// What is in the repository: it stays put in the bottom bar.
@@ -71,7 +299,7 @@ struct App {
     /// The last thing that happened. It is cleared on a reload.
     status: String,
     status_failed: bool,
-    tab: Tab,
+    view: View,
 
     graph: Graph,
     limit: usize,
@@ -262,17 +490,16 @@ enum Deed {
     Review(String),
 }
 
-impl App {
-    fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
-        theme::install(&cc.egui_ctx);
-
+impl Open {
+    fn new(path: String, salt: u64) -> Self {
         let mut app = Self {
+            salt,
             path,
             head: String::new(),
             summary: String::new(),
             status: String::new(),
             status_failed: false,
-            tab: Tab::History,
+            view: View::History,
             graph: Graph::default(),
             limit: 5_000,
             needle: String::new(),
@@ -1656,7 +1883,7 @@ impl App {
     }
 }
 
-impl App {
+impl Open {
     fn act(&mut self, action: action_bar::Action) {
         use action_bar::Action;
 
@@ -1698,11 +1925,9 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll(ctx);
-        self.poll_forge(ctx);
-        self.poll_board(ctx);
+impl Open {
+    /// Everything this repository draws, in the order it is drawn.
+    fn draw(&mut self, ctx: &egui::Context) {
         self.top_bar(ctx);
         self.confirm_dialog(ctx);
         self.note_dialog(ctx);
@@ -1711,26 +1936,30 @@ impl eframe::App for App {
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
-        if self.tab == Tab::History {
+        if self.view == View::History {
             self.detail_panel(ctx);
         }
 
-        let frame = match self.tab {
+        let frame = match self.view {
             // The graph is painted on the deepest background in the window so
             // that the lanes are the brightest thing on screen.
-            Tab::History => egui::Frame::NONE.fill(theme::CANVAS),
-            Tab::Changes => egui::Frame::NONE.fill(theme::PANEL),
+            View::History => egui::Frame::NONE.fill(theme::CANVAS),
+            View::Changes => egui::Frame::NONE.fill(theme::PANEL),
             // The board is painted on the canvas so that the cards, which wear
             // the panels' color, lift off the background.
-            Tab::Board => egui::Frame::NONE
+            View::Board => egui::Frame::NONE
                 .fill(theme::CANVAS)
                 .inner_margin(egui::Margin::symmetric(12, 0)),
         };
 
         egui::CentralPanel::default()
             .frame(frame)
-            .show(ctx, |ui| match self.tab {
-                Tab::History => {
+            .show(ctx, |ui| {
+                // Each tab keeps its own scroll positions and folds. Without
+                // this they are all one window as far as egui is concerned,
+                // and scrolling one repository's history scrolls the rest.
+                ui.push_id(self.salt, |ui| match self.view {
+                View::History => {
                     // With a detached HEAD there is no branch for the menu to
                     // merge into or move up, the same as in the sidebar.
                     let on_branch = self.refs.iter().any(|entry| entry.is_head);
@@ -1763,7 +1992,7 @@ impl eframe::App for App {
                         self.act_on_ref(picked, ctx);
                     }
                 }
-                Tab::Board => {
+                View::Board => {
                     // The forge is asked the first time the board is looked
                     // at, not when the window opens: somebody who never leaves
                     // the history should not be making network calls.
@@ -1813,7 +2042,7 @@ impl eframe::App for App {
                     match picked {
                         Some(board_view::Act::Pick(refs_view::Pick::Show(oid))) => {
                             self.reveal_commit(oid);
-                            self.tab = Tab::History;
+                            self.view = View::History;
                         }
                         Some(board_view::Act::Pick(refs_view::Pick::Switch { name, remote })) => {
                             self.switch(name, remote)
@@ -1880,7 +2109,7 @@ impl eframe::App for App {
                         _ => {}
                     }
                 }
-                Tab::Changes => {
+                View::Changes => {
                     let (amendable, pushed) = self.amend_state();
                     let selected = self
                         .selected
@@ -1907,6 +2136,7 @@ impl eframe::App for App {
                         self.handle(action);
                     }
                 }
+            })
             });
 
         // Last, over the panels and after whatever has just been pressed, so
@@ -1920,9 +2150,9 @@ impl eframe::App for App {
     }
 }
 
-impl App {
+impl Open {
     fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("bar")
+        egui::TopBottomPanel::top(egui::Id::new(("bar", self.salt)))
             .frame(
                 egui::Frame::NONE
                     .fill(theme::RAISED)
@@ -1932,7 +2162,7 @@ impl App {
                 ui.horizontal(|ui| {
                     self.repo_menu(ui);
                     theme::vrule(ui);
-                    self.tabs(ui);
+                    self.views(ui);
                     theme::vrule(ui);
 
                     // Where HEAD is, in the window's one and only amber. It
@@ -2049,16 +2279,16 @@ impl App {
     }
 
     /// The two views, flush together like a two-position control.
-    fn tabs(&mut self, ui: &mut egui::Ui) {
+    fn views(&mut self, ui: &mut egui::Ui) {
         let pending = self.work.staged.len() + self.work.unstaged.len();
 
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            ui.selectable_value(&mut self.tab, Tab::History, "History");
+            ui.selectable_value(&mut self.view, View::History, "History");
 
-            let changes = ui.selectable_value(&mut self.tab, Tab::Changes, "Changes");
+            let changes = ui.selectable_value(&mut self.view, View::Changes, "Changes");
             ui.add_space(2.0);
-            ui.selectable_value(&mut self.tab, Tab::Board, "Board");
+            ui.selectable_value(&mut self.view, View::Board, "Board");
             ui.add_space(2.0);
             if pending > 0 {
                 ui.label(
@@ -2074,7 +2304,7 @@ impl App {
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status")
+        egui::TopBottomPanel::bottom(egui::Id::new(("status", self.salt)))
             .frame(
                 egui::Frame::NONE
                     .fill(theme::RAISED)
@@ -2110,7 +2340,7 @@ impl App {
         // With a detached HEAD there is no branch to bring anything into.
         let on_branch = self.refs.iter().any(|entry| entry.is_head);
 
-        egui::SidePanel::left("refs-panel")
+        egui::SidePanel::left(egui::Id::new(("refs-panel", self.salt)))
             .resizable(true)
             .default_width(222.0)
             .width_range(170.0..=360.0)
@@ -2146,7 +2376,7 @@ impl App {
         match picked {
             refs_view::Pick::Show(oid) => {
                 self.reveal_commit(oid);
-                self.tab = Tab::History;
+                self.view = View::History;
             }
             refs_view::Pick::Switch { name, remote } => self.switch(name, remote),
             refs_view::Pick::Merge(name) => {
@@ -2264,7 +2494,7 @@ impl App {
         let mut clicked = None;
         let mut action = None;
 
-        egui::SidePanel::right("detail")
+        egui::SidePanel::right(egui::Id::new(("detail", self.salt)))
             .resizable(true)
             .default_width(420.0)
             // Capped: without it, a commit with a long message widens the
