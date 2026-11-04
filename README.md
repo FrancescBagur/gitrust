@@ -69,6 +69,7 @@ crates/
     action_bar.rs   pull, push, branch and stash
     refs_view.rs    the sidebar of branches, tags and checkouts
     picker.rs       choosing a repository, cloning one, starting one
+    chooser.rs      asking the desktop for a folder, through its portal
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
@@ -183,7 +184,7 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and fourteen tests,
+files. Those are the ones that carry cover: two hundred and eighteen tests,
 a hundred and forty-five of them against real repositories made in `/tmp` and
 deleted when they finish.
 

@@ -8,6 +8,7 @@
 mod action_bar;
 mod board_view;
 mod changes_view;
+mod chooser;
 mod detail_view;
 mod diff_view;
 mod graph_view;
@@ -83,6 +84,13 @@ struct App {
     glance: std::collections::HashMap<std::path::PathBuf, String>,
     /// A clone on its way down, when one is.
     cloning: Option<Cloning>,
+    /// Whether this desktop has a file chooser to offer. Asked once, when
+    /// the screen first opens: a desktop does not grow a portal while
+    /// somebody is looking at a window.
+    dialog: Option<bool>,
+    /// A folder being chosen in the desktop's own dialog, and which box the
+    /// answer belongs in.
+    browsing: Option<(bool, std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>>>)>,
 }
 
 /// A repository being brought down, and where it is going.
@@ -102,6 +110,8 @@ impl App {
             known: Vec::new(),
             glance: std::collections::HashMap::new(),
             cloning: None,
+            dialog: None,
+            browsing: None,
         };
         app.remember(0);
         app
@@ -139,6 +149,9 @@ impl App {
     /// what branch it was on would ask it again every frame, for every
     /// repository on the list.
     fn pick(&mut self) {
+        if self.dialog.is_none() {
+            self.dialog = Some(chooser::there());
+        }
         self.known = gitrust_core::known::all();
         self.glance = self
             .known
@@ -193,6 +206,81 @@ impl App {
                 self.known = gitrust_core::known::all();
             }
             picker::Act::Close => self.picking = None,
+            picker::Act::Browse { beside } => self.browse(beside),
+        }
+    }
+
+    /// Asks the desktop to put its own folder chooser up.
+    ///
+    /// On a thread, because it does not come back until somebody has looked
+    /// at the dialog and decided, and that can be minutes.
+    fn browse(&mut self, beside: bool) {
+        if self.browsing.is_some() {
+            return;
+        }
+        let (send, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(chooser::folder("Choose a repository folder"));
+        });
+        self.browsing = Some((beside, done));
+    }
+
+    fn poll_browse(&mut self, ctx: &egui::Context) {
+        let Some((beside, done)) = &self.browsing else {
+            return;
+        };
+        let beside = *beside;
+        match done.try_recv() {
+            Ok(found) => {
+                self.browsing = None;
+                match found {
+                    // Cancelled. An ordinary answer, and nothing to say about it.
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        if let Some(state) = &mut self.picking {
+                            let box_ = match beside {
+                                true => &mut state.beside,
+                                false => &mut state.draft,
+                            };
+                            *box_ = path.display().to_string();
+                        }
+                    }
+                    Err(err) => self.complain(err),
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.browsing = None,
+        }
+    }
+
+    /// A folder dragged onto the window from a file manager.
+    ///
+    /// Free, and it works everywhere: eframe hands over whatever was dropped
+    /// without anybody asking a desktop for anything. It is the shortest road
+    /// from "that folder there" to a tab, and on a machine with no portal it
+    /// is the only one that is not typing.
+    fn poll_dropped(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw.dropped_files.iter().filter_map(|file| file.path.clone()).collect()
+        });
+
+        for path in dropped {
+            // A file inside a repository is somebody aiming at the repository
+            // and hitting one of its files, which is easy to do and plainly
+            // meant. A file on its own is not a repository and says so.
+            let folder = match path.is_dir() {
+                true => path,
+                false => match path.parent() {
+                    Some(parent) => parent.to_path_buf(),
+                    None => continue,
+                },
+            };
+            match Repo::open(&folder.display().to_string()) {
+                Ok(_) => self.act_on_pick(picker::Act::Open(folder)),
+                Err(err) => self.complain(err),
+            }
         }
     }
 
@@ -370,7 +458,14 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {
-                act = picker::show(ui, state, &known, &glance, &open_now);
+                act = picker::show(
+                    ui,
+                    state,
+                    &known,
+                    &glance,
+                    &open_now,
+                    self.dialog.unwrap_or(false),
+                );
 
                 if let Some(cloning) = &self.cloning {
                     ui.add_space(4.0);
@@ -407,6 +502,8 @@ impl eframe::App for App {
         // a second tab that you can only reach by having one.
         self.strip(ctx);
         self.poll_clone(ctx);
+        self.poll_browse(ctx);
+        self.poll_dropped(ctx);
 
         // One or the other, never both: the screen is not a dialog over a
         // repository, it is what is there when you have not picked one.

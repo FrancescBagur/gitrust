@@ -30,6 +30,9 @@ pub enum Act {
     Forget(PathBuf),
     /// Put the screen away without choosing anything.
     Close,
+    /// Ask the desktop for a folder, and put what comes back in a box.
+    /// `beside` picks which: the one a clone lands in, or the one above it.
+    Browse { beside: bool },
 }
 
 /// Which box is open, when one is.
@@ -62,10 +65,10 @@ impl Asking {
 #[derive(Default)]
 pub struct Picker {
     needle: String,
-    draft: String,
+    pub draft: String,
     /// Where a clone would land. Only used by the clone box, where it is
     /// filled in from the address as it is typed.
-    beside: String,
+    pub beside: String,
     asking: Option<Asking>,
 }
 
@@ -82,12 +85,14 @@ impl Picker {
 /// from its remote -- worked out once by whoever opened this screen. Reading
 /// it here, per row and per frame, would be opening twenty repositories sixty
 /// times a second.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut Picker,
     known: &[Known],
     glance: &HashMap<PathBuf, String>,
     open_now: &[PathBuf],
+    dialog: bool,
 ) -> Option<Act> {
     let mut act = None;
 
@@ -110,7 +115,7 @@ pub fn show(
     });
 
     ui.add_space(12.0);
-    if let Some(asked) = buttons(ui, state) {
+    if let Some(asked) = buttons(ui, state, dialog) {
         act = Some(asked);
     }
 
@@ -188,7 +193,7 @@ pub fn show(
 
 /// The three ways a repository gets here, and the box behind whichever was
 /// pressed.
-fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
+fn buttons(ui: &mut egui::Ui, state: &mut Picker, dialog: bool) -> Option<Act> {
     let mut act = None;
 
     ui.horizontal(|ui| {
@@ -236,6 +241,12 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
             entry.request_focus();
         }
 
+        // Only where a path is being asked for. There is no folder on disk
+        // to point at when what is wanted is an address to clone from.
+        if dialog && asking != Asking::Clone && ui.button("Browse\u{2026}").clicked() {
+            act = Some(Act::Browse { beside: false });
+        }
+
         let typed = !state.draft.trim().is_empty();
         let go = ui.add_enabled(
             typed,
@@ -270,6 +281,9 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
                     .margin(egui::vec2(6.0, 4.0))
                     .font(theme::mono(11.0)),
             );
+            if dialog && ui.small_button("\u{2026}").on_hover_text("Pick the folder").clicked() {
+                act = Some(Act::Browse { beside: true });
+            }
             let landing = state
                 .landing()
                 .map(|path| path.display().to_string())
@@ -278,7 +292,9 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
         });
     }
 
-    if act.is_some() {
+    // Browse is the one answer that leaves the box where it is: what comes
+    // back goes into it, and nothing has been chosen yet.
+    if act.is_some() && !matches!(act, Some(Act::Browse { .. })) {
         state.asking = None;
         state.draft.clear();
     }
