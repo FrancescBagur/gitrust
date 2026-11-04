@@ -1998,12 +1998,6 @@ impl App {
             ui.memory_mut(|memory| memory.toggle_popup(id));
         }
 
-        // Cloned out of the way: the path below is being edited through
-        // `&mut self`, and the list cannot be borrowed at the same time.
-        let trees = self.worktrees.clone();
-        let here = std::path::PathBuf::from(&self.path);
-        let mut visit = None;
-
         let open = egui::popup::popup_below_widget(
             ui,
             id,
@@ -2033,16 +2027,7 @@ impl App {
                 // the control that answers "where am I", and going to one of
                 // them is the same move as opening a repository: the window
                 // looks somewhere else and nothing is written.
-                if trees.len() > 1 {
-                    theme::rule(ui);
-                    for tree in &trees {
-                        if checkout_row(ui, tree, &here) {
-                            visit = Some(tree.path.clone());
-                        }
-                    }
-                }
-
-                if go || visit.is_some() {
+                if go {
                     ui.memory_mut(|memory| memory.close_popup());
                 }
                 go
@@ -2050,9 +2035,6 @@ impl App {
         )
         .unwrap_or(false);
 
-        if let Some(path) = visit {
-            return self.visit(path);
-        }
         if open {
             self.selected = None;
             self.diff = None;
@@ -2141,6 +2123,8 @@ impl App {
                 picked = refs_view::show(
                     ui,
                     &self.refs,
+                    &self.worktrees,
+                    std::path::Path::new(&self.path),
                     &mut self.ref_filter,
                     self.selected_commit,
                     on_branch.then_some(self.head.as_str()),
@@ -2225,6 +2209,8 @@ impl App {
                 self.spawn(&doing, move |repo| repo.revert(oid));
             }
             refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
+            refs_view::Pick::Visit(path) => self.visit(path),
+            refs_view::Pick::Release(name) => self.ask_release(name),
             refs_view::Pick::Join { from, onto } => self.ask_join(from, onto, ctx),
             refs_view::Pick::Copy(text) => {
                 ctx.copy_text(text.clone());
@@ -2350,62 +2336,3 @@ impl App {
     }
 }
 
-/// One checkout in the repository menu: where it is and what is open there.
-///
-/// The one you are looking at wears HEAD's amber, the same as the branch does
-/// in the bar, because it is the same question answered in the same color:
-/// this is where you are.
-fn checkout_row(ui: &mut egui::Ui, tree: &Worktree, here: &std::path::Path) -> bool {
-    let current = tree.path == here;
-    let name = match tree.main {
-        true => format!("{} (main)", tree.name),
-        false => tree.name.clone(),
-    };
-
-    let mut go = false;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(
-            egui::RichText::new(name)
-                .font(theme::medium(12.0))
-                .color(if current { theme::HEAD } else { theme::TEXT }),
-        );
-
-        match (&tree.branch, tree.missing) {
-            // Git kept the bookkeeping and the folder is gone, which is what
-            // somebody deleting it by hand leaves behind.
-            (_, true) => ui.label(
-                egui::RichText::new("folder is gone")
-                    .font(theme::body(11.0))
-                    .color(theme::REMOVED),
-            ),
-            (Some(branch), _) => ui.label(
-                egui::RichText::new(branch).font(theme::mono(11.0)).color(theme::MUTED),
-            ),
-            (None, _) => ui.label(
-                egui::RichText::new("detached").font(theme::body(11.0)).color(theme::FAINT),
-            ),
-        };
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if current {
-                ui.label(
-                    egui::RichText::new("you are here")
-                        .font(theme::body(11.0))
-                        .color(theme::FAINT),
-                );
-                return;
-            }
-            if tree.missing {
-                return;
-            }
-            go = ui
-                .button(egui::RichText::new("Go").font(theme::body(11.0)))
-                .on_hover_text(tree.path.display().to_string())
-                .clicked();
-        });
-    });
-    ui.add_space(3.0);
-
-    go
-}

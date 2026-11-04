@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, RichText};
-use gitrust_core::{Move, Oid, RefEntry, RefKind};
+use gitrust_core::{Move, Oid, RefEntry, RefKind, Worktree};
 
 use crate::theme;
 
@@ -49,6 +49,10 @@ pub enum Pick {
     Rename(String),
     /// Put that text on the clipboard.
     Copy(String),
+    /// Look at another folder this same repository is checked out in.
+    Visit(std::path::PathBuf),
+    /// Take that checkout away, leaving the branch where it is.
+    Release(String),
     /// One branch was dropped on another. Which of the three things that
     /// could mean is not decided here: the gesture asks the question and
     /// something else puts it to somebody.
@@ -71,9 +75,12 @@ struct Carried {
 /// With `busy` set there is an operation under way and branches stop being
 /// clickable: switching branches while something is coming down from the
 /// remote is asking two things at once of the same files.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     refs: &[RefEntry],
+    trees: &[Worktree],
+    here: &std::path::Path,
     filter: &mut String,
     selected: Option<Oid>,
     head: Option<&str>,
@@ -106,26 +113,40 @@ pub fn show(
         .filter(|entry| needle.is_empty() || entry.name.to_lowercase().contains(&needle))
         .collect();
 
-    if refs.is_empty() {
-        theme::empty(ui, "No references");
-        return None;
-    }
-
-    if matching.is_empty() {
-        theme::empty(ui, "No branch by that name");
-        return None;
-    }
-
     egui::ScrollArea::vertical()
         .id_salt("refs")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (title, kind) in [
-                ("Branches", RefKind::LocalBranch),
-                ("Remotes", RefKind::RemoteBranch),
-                ("Tags", RefKind::Tag),
-            ] {
-                section(ui, title, kind, &matching, &on_remotes, selected, head, busy, &mut picked);
+            if refs.is_empty() {
+                theme::empty(ui, "No references");
+            } else if matching.is_empty() {
+                theme::empty(ui, "No branch by that name");
+            } else {
+                for (title, kind) in [
+                    ("Branches", RefKind::LocalBranch),
+                    ("Remotes", RefKind::RemoteBranch),
+                    ("Tags", RefKind::Tag),
+                ] {
+                    section(
+                        ui,
+                        title,
+                        kind,
+                        &matching,
+                        &on_remotes,
+                        selected,
+                        head,
+                        busy,
+                        !needle.is_empty(),
+                        &mut picked,
+                    );
+                }
+            }
+
+            // The other folders this same repository is checked out in. They
+            // are not references, but they are the other half of "where am
+            // I", and that question is answered here.
+            if trees.len() > 1 {
+                checkouts(ui, trees, here, busy, &mut picked);
             }
             ui.add_space(12.0);
         });
@@ -181,6 +202,7 @@ fn section(
     selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
+    searching: bool,
     picked: &mut Option<Pick>,
 ) {
     let entries: Vec<&RefEntry> = refs.iter().copied().filter(|e| e.kind == kind).collect();
@@ -188,47 +210,125 @@ fn section(
         return;
     }
 
-    theme::section(ui, title, entries.len());
-
-    // The gesture cannot be seen, so it is said. And only where it is any
-    // use: with one local branch, the one you are on, there is nowhere to go.
-    if kind == RefKind::LocalBranch && entries.len() > 1 {
-        ui.horizontal(|ui| {
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("Double-click to switch branch")
-                    .font(theme::body(10.5))
-                    .color(theme::FAINT),
-            );
-        });
-    }
-
-    ui.add_space(2.0);
-
-    // The ones with no folder go on top; the rest, in their group.
-    let mut folders: BTreeMap<&str, Vec<&RefEntry>> = BTreeMap::new();
-    for entry in &entries {
-        match entry.folder() {
-            Some(folder) => folders.entry(folder).or_default().push(entry),
-            None => leaf(ui, entry, on_remotes, selected, head, busy, picked),
-        }
-    }
-
-    for (folder, group) in folders {
-        let label = egui::RichText::new(folder)
-            .font(theme::body(12.0))
-            .color(theme::MUTED);
-        egui::CollapsingHeader::new(label)
-            .id_salt((title, folder))
-            .default_open(group.len() <= 8)
-            .show(ui, |ui| {
-                for entry in group {
-                    leaf(ui, entry, on_remotes, selected, head, busy, picked);
-                }
+    theme::section(ui, title, entries.len(), searching, |ui| {
+        // The gesture cannot be seen, so it is said. And only where it is any
+        // use: with one local branch, the one you are on, there is nowhere to go.
+        if kind == RefKind::LocalBranch && entries.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new("Double-click to switch branch")
+                        .font(theme::body(10.5))
+                        .color(theme::FAINT),
+                );
             });
-    }
+        }
 
-    ui.add_space(10.0);
+        ui.add_space(2.0);
+
+        // The ones with no folder go on top; the rest, in their group.
+        let mut folders: BTreeMap<&str, Vec<&RefEntry>> = BTreeMap::new();
+        for entry in &entries {
+            match entry.folder() {
+                Some(folder) => folders.entry(folder).or_default().push(entry),
+                None => leaf(ui, entry, on_remotes, selected, head, busy, picked),
+            }
+        }
+
+        for (folder, group) in folders {
+            let label = egui::RichText::new(folder)
+                .font(theme::body(12.0))
+                .color(theme::MUTED);
+            egui::CollapsingHeader::new(label)
+                .id_salt((title, folder))
+                // While something is being looked for, a folded folder is a
+                // match nobody can see.
+                .open(searching.then_some(true))
+                .default_open(group.len() <= 8)
+                .show(ui, |ui| {
+                    for entry in group {
+                        leaf(ui, entry, on_remotes, selected, head, busy, picked);
+                    }
+                });
+        }
+    });
+}
+
+/// The other folders this repository is checked out in.
+///
+/// They used to live inside the repository menu, which was defensible -- that
+/// is the control that answers "where am I" -- and wrong in practice: you had
+/// to open a menu meant for changing repository in order to move about inside
+/// this one. One list in one place, and it is this one.
+///
+/// Going to one writes nothing. The window looks somewhere else, which is the
+/// same move as opening a repository and nothing like switching branch.
+fn checkouts(
+    ui: &mut egui::Ui,
+    trees: &[Worktree],
+    here: &std::path::Path,
+    busy: bool,
+    picked: &mut Option<Pick>,
+) {
+    theme::section(ui, "Worktrees", trees.len(), false, |ui| {
+        ui.add_space(2.0);
+        for tree in trees {
+            let current = tree.path == here;
+            let color = match (current, tree.missing) {
+                (_, true) => theme::REMOVED,
+                (true, _) => theme::HEAD,
+                _ => theme::TEXT,
+            };
+
+            let label = match tree.main {
+                true => format!("{} (main)", tree.name),
+                false => tree.name.clone(),
+            };
+            let response = ui.selectable_label(
+                current,
+                RichText::new(label).font(match current {
+                    true => theme::medium(12.5),
+                    false => theme::body(12.5),
+                }).color(color),
+            );
+
+            // What is open there, and what is wrong with it, said on hover
+            // rather than in a second column: the sidebar is 222 pixels wide
+            // and the branch names are longer than that on their own.
+            let mut hint = tree.path.display().to_string();
+            match (&tree.branch, tree.missing) {
+                (_, true) => hint.push_str("\n\nThe folder is gone: Git kept the \
+                                            bookkeeping, somebody deleted the folder"),
+                (Some(branch), _) => hint.push_str(&format!("\n\n{branch} is open there")),
+                (None, _) => hint.push_str("\n\nOff any branch there"),
+            }
+            if let Some(why) = &tree.locked {
+                hint.push_str(&format!("\nLocked: {why}"));
+            }
+            if !current && !tree.missing {
+                hint.push_str("\n\nClick to look at it. Nothing is written");
+            }
+            let response = response.on_hover_text(hint);
+
+            if !busy && !tree.main {
+                response.context_menu(|ui| {
+                    ui.set_width(220.0);
+                    if ui
+                        .button("Close this checkout")
+                        .on_hover_text("takes the folder away and leaves the branch alone")
+                        .clicked()
+                    {
+                        *picked = Some(Pick::Release(tree.name.clone()));
+                        ui.close_menu();
+                    }
+                });
+            }
+
+            if response.clicked() && !current && !tree.missing {
+                *picked = Some(Pick::Visit(tree.path.clone()));
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

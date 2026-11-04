@@ -281,20 +281,48 @@ pub fn install(ctx: &egui::Context) {
 }
 
 /// A section label: lower case, not small caps, and with its count beside it.
-pub fn section(ui: &mut egui::Ui, title: &str, count: usize) {
-    ui.horizontal(|ui| {
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new(title)
-                .font(medium(11.5))
-                .color(MUTED),
-        );
-        ui.label(
-            egui::RichText::new(count.to_string())
-                .font(mono(10.5))
-                .color(FAINT),
-        );
-    });
+/// A heading with how many are under it, and what is under it, foldable.
+///
+/// `forced` opens it whatever it was last left at. A filter needs that: a
+/// match sitting inside a folded section is, as far as anybody looking can
+/// tell, a search that found nothing.
+///
+/// What is under it is not indented. The branches inside already fold by
+/// folder, and two levels of indent on a sidebar this narrow leaves the names
+/// no room.
+pub fn section(
+    ui: &mut egui::Ui,
+    title: &str,
+    count: usize,
+    forced: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let id = ui.make_persistent_id(("section", title));
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+    if forced {
+        state.set_open(true);
+    }
+
+    state
+        .show_header(ui, |ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .font(medium(11.5))
+                    .color(MUTED),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(count.to_string())
+                        .font(mono(10.5))
+                        .color(FAINT),
+                );
+            });
+        })
+        .body_unindented(body);
+
+    ui.add_space(8.0);
 }
 
 /// A quiet dividing line, with air on both sides.
