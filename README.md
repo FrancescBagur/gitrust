@@ -69,7 +69,7 @@ crates/
     action_bar.rs   pull, push, branch and stash
     refs_view.rs    the sidebar of branches, tags and checkouts
     picker.rs       choosing a repository, cloning one, starting one
-    chooser.rs      asking the desktop for a folder, through its portal
+    chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
@@ -146,6 +146,19 @@ first time it is opened. Without `gh`, without a login, or on a remote that is
 not GitHub, nothing breaks: the board goes back to reading the graph alone and
 the header says so, because a column that is guessing should admit it.
 
+**The folder dialog:** the one dependency that was not part of the plan.
+Opening a repository meant typing its path, and the obvious fix was to run
+`gdbus` and ask `xdg-desktop-portal`, the way `gh` is run to ask GitHub. It
+does not work, and the reason is not a bug anybody can fix: the portal's
+reply is a directed signal addressed to whoever asked, `gdbus call` exits the
+moment it has a handle, and `gdbus monitor` never sees it -- measured, with a
+process that stayed alive getting the reply at the same moment the monitor
+printed nothing. The caller has to stay on the bus, which means a D-Bus
+client in-process. So `rfd`, which costs three crates rather than the tree
+that number usually implies: the D-Bus machinery is already in this binary,
+pulled in by eframe for Wayland. A folder dragged onto the window still
+works everywhere, and still costs nothing.
+
 **An assistant:** not built, and perhaps never. The thinking that was done
 about putting Claude Code inside gitrust is written down in
 [docs/assistant.md](docs/assistant.md) rather than lost: what gitrust knows
@@ -184,7 +197,7 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and eighteen tests,
+files. Those are the ones that carry cover: two hundred and fourteen tests,
 a hundred and forty-five of them against real repositories made in `/tmp` and
 deleted when they finish.
 

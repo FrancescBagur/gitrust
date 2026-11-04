@@ -1,37 +1,37 @@
 //! Asking the desktop to put its own folder chooser up.
 //!
-//! Not a dependency: a subprocess, which is the same way the pull requests
-//! are read. `gh` is run to ask GitHub a question; `gdbus` is run to ask the
-//! desktop one. A file-dialog crate would be the sixth thing in a Cargo.toml
-//! that has five in it on purpose, and the whole of what it would do here is
-//! this.
+//! # Why this is not a subprocess
 //!
-//! # Which dialog
+//! It was, and it did not work. The first go at this ran `gdbus` twice --
+//! once to ask `xdg-desktop-portal` for a folder, once to watch the bus for
+//! the answer -- on the grounds that the pull requests are read by running
+//! `gh`, so a dialog could be asked for the same way. The call went through
+//! and the dialog came up. The answer never arrived.
 //!
-//! The desktop's own, through `xdg-desktop-portal`. That is the interface
-//! every modern Linux desktop answers -- COSMIC, GNOME, KDE each ship their
-//! own backend behind it -- and it is the one a sandboxed application would
-//! have to use anyway. It is asked over D-Bus, and `gdbus` is the command
-//! that speaks D-Bus from a shell. It comes with glib, which is on every
-//! desktop that has a portal to talk to.
+//! The reason is worth writing down, because it is not a bug anybody can
+//! fix: the portal's reply is a *directed* signal, addressed to the bus name
+//! of whoever asked. `gdbus call` gets a handle and exits, so by the time
+//! somebody has chosen a folder there is nobody at that address. And
+//! `gdbus monitor` never sees it either -- measured, with a process that
+//! stayed alive getting the reply at the same moment the monitor printed
+//! nothing at all.
+//!
+//! So the caller has to stay on the connection, which means a D-Bus client
+//! in this process, which means a dependency.
 //!
 //! # What it costs
 //!
-//! Honesty about the shape of this: it reads text that `gdbus monitor`
-//! prints, and that text is a debugging format, not an interface anybody
-//! promised to keep. It works here and it will keep working for a long time,
-//! but it is the kind of thing that breaks quietly one day. Everything it can
-//! do wrong ends the same way -- no folder chosen -- and the box you can type
-//! a path into never goes away, so nothing is ever stuck behind it.
+//! Three crates: `rfd`, and `pollster` and `block2` underneath it. Not the
+//! tree that number usually implies, because the D-Bus machinery is already
+//! in this binary -- eframe pulls `ashpd` and `zbus` in for Wayland -- so
+//! this is a small thing sitting on top of something already paid for.
 //!
-//! On anything that is not a Linux desktop there is no portal and this says
-//! so. Typing the path still works everywhere.
+//! It is still the sixth dependency of a project that had five on purpose,
+//! and that was a decision, not an oversight.
 
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// Puts the desktop's folder chooser up and waits for an answer.
 ///
@@ -41,213 +41,9 @@ use anyhow::{Context, Result};
 /// minutes, so it belongs on a thread of its own and not on the one painting
 /// the window.
 pub fn folder(title: &str) -> Result<Option<PathBuf>> {
-    // Listening starts before asking. The other way round there is a window,
-    // however small, in which the answer arrives before anybody is there to
-    // hear it, and then this waits for a reply that already came.
-    let mut monitor = Command::new("gdbus")
-        .args(["monitor", "--session", "--dest", "org.freedesktop.portal.Desktop"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("gdbus is not here, so the desktop cannot be asked for a folder")?;
-
-    let Some(out) = monitor.stdout.take() else {
-        let _ = monitor.kill();
-        anyhow::bail!("gdbus said nothing at all");
-    };
-
-    let asked = Command::new("gdbus")
-        .args([
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.portal.Desktop",
-            "--object-path",
-            "/org/freedesktop/portal/desktop",
-            "--method",
-            "org.freedesktop.portal.FileChooser.OpenFile",
-            // No parent window. Telling the portal which window we are would
-            // mean handing it an X11 or Wayland handle, and eframe does not
-            // give one out. The dialog comes up unparented, which costs it
-            // being tied to the window and nothing else.
-            "",
-            title,
-            "{'directory': <true>, 'modal': <true>}",
-        ])
-        .output();
-
-    let asked = match asked {
-        Ok(asked) if asked.status.success() => asked,
-        other => {
-            let _ = monitor.kill();
-            let why = other
-                .ok()
-                .map(|out| String::from_utf8_lossy(&out.stderr).trim().to_string())
-                .filter(|why| !why.is_empty())
-                .unwrap_or_else(|| "the desktop has no file chooser to offer".to_string());
-            anyhow::bail!("{why}");
-        }
-    };
-
-    // The call hands back the path of the request this answer will come on.
-    // Without it any other application's dialog closing would look like ours.
-    let handle = between(&String::from_utf8_lossy(&asked.stdout), "objectpath '", "'");
-
-    // Read on a thread so the wait below can give up. Reading the pipe
-    // directly would wait for a line that may never come, and the thread
-    // this is on would be gone for the rest of the session with nothing to
-    // show for it and nothing said.
-    let (send, lines) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
-            if send.send(line).is_err() {
-                return;
-            }
-        }
-    });
-
-    let mut answered = false;
-    let mut found = None;
-    let deadline = std::time::Instant::now() + PATIENCE;
-
-    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
-        let Ok(line) = lines.recv_timeout(left) else {
-            // The pipe ended or the time ran out. Either way nothing is
-            // coming, and which of the two it was changes nothing.
-            break;
-        };
-        if !line.contains("::Response") {
-            continue;
-        }
-        if let Some(handle) = &handle {
-            if !line.contains(handle.as_str()) {
-                continue;
-            }
-        }
-        // Cancelling answers too, with a code and no address in it. Either
-        // way the waiting is over, and it is an answer: that is what tells it
-        // apart from never hearing back at all.
-        answered = true;
-        found = between(&line, "file://", "'").and_then(|uri| unescape(&uri)).map(PathBuf::from);
-        break;
-    }
-
-    let _ = monitor.kill();
-    let _ = monitor.wait();
-
-    // Silence and "cancelled" look the same from here, and they are not the
-    // same thing at all: one is somebody deciding, the other is this not
-    // working. Saying so is the difference between a button that does
-    // nothing and a button that tells you why.
-    anyhow::ensure!(
-        answered,
-        "the desktop never answered about the folder. Type the path instead, \
-         or drag the folder onto the window"
-    );
-    Ok(found)
-}
-
-/// How long somebody is allowed to take over the dialog before this gives up
-/// on hearing back at all.
-///
-/// Generous, because looking for a folder is looking, and short enough that a
-/// reply that is never coming is said out loud the same session.
-const PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
-
-/// Whether there is any point offering the button.
-///
-/// Asked once, when the screen opens. It is a question with a stable answer:
-/// a desktop does not grow a portal while somebody is looking at a window.
-pub fn there() -> bool {
-    Command::new("gdbus")
-        .args([
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.portal.Desktop",
-            "--object-path",
-            "/org/freedesktop/portal/desktop",
-            "--method",
-            "org.freedesktop.DBus.Properties.Get",
-            "org.freedesktop.portal.FileChooser",
-            "version",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-/// What sits between two markers, the first time both are found.
-fn between(text: &str, after: &str, before: &str) -> Option<String> {
-    let start = text.find(after)? + after.len();
-    let rest = &text[start..];
-    let end = rest.find(before)?;
-    Some(rest[..end].to_string())
-}
-
-/// Turns `%20` and its friends back into the characters they stand for.
-///
-/// A URI is what the portal answers with, and a folder called `My Projects`
-/// comes back as `My%20Projects`. Anything that is not a well-formed escape
-/// is left exactly as it was: a path is somebody's folder name and mangling
-/// it quietly is worse than handing back something that does not exist.
-fn unescape(uri: &str) -> Option<String> {
-    let mut out = Vec::with_capacity(uri.len());
-    let bytes = uri.as_bytes();
-    let mut at = 0;
-
-    while at < bytes.len() {
-        if bytes[at] == b'%' && at + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&uri[at + 1..at + 3], 16) {
-                out.push(byte);
-                at += 3;
-                continue;
-            }
-        }
-        out.push(bytes[at]);
-        at += 1;
-    }
-
-    String::from_utf8(out).ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_address_is_pulled_out_of_what_the_portal_prints() {
-        let line = "/org/freedesktop/portal/desktop/request/1_9/t: \
-                    org.freedesktop.portal.Request::Response (uint32 0, \
-                    {'uris': <['file:///home/someone/Projects/picstar']>})";
-        assert_eq!(
-            between(line, "file://", "'").as_deref(),
-            Some("/home/someone/Projects/picstar")
-        );
-    }
-
-    #[test]
-    fn a_folder_with_a_space_in_its_name_comes_back_with_the_space() {
-        assert_eq!(
-            unescape("/home/someone/My%20Projects/the%20site").as_deref(),
-            Some("/home/someone/My Projects/the site")
-        );
-    }
-
-    /// A name with a per-cent sign in it is a name, not a broken escape.
-    #[test]
-    fn something_that_is_not_an_escape_is_left_where_it_is() {
-        for path in ["/tmp/100%", "/tmp/a%zz/b", "/tmp/%"] {
-            assert_eq!(unescape(path).as_deref(), Some(path), "{path}");
-        }
-    }
-
-    #[test]
-    fn cancelling_leaves_no_address_to_find() {
-        let line = "/org/freedesktop/portal/desktop/request/1_9/t: \
-                    org.freedesktop.portal.Request::Response (uint32 1, {})";
-        assert_eq!(between(line, "file://", "'"), None);
-    }
+    // No parent window is given. Telling the portal which window we are would
+    // mean handing it an X11 or Wayland handle, and eframe does not give one
+    // out. The dialog comes up unparented, which costs it being tied to the
+    // window and nothing else.
+    Ok(rfd::FileDialog::new().set_title(title).pick_folder())
 }

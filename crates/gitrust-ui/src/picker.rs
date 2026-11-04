@@ -101,7 +101,6 @@ pub fn show(
     known: &[Known],
     glance: &HashMap<PathBuf, String>,
     open_now: &[PathBuf],
-    dialog: bool,
 ) -> Option<Act> {
     let mut act = None;
 
@@ -124,7 +123,7 @@ pub fn show(
     });
 
     ui.add_space(12.0);
-    if let Some(asked) = buttons(ui, state, dialog) {
+    if let Some(asked) = buttons(ui, state) {
         act = Some(asked);
     }
 
@@ -202,7 +201,7 @@ pub fn show(
 
 /// The three ways a repository gets here, and the box behind whichever was
 /// pressed.
-fn buttons(ui: &mut egui::Ui, state: &mut Picker, dialog: bool) -> Option<Act> {
+fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
     let mut act = None;
 
     ui.horizontal(|ui| {
@@ -252,7 +251,7 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker, dialog: bool) -> Option<Act> {
 
         // Only where a path is being asked for. There is no folder on disk
         // to point at when what is wanted is an address to clone from.
-        if dialog && asking != Asking::Clone && ui.button("Browse\u{2026}").clicked() {
+        if asking != Asking::Clone && ui.button("Browse\u{2026}").clicked() {
             act = Some(Act::Browse { beside: false });
         }
 
@@ -290,7 +289,7 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker, dialog: bool) -> Option<Act> {
                     .margin(egui::vec2(6.0, 4.0))
                     .font(theme::mono(11.0)),
             );
-            if dialog && ui.small_button("\u{2026}").on_hover_text("Pick the folder").clicked() {
+            if ui.small_button("\u{2026}").on_hover_text("Pick the folder").clicked() {
                 act = Some(Act::Browse { beside: true });
             }
             let landing = state

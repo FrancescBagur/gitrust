@@ -84,10 +84,6 @@ struct App {
     glance: std::collections::HashMap<std::path::PathBuf, String>,
     /// A clone on its way down, when one is.
     cloning: Option<Cloning>,
-    /// Whether this desktop has a file chooser to offer. Asked once, when
-    /// the screen first opens: a desktop does not grow a portal while
-    /// somebody is looking at a window.
-    dialog: Option<bool>,
     /// A folder being chosen in the desktop's own dialog, and which box the
     /// answer belongs in.
     browsing: Option<(bool, std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>>>)>,
@@ -110,7 +106,6 @@ impl App {
             known: Vec::new(),
             glance: std::collections::HashMap::new(),
             cloning: None,
-            dialog: None,
             browsing: None,
         };
         app.remember(0);
@@ -149,9 +144,6 @@ impl App {
     /// what branch it was on would ask it again every frame, for every
     /// repository on the list.
     fn pick(&mut self) {
-        if self.dialog.is_none() {
-            self.dialog = Some(chooser::there());
-        }
         self.known = gitrust_core::known::all();
         self.glance = self
             .known
@@ -475,14 +467,7 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {
-                act = picker::show(
-                    ui,
-                    state,
-                    &known,
-                    &glance,
-                    &open_now,
-                    self.dialog.unwrap_or(false),
-                );
+                act = picker::show(ui, state, &known, &glance, &open_now);
 
                 if let Some(cloning) = &self.cloning {
                     ui.add_space(4.0);

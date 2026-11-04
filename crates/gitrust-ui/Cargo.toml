@@ -14,3 +14,4 @@ anyhow.workspace = true
 eframe = "0.31"
 egui = "0.31"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
