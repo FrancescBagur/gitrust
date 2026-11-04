@@ -122,14 +122,15 @@ pub fn show(
             } else if matching.is_empty() {
                 theme::empty(ui, "No branch by that name");
             } else {
-                for (title, kind) in [
-                    ("Branches", RefKind::LocalBranch),
-                    ("Remotes", RefKind::RemoteBranch),
-                    ("Tags", RefKind::Tag),
+                for (title, mark, kind) in [
+                    ("Branches", theme::Glyph::Folder, RefKind::LocalBranch),
+                    ("Remotes", theme::Glyph::Cloud, RefKind::RemoteBranch),
+                    ("Tags", theme::Glyph::Tag, RefKind::Tag),
                 ] {
                     section(
                         ui,
                         title,
+                        mark,
                         kind,
                         &matching,
                         &on_remotes,
@@ -196,6 +197,7 @@ fn carried_chip(ui: &egui::Ui) {
 fn section(
     ui: &mut egui::Ui,
     title: &str,
+    mark: theme::Glyph,
     kind: RefKind,
     refs: &[&RefEntry],
     on_remotes: &[&str],
@@ -210,7 +212,7 @@ fn section(
         return;
     }
 
-    theme::section(ui, title, entries.len(), searching, |ui| {
+    theme::section(ui, title, mark, entries.len(), searching, |ui| {
         // The gesture cannot be seen, so it is said. And only where it is any
         // use: with one local branch, the one you are on, there is nowhere to go.
         if kind == RefKind::LocalBranch && entries.len() > 1 {
@@ -236,20 +238,13 @@ fn section(
         }
 
         for (folder, group) in folders {
-            let label = egui::RichText::new(folder)
-                .font(theme::body(12.0))
-                .color(theme::MUTED);
-            egui::CollapsingHeader::new(label)
-                .id_salt((title, folder))
-                // While something is being looked for, a folded folder is a
-                // match nobody can see.
-                .open(searching.then_some(true))
-                .default_open(group.len() <= 8)
-                .show(ui, |ui| {
-                    for entry in group {
-                        leaf(ui, entry, on_remotes, selected, head, busy, picked);
-                    }
-                });
+            // While something is being looked for, a folded folder is a match
+            // nobody can see.
+            theme::group(ui, folder, searching, |ui| {
+                for entry in group {
+                    leaf(ui, entry, on_remotes, selected, head, busy, picked);
+                }
+            });
         }
     });
 }
@@ -270,7 +265,7 @@ fn checkouts(
     busy: bool,
     picked: &mut Option<Pick>,
 ) {
-    theme::section(ui, "Worktrees", trees.len(), false, |ui| {
+    theme::section(ui, "Worktrees", theme::Glyph::Trees, trees.len(), false, |ui| {
         ui.add_space(2.0);
         for tree in trees {
             let current = tree.path == here;
@@ -284,13 +279,21 @@ fn checkouts(
                 true => format!("{} (main)", tree.name),
                 false => tree.name.clone(),
             };
-            let response = ui.selectable_label(
-                current,
-                RichText::new(label).font(match current {
-                    true => theme::medium(12.5),
-                    false => theme::body(12.5),
-                }).color(color),
-            );
+            let response = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    theme::glyph(ui, theme::Glyph::Folder, color.gamma_multiply(0.65));
+                    ui.selectable_label(
+                        current,
+                        RichText::new(label)
+                            .font(match current {
+                                true => theme::medium(12.5),
+                                false => theme::body(12.5),
+                            })
+                            .color(color),
+                    )
+                })
+                .inner;
 
             // What is open there, and what is wrong with it, said on hover
             // rather than in a second column: the sidebar is 222 pixels wide
@@ -357,11 +360,29 @@ fn leaf(
         theme::body(12.5)
     };
 
+    // The glyph and the name are one row, and the name alone is the thing you
+    // press: a hit area that swallowed the glyph would start a drag from a
+    // drawing, which is a strange place for a branch to come from.
     let is_selected = selected == Some(entry.target);
-    let response = ui.selectable_label(
-        is_selected,
-        RichText::new(entry.leaf()).font(font).color(color),
-    );
+    let response = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            theme::glyph(
+                ui,
+                match entry.kind {
+                    RefKind::Tag => theme::Glyph::Tag,
+                    _ => theme::Glyph::Branch,
+                },
+                // Dimmer than the name beside it. It says what kind of thing
+                // the row is, which you need once and then stop reading.
+                color.gamma_multiply(0.65),
+            );
+            ui.selectable_label(
+                is_selected,
+                RichText::new(entry.leaf()).font(font).color(color),
+            )
+        })
+        .inner;
 
     // You can go to a branch. To the one you are already on there is nowhere
     // to go, and to a tag not yet: that leaves HEAD detached, which is a

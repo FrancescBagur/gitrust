@@ -281,18 +281,156 @@ pub fn install(ctx: &egui::Context) {
 }
 
 /// A section label: lower case, not small caps, and with its count beside it.
+/// The little drawings beside a heading and a row.
+///
+/// Painted rather than typed. An icon font would be the sixth dependency of a
+/// project that has five on purpose, and the fonts actually on the machine --
+/// Fira Sans and Fira Mono -- have no folder, no cloud and no branch fork in
+/// them. These are four lines and a couple of dots each, which is all those
+/// shapes ever were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    /// Branches that are here.
+    Folder,
+    /// Branches that are somewhere else.
+    Cloud,
+    /// A name pinned to one commit for good.
+    Tag,
+    /// Another folder with this same repository in it.
+    Trees,
+    /// One branch, on its own row.
+    Branch,
+    /// A group of branches sharing a prefix.
+    Group,
+}
+
+/// Paints one, taking up a fixed square so the names beside them line up.
+pub fn glyph(ui: &mut egui::Ui, which: Glyph, color: Color32) {
+    const SIDE: f32 = 13.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(SIDE, SIDE), egui::Sense::hover());
+    glyph_at(ui, which, color, rect);
+}
+
+/// The same, somewhere you have already made room for.
+pub fn glyph_at(ui: &egui::Ui, which: Glyph, color: Color32, rect: egui::Rect) {
+    let painter = ui.painter();
+    let thin = Stroke::new(1.2, color);
+
+    // Everything is drawn inside a square a little smaller than the one
+    // allocated, so two glyphs of different shapes still look the same size.
+    let box_ = rect.shrink(1.5);
+    let (left, right, top, bottom) = (box_.left(), box_.right(), box_.top(), box_.bottom());
+    let middle = box_.center();
+
+    match which {
+        Glyph::Folder | Glyph::Group => {
+            // A tab along the top third of the left half, then the body.
+            let lip = top + box_.height() * 0.22;
+            painter.line_segment([egui::pos2(left, lip), egui::pos2(left, bottom)], thin);
+            painter.line_segment([egui::pos2(left, bottom), egui::pos2(right, bottom)], thin);
+            painter.line_segment([egui::pos2(right, bottom), egui::pos2(right, lip)], thin);
+            painter.line_segment([egui::pos2(right, lip), egui::pos2(middle.x, lip)], thin);
+            painter.line_segment(
+                [egui::pos2(middle.x, lip), egui::pos2(middle.x - 2.0, top)],
+                thin,
+            );
+            painter.line_segment([egui::pos2(middle.x - 2.0, top), egui::pos2(left, top)], thin);
+            painter.line_segment([egui::pos2(left, top), egui::pos2(left, lip)], thin);
+        }
+        Glyph::Cloud => {
+            // Three overlapping circles with their bottoms cut off by a line.
+            let y = middle.y + 1.5;
+            painter.circle_stroke(egui::pos2(left + 3.2, y - 1.0), 3.2, thin);
+            painter.circle_stroke(egui::pos2(middle.x + 1.0, y - 3.2), 3.8, thin);
+            painter.circle_stroke(egui::pos2(right - 2.6, y - 1.2), 2.8, thin);
+            // Painted over the circles in the panel's own colour, which is
+            // what turns three circles into one outline. It has to sit just
+            // below their centres, or there is no cloud left to see.
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(left - 1.0, y),
+                    egui::pos2(right + 1.0, bottom + 2.0),
+                ),
+                0,
+                PANEL,
+            );
+            painter.line_segment([egui::pos2(left + 0.6, y), egui::pos2(right - 0.6, y)], thin);
+        }
+        Glyph::Tag => {
+            // A label with the hole the string goes through.
+            painter.line_segment([egui::pos2(left, top), egui::pos2(middle.x, top)], thin);
+            painter.line_segment([egui::pos2(middle.x, top), egui::pos2(right, middle.y)], thin);
+            painter.line_segment([egui::pos2(right, middle.y), egui::pos2(middle.x, bottom)], thin);
+            painter.line_segment([egui::pos2(middle.x, bottom), egui::pos2(left, bottom)], thin);
+            painter.line_segment([egui::pos2(left, bottom), egui::pos2(left, top)], thin);
+            painter.circle_filled(egui::pos2(left + 3.0, middle.y), 1.1, color);
+        }
+        Glyph::Trees => {
+            // One square behind another: the same repository, twice over.
+            let back = egui::Rect::from_min_max(
+                egui::pos2(left, top),
+                egui::pos2(right - 3.0, bottom - 3.0),
+            );
+            let front = egui::Rect::from_min_max(
+                egui::pos2(left + 3.0, top + 3.0),
+                egui::pos2(right, bottom),
+            );
+            painter.rect_stroke(back, 1, thin, egui::StrokeKind::Inside);
+            painter.rect_filled(front, 1, PANEL);
+            painter.rect_stroke(front, 1, thin, egui::StrokeKind::Inside);
+        }
+        Glyph::Branch => {
+            // A line going on, and something leaving it: the whole of what a
+            // branch is.
+            let x = left + 2.5;
+            painter.line_segment([egui::pos2(x, top + 1.0), egui::pos2(x, bottom - 1.0)], thin);
+            painter.circle_filled(egui::pos2(x, top + 1.5), 1.7, color);
+            painter.circle_filled(egui::pos2(x, bottom - 1.5), 1.7, color);
+            painter.line_segment(
+                [egui::pos2(x, middle.y), egui::pos2(right - 1.5, middle.y)],
+                thin,
+            );
+            painter.circle_filled(egui::pos2(right - 1.5, middle.y), 1.7, color);
+        }
+    }
+}
+
+/// A folder of branches: everything before the last slash in their names.
+///
+/// Built the same way as a heading rather than with a plain collapsing
+/// header, because a header's label is one string and this row is a triangle,
+/// a folder and a name.
+pub fn group(ui: &mut egui::Ui, name: &str, forced: bool, inside: impl FnOnce(&mut egui::Ui)) {
+    let id = ui.make_persistent_id(("group", name));
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+    if forced {
+        state.set_open(true);
+    }
+
+    state
+        .show_header(ui, |ui| {
+            glyph(ui, Glyph::Group, MUTED);
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(name).font(body(12.0)).color(MUTED));
+        })
+        .body(inside);
+}
+
 /// A heading with how many are under it, and what is under it, foldable.
 ///
 /// `forced` opens it whatever it was last left at. A filter needs that: a
 /// match sitting inside a folded section is, as far as anybody looking can
 /// tell, a search that found nothing.
 ///
-/// What is under it is not indented. The branches inside already fold by
-/// folder, and two levels of indent on a sidebar this narrow leaves the names
-/// no room.
+/// What is under it is indented, and the folders inside it again. The step is
+/// what says which heading a name belongs to: without it a long list of
+/// branches is a long list of branches, and whether you are looking at the
+/// ones here or the ones on a remote is something you have to remember.
 pub fn section(
     ui: &mut egui::Ui,
     title: &str,
+    mark: Glyph,
     count: usize,
     forced: bool,
     body: impl FnOnce(&mut egui::Ui),
@@ -304,8 +442,11 @@ pub fn section(
         state.set_open(true);
     }
 
+    rule(ui);
     state
         .show_header(ui, |ui| {
+            glyph(ui, mark, MUTED);
+            ui.add_space(2.0);
             ui.label(
                 egui::RichText::new(title)
                     .font(medium(11.5))
@@ -320,7 +461,7 @@ pub fn section(
                 );
             });
         })
-        .body_unindented(body);
+        .body(body);
 
     ui.add_space(8.0);
 }
