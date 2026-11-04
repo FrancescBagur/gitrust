@@ -21,6 +21,16 @@ impl Repo {
     /// first. Only when it comes out clean is the commit written and the tree
     /// brought up to date, so that a clash leaves the repository exactly as it was.
     pub fn merge(&self, name: &str) -> Result<String> {
+        // One at a time. Starting a merge on top of a half-done anything
+        // means two sets of markers in one working tree and no way to tell
+        // which decision belongs to which.
+        let half = self.half_done();
+        anyhow::ensure!(
+            half == crate::conflict::Half::None,
+            "{} is half-done here. Finish it or abandon it first",
+            half.says()
+        );
+
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?.to_string();
         let current = head.shorthand().unwrap_or("HEAD").to_string();
@@ -63,12 +73,20 @@ impl Repo {
         let ours = self.inner.find_commit(ours)?;
         let mut index = self.inner.merge_commits(&ours, &commit, None)?;
 
+        // It clashes. For a long time this refused here and touched nothing,
+        // because a half-merged repository is a place you have to know how to
+        // get out of and there was no way out in the application. There is
+        // now, so the merge is really started: the index gets both sides, the
+        // files get their markers, and MERGE_HEAD says what is coming in.
         if index.has_conflicts() {
-            anyhow::bail!(
-                "{name} clashes with {current} in {}. There is no conflict editor yet, \
-                 so nothing has been touched",
-                conflicting(&index)
-            );
+            let files = conflicting(&index);
+            self.inner
+                .merge(&[&theirs], None, Some(CheckoutBuilder::new().safe()))
+                .with_context(|| format!("could not start the merge of {name}"))?;
+            return Ok(format!(
+                "{name} clashes with {current} in {files}. Decide each one and \
+                 the merge can be written"
+            ));
         }
 
         let tree = index.write_tree_to(&self.inner)?;

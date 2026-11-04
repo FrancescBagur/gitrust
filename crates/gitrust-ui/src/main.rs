@@ -8,6 +8,7 @@
 mod action_bar;
 mod board_view;
 mod changes_view;
+mod conflict_view;
 mod chooser;
 mod detail_view;
 mod diff_view;
@@ -604,6 +605,13 @@ struct Open {
     /// The file being looked at across the window, when one is. It takes the
     /// middle of the window from the graph while it is up.
     looking: Option<file_view::Looking>,
+    /// What is half-done here, read on every load. It is the one thing that
+    /// changes what the whole window is for, so it is not asked for: it is
+    /// known.
+    half: gitrust_core::Half,
+    clashes: Vec<gitrust_core::Clash>,
+    /// The conflict screen, while it is up.
+    deciding: Option<conflict_view::Deciding>,
 
     // The working tree.
     work: WorkingState,
@@ -743,6 +751,8 @@ enum Deed {
     DiscardAll(Vec<String>),
     DeleteBranch { name: String, remote: bool },
     CloseWorktree { name: String },
+    /// Throw away whatever is half-done.
+    Abandon,
     MoveTo { oid: Oid, how: Move },
     Land { base: String, branch: String },
     Review(String),
@@ -782,6 +792,9 @@ impl Open {
             draft: action_bar::Draft::default(),
             job: None,
             looking: None,
+            half: gitrust_core::Half::None,
+            clashes: Vec::new(),
+            deciding: None,
             selected_commit: None,
             detail: None,
             detail_file: None,
@@ -822,6 +835,13 @@ impl Open {
 
         self.head = repo.head_name();
         self.path = repo.workdir().display().to_string();
+        // Before anything else that reads the tree: what is half-done here
+        // changes what every other reading means.
+        self.half = repo.half_done();
+        self.clashes = repo.clashes().unwrap_or_default();
+        if self.half == gitrust_core::Half::None {
+            self.deciding = None;
+        }
         self.refs = repo.references().unwrap_or_default();
         self.tracking = repo.tracking();
         self.lay_out();
@@ -1152,6 +1172,92 @@ impl Open {
         if let Some(looking) = &mut self.looking {
             looking.trouble = trouble;
         }
+    }
+
+    /// Opens the screen for deciding what a merge could not.
+    fn decide(&mut self) {
+        self.looking = None;
+        let first = self.clashes.first().map(|clash| clash.path.clone());
+        self.deciding = Some(conflict_view::Deciding { path: first, draft: None });
+    }
+
+    fn act_on_conflict(&mut self, act: conflict_view::Act) {
+        match act {
+            conflict_view::Act::Close => self.deciding = None,
+            conflict_view::Act::Pick(path) => {
+                if let Some(state) = &mut self.deciding {
+                    state.path = Some(path);
+                    // Moving to another file puts away whatever was being
+                    // typed into this one. It belonged to that file.
+                    state.draft = None;
+                }
+            }
+            conflict_view::Act::Typed(text) => {
+                if let Some(state) = &mut self.deciding {
+                    state.draft = Some(text);
+                }
+            }
+            conflict_view::Act::Drop => {
+                if let Some(state) = &mut self.deciding {
+                    state.draft = None;
+                }
+            }
+            conflict_view::Act::Edit(path) => {
+                let read = self.repo().and_then(|repo| repo.clashing_text(&path));
+                match read {
+                    Ok(text) => {
+                        if let Some(state) = &mut self.deciding {
+                            state.draft = Some(text);
+                        }
+                    }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                }
+            }
+            conflict_view::Act::Take { path, side } => {
+                self.note_down(move |repo| repo.take_side(&path, side));
+                self.after_deciding();
+            }
+            conflict_view::Act::Write { path, text } => {
+                self.note_down(move |repo| repo.take_text(&path, &text));
+                if let Some(state) = &mut self.deciding {
+                    state.draft = None;
+                }
+                self.after_deciding();
+            }
+            conflict_view::Act::Finish => {
+                self.note_down(|repo| repo.finish_merge());
+            }
+            conflict_view::Act::Abandon => self.ask_abandon(),
+        }
+    }
+
+    /// Moves on to the next file still waiting, once one is settled.
+    ///
+    /// Staying on a file that is decided would show "that one is decided" and
+    /// leave somebody to find the next one themselves, which on a merge with
+    /// twenty clashing files is twenty pieces of pointless work.
+    fn after_deciding(&mut self) {
+        let next = self.clashes.first().map(|clash| clash.path.clone());
+        if let Some(state) = &mut self.deciding {
+            state.path = next;
+        }
+    }
+
+    /// Throwing a half-done merge away loses work nothing gives back, so it
+    /// is asked about by name.
+    fn ask_abandon(&mut self) {
+        let half = self.half;
+        let files = self.clashes.len();
+        self.ask(
+            format!("Throw away {}?", half.says()),
+            &format!(
+                "Everything goes: the markers, both sides, and anything typed into \
+                 those {files} files since it started. The branch goes back to where \
+                 it was before, and nothing else is touched."
+            ),
+            "Throw it away",
+            Deed::Abandon,
+        );
     }
 
     fn act_on_file(&mut self, act: file_view::Act) {
@@ -1647,6 +1753,9 @@ impl Open {
             Deed::MoveTo { oid, how } => {
                 let doing = format!("moving to {}", &oid.to_string()[..7]);
                 return self.spawn(&doing, move |repo| repo.move_branch(oid, how));
+            }
+            Deed::Abandon => {
+                return self.spawn("throwing it away", |repo| repo.abandon());
             }
             Deed::CloseWorktree { name } => {
                 let doing = format!("closing {name}");
@@ -2321,8 +2430,41 @@ impl Open {
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
-        if self.view == View::History && self.looking.is_none() {
+        if self.view == View::History && self.looking.is_none() && self.deciding.is_none() {
             self.detail_panel(ctx);
+        }
+
+        // Something half-done is the one thing in this window that cannot
+        // wait. It is said in a band under the bar, on every view, until it
+        // is seen through or thrown away.
+        self.half_bar(ctx);
+
+        if self.deciding.is_some() {
+            let mut act = None;
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::CANVAS)
+                        .inner_margin(egui::Margin::symmetric(14, 0)),
+                )
+                .show(ctx, |ui| {
+                    ui.push_id(self.salt, |ui| {
+                        if let Some(state) = &self.deciding {
+                            act = conflict_view::show(
+                                ui,
+                                self.half,
+                                &self.clashes,
+                                state,
+                                self.job.is_some(),
+                            );
+                        }
+                    });
+                });
+            if let Some(act) = act {
+                self.act_on_conflict(act);
+            }
+            self.toasting(ctx);
+            return;
         }
 
         // A file open across the window takes the middle of it. The views
@@ -2550,6 +2692,73 @@ impl Open {
             });
 
         self.toasting(ctx);
+    }
+
+    /// The band that says something is half-done.
+    ///
+    /// It is not a toast and it does not go away on its own. A repository in
+    /// the middle of a merge behaves differently from one that is not --
+    /// committing writes a merge, switching branches refuses -- and anything
+    /// that changes what the window means has to stay on the screen while it
+    /// is true.
+    fn half_bar(&mut self, ctx: &egui::Context) {
+        if self.half == gitrust_core::Half::None || self.deciding.is_some() {
+            return;
+        }
+
+        let mut decide = false;
+        egui::TopBottomPanel::top(egui::Id::new(("half", self.salt)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::RAISED)
+                    .inner_margin(egui::Margin::symmetric(12, 7)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} is half-done here.",
+                            match self.half {
+                                gitrust_core::Half::Merge => "A merge",
+                                gitrust_core::Half::Rebase => "A rebase",
+                                gitrust_core::Half::CherryPick => "A commit being taken along",
+                                gitrust_core::Half::Revert => "A commit being undone",
+                                _ => "Something",
+                            }
+                        ))
+                        .font(theme::medium(12.5))
+                        .color(theme::HEAD),
+                    );
+                    ui.label(
+                        egui::RichText::new(match self.clashes.len() {
+                            0 => "Nothing left to decide.".to_string(),
+                            1 => "1 file still has both answers in it.".to_string(),
+                            n => format!("{n} files still have both answers in them."),
+                        })
+                        .font(theme::body(12.0))
+                        .color(theme::MUTED),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("See it through")
+                                        .font(theme::medium(12.0)),
+                                )
+                                .fill(theme::CHOSEN),
+                            )
+                            .clicked()
+                        {
+                            decide = true;
+                        }
+                    });
+                });
+            });
+
+        if decide {
+            self.decide();
+        }
     }
 
     /// Last, over the panels and after whatever has just been pressed, so

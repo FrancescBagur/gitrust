@@ -626,7 +626,7 @@ fn two_different_histories_join_in_a_commit_with_two_parents() {
 }
 
 #[test]
-fn a_clash_leaves_the_repository_exactly_as_it_was() {
+fn a_clash_starts_the_merge_rather_than_writing_it() {
     let temp = TempRepo::new("merge-clash");
     first_commit(&temp);
     branch_with_work(&temp, "theirs", "a.txt", "what the other one says\n");
@@ -636,18 +636,23 @@ fn a_clash_leaves_the_repository_exactly_as_it_was() {
     repo.stage("a.txt").unwrap();
     let mine = repo.commit("feat: a my way").unwrap();
 
-    let err = temp.open().merge("theirs").unwrap_err().to_string();
-    assert!(err.contains("a.txt"), "it says what it clashes in: {err}");
-    assert!(err.contains("nothing has been touched"), "{err}");
+    // This used to refuse and touch nothing, because there was nothing in
+    // the application that could get anybody out of a half-done merge. There
+    // is now, so it really starts one.
+    let said = temp.open().merge("theirs").unwrap();
+    assert!(said.contains("a.txt"), "it says what clashes: {said}");
 
-    // No merge commit, no churned tree, no index with conflicts.
     let repo = temp.open();
+    // No commit has been written: that is still waiting on a decision.
     assert_eq!(repo.head_id(), Some(mine));
-    assert!(repo.status().unwrap().is_clean());
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
-        "what I say\n"
-    );
+    assert_eq!(repo.half_done(), gitrust_core::Half::Merge);
+    assert_eq!(repo.clashes().unwrap().len(), 1);
+
+    // And the file in front of you has both answers in it.
+    let text = std::fs::read_to_string(temp.path().join("a.txt")).unwrap();
+    assert!(text.contains("<<<<<<<"), "{text}");
+    assert!(text.contains("what I say"), "{text}");
+    assert!(text.contains("what the other one says"), "{text}");
 }
 
 #[test]

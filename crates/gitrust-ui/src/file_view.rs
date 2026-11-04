@@ -184,6 +184,8 @@ fn whole(ui: &mut egui::Ui, looking: &Looking) {
             // Painted as numbered lines rather than put in a text box: a box
             // would let somebody type into a file as it was in 2023, which
             // is not a thing that can be done.
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.spacing_mut().interact_size.y = 13.0;
             for (index, line) in text.lines().enumerate() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
@@ -210,6 +212,8 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
         return theme::empty(ui, "There is nothing in this file");
     }
 
+    ui.spacing_mut().item_spacing.y = 1.0;
+    ui.spacing_mut().interact_size.y = 13.0;
     for line in lines {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;

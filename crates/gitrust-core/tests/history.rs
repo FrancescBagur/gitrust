@@ -352,15 +352,39 @@ fn a_join_that_fails_says_which_branch_it_left_you_on() {
     temp.open().checkout_branch(&trunk).unwrap();
     commit(&temp, "a.txt", "ours\n", "feat: ours");
 
-    // From the trunk, drop the trunk onto "side": they clash.
+    // Rebasing is the one that still refuses: a conflicted rebase is a
+    // sequence of clashes and a notion of carrying on between them, which
+    // the conflict editor does not do.
     let err = temp
         .open()
-        .join(&trunk, "side", gitrust_core::Join::Merge)
+        .join(&trunk, "side", gitrust_core::Join::Rebase)
         .unwrap_err()
         .to_string();
 
     assert!(err.contains("you are now on side"), "{err}");
     assert_eq!(temp.open().head_name(), "side");
+}
+
+/// A merge dropped on a branch you are not on now really starts, which means
+/// the branch it leaves you standing on is the one with the markers in it.
+#[test]
+fn a_join_that_clashes_leaves_the_merge_half_done_where_it_said() {
+    let temp = TempRepo::new("join-clash");
+    let trunk = start(&temp);
+
+    temp.open().branch_here("side").unwrap();
+    commit(&temp, "a.txt", "theirs\n", "feat: theirs");
+    temp.open().checkout_branch(&trunk).unwrap();
+    commit(&temp, "a.txt", "ours\n", "feat: ours");
+
+    let said = temp
+        .open()
+        .join(&trunk, "side", gitrust_core::Join::Merge)
+        .unwrap();
+
+    assert!(said.contains("you are now on side"), "{said}");
+    assert_eq!(temp.open().head_name(), "side");
+    assert_eq!(temp.open().half_done(), gitrust_core::Half::Merge);
 }
 
 /// What the dialog puts in front of somebody has to name both branches the

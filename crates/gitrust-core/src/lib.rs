@@ -5,6 +5,7 @@
 
 pub mod backlog;
 pub mod board;
+pub mod conflict;
 pub mod branch;
 pub mod detail;
 pub mod diff;
@@ -27,6 +28,7 @@ pub mod worktree;
 
 pub use backlog::{Backlog, Item};
 pub use board::{Board, Card, Lane};
+pub use conflict::{Clash, Half, Side};
 pub use detail::{CommitDetail, CommitFile, RefEntry};
 pub use git2::Oid;
 pub use diff::{DiffLine, FileDiff, Hunk, HunkId};

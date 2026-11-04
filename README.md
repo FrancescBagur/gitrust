@@ -46,6 +46,7 @@ crates/
     repo.rs         repository, commits, index and diffs (libgit2)
     branch.rs       making branches, switching between them and deleting them
     merge.rs        joining two branches or rebasing one, or refusing untouched
+    conflict.rs     getting out of a merge that did not come out clean
     tag.rs          lightweight and annotated tags
     remote.rs       fetching, pushing, and the distance to the remote branch
     stash.rs        the pile of changes set aside
@@ -75,6 +76,7 @@ crates/
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
     file_view.rs    one file across the window, in its four readings
+    conflict_view.rs the two answers side by side, and the ways out
     changes_view.rs the change lists, the diff and the commit box
     diff_view.rs    the shared painting of diff lines
 ```
@@ -199,8 +201,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and twenty-five
-tests, a hundred and fifty-six of them against real repositories made in
+files. Those are the ones that carry cover: two hundred and forty-one
+tests, a hundred and seventy of them against real repositories made in
 `/tmp` and
 deleted when they finish.
 
