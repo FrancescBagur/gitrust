@@ -60,6 +60,7 @@ crates/
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
+    file.rs         one file: at a commit, blamed, its history, a hunk undone
     detail.rs       a commit's detail, and the references
     message.rs      putting the commit message together
     model.rs        the shared types, and which reference rules a commit
@@ -73,6 +74,7 @@ crates/
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
+    file_view.rs    one file across the window, in its four readings
     changes_view.rs the change lists, the diff and the commit box
     diff_view.rs    the shared painting of diff lines
 ```
@@ -197,8 +199,9 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and fourteen tests,
-a hundred and forty-five of them against real repositories made in `/tmp` and
+files. Those are the ones that carry cover: two hundred and twenty-five
+tests, a hundred and fifty-six of them against real repositories made in
+`/tmp` and
 deleted when they finish.
 
 The remote ones talk to a bare repository in another temporary directory. Over

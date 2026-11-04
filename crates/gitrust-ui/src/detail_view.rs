@@ -13,6 +13,9 @@ use crate::{diff_view, theme};
 pub enum Pick {
     /// Show that file's change.
     File(String),
+    /// Open that file across the window, where there is room for more than
+    /// the diff.
+    Open(String),
     /// Put this tag on it.
     Tag { name: String, message: String },
 }
@@ -165,6 +168,22 @@ pub fn show(
         });
 
     theme::rule(ui);
+
+    // The way to the other three questions about this file. It is a button
+    // rather than a double click because a double click on a row that
+    // already does something on one click is a thing nobody finds.
+    if let Some(path) = selected_file {
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("Open it full width").font(theme::body(11.0)))
+                .on_hover_text("the whole file, who wrote each line, and its history")
+                .clicked()
+            {
+                picked = Some(Pick::Open(path.to_string()));
+            }
+        });
+        ui.add_space(4.0);
+    }
 
     match diff {
         None => theme::empty(ui, "Pick a file to see what changed"),

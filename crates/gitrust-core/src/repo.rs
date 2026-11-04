@@ -104,7 +104,7 @@ impl Repo {
     }
 
     /// A map from commit to the references that point at it.
-    fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
+    pub(crate) fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
         let mut map: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
 
         for reference in self.inner.references()? {
@@ -377,7 +377,7 @@ impl Repo {
         self.apply_hunk(&diff, hunk.reversed(), ApplyLocation::Index)
     }
 
-    fn apply_hunk(&self, diff: &Diff<'_>, wanted: HunkId, to: ApplyLocation) -> Result<()> {
+    pub(crate) fn apply_hunk(&self, diff: &Diff<'_>, wanted: HunkId, to: ApplyLocation) -> Result<()> {
         let mut applied = false;
         {
             let mut options = ApplyOptions::new();

@@ -11,6 +11,7 @@ mod changes_view;
 mod chooser;
 mod detail_view;
 mod diff_view;
+mod file_view;
 mod graph_view;
 mod picker;
 mod refs_view;
@@ -39,6 +40,14 @@ const REPO_MENU: f32 = 520.0;
 /// rectangle from last time and hand it back a notch wider on every opening,
 /// which is exactly what the repository menu above used to do.
 const JOIN_MENU: f32 = 300.0;
+
+/// How many commits are walked looking for the ones that touched a file.
+///
+/// Git keeps no history for a file, so this is found by reading commits one
+/// by one. The number is a guess at where somebody stops caring, and the view
+/// says out loud when it was reached rather than handing back a short answer
+/// that looks complete.
+const FILE_HISTORY: usize = 4_000;
 
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
@@ -592,6 +601,10 @@ struct Open {
     detail_file: Option<String>,
     detail_diff: Option<FileDiff>,
 
+    /// The file being looked at across the window, when one is. It takes the
+    /// middle of the window from the graph while it is up.
+    looking: Option<file_view::Looking>,
+
     // The working tree.
     work: WorkingState,
     selected: Option<(String, bool)>,
@@ -768,6 +781,7 @@ impl Open {
             stashes: Vec::new(),
             draft: action_bar::Draft::default(),
             job: None,
+            looking: None,
             selected_commit: None,
             detail: None,
             detail_file: None,
@@ -1048,6 +1062,132 @@ impl Open {
             .and_then(|repo| repo.commit_file_diff(oid, &path))
             .ok();
         self.detail_file = Some(path);
+    }
+
+    /// Opens a file across the window.
+    fn look_at(&mut self, path: String) {
+        let Some(at) = self.selected_commit else {
+            return;
+        };
+        self.looking = Some(file_view::Looking {
+            path,
+            at,
+            how: file_view::Look::Diff,
+            read: file_view::Read::default(),
+            trouble: None,
+        });
+        self.read_file();
+    }
+
+    /// Reads whatever the question being asked needs, once.
+    ///
+    /// Each of the four is read the first time it is asked for and then kept,
+    /// so going back and forth between them costs nothing. None of them is
+    /// read on opening: blame and the history of a file are both work, and
+    /// doing them for somebody who only wanted the diff is work for nothing.
+    fn read_file(&mut self) {
+        let Some(looking) = &self.looking else {
+            return;
+        };
+        let (path, at, how) = (looking.path.clone(), looking.at, looking.how);
+
+        let needed = match how {
+            file_view::Look::Diff => looking.read.diff.is_none(),
+            file_view::Look::Whole => looking.read.whole.is_none(),
+            file_view::Look::Blame => looking.read.blame.is_none(),
+            file_view::Look::Story => looking.read.story.is_none(),
+        };
+        if !needed {
+            return;
+        }
+
+        let Ok(repo) = self.repo() else {
+            return;
+        };
+
+        // On this thread. Reading a file out of a commit is instant, blame is
+        // libgit2's own work, and the history of one file is the only slow
+        // one -- bounded by the limit it is given. If that limit ever has to
+        // go up, this is the line that has to move off here first.
+        let mut trouble = None;
+        match how {
+            file_view::Look::Diff => {
+                let read = repo.commit_file_diff(at, &path);
+                if let Some(looking) = &mut self.looking {
+                    match read {
+                        Ok(diff) => looking.read.diff = Some(diff),
+                        Err(err) => trouble = Some(format!("{err:#}")),
+                    }
+                }
+            }
+            file_view::Look::Whole => {
+                let read = repo.file_at(at, &path);
+                if let Some(looking) = &mut self.looking {
+                    match read {
+                        Ok(whole) => looking.read.whole = Some(whole),
+                        Err(err) => trouble = Some(format!("{err:#}")),
+                    }
+                }
+            }
+            file_view::Look::Blame => {
+                let read = repo.blame(&path, Some(at));
+                if let Some(looking) = &mut self.looking {
+                    match read {
+                        Ok(lines) => looking.read.blame = Some(lines),
+                        Err(err) => trouble = Some(format!("{err:#}")),
+                    }
+                }
+            }
+            file_view::Look::Story => {
+                let read = repo.file_history(&path, FILE_HISTORY);
+                if let Some(looking) = &mut self.looking {
+                    match read {
+                        Ok(story) => looking.read.story = Some(story),
+                        Err(err) => trouble = Some(format!("{err:#}")),
+                    }
+                }
+            }
+        }
+
+        if let Some(looking) = &mut self.looking {
+            looking.trouble = trouble;
+        }
+    }
+
+    fn act_on_file(&mut self, act: file_view::Act) {
+        match act {
+            file_view::Act::Close => self.looking = None,
+            file_view::Act::Look(how) => {
+                if let Some(looking) = &mut self.looking {
+                    looking.how = how;
+                    looking.trouble = None;
+                }
+                self.read_file();
+            }
+            // Another commit is another file, as far as all four questions
+            // are concerned: everything read about the last one is thrown
+            // away rather than shown beside the wrong hash.
+            file_view::Act::At(oid) => {
+                if let Some(looking) = &mut self.looking {
+                    looking.at = oid;
+                    looking.read = file_view::Read::default();
+                    looking.trouble = None;
+                }
+                self.read_file();
+            }
+            file_view::Act::Show(oid) => {
+                self.looking = None;
+                self.reveal_commit(oid);
+                self.view = View::History;
+            }
+            file_view::Act::Revert(hunk) => {
+                let Some(looking) = &self.looking else {
+                    return;
+                };
+                let (path, at) = (looking.path.clone(), looking.at);
+                self.note_down(move |repo| repo.revert_hunk(at, &path, hunk));
+            }
+        }
     }
 
     /// Runs an operation on the repository and reloads the state.
@@ -2181,8 +2321,33 @@ impl Open {
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
-        if self.view == View::History {
+        if self.view == View::History && self.looking.is_none() {
             self.detail_panel(ctx);
+        }
+
+        // A file open across the window takes the middle of it. The views
+        // above stay where they are: pressing one is a way out of here, and
+        // taking them away would leave only the Back button.
+        if self.looking.is_some() {
+            let mut act = None;
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::CANVAS)
+                        .inner_margin(egui::Margin::symmetric(14, 0)),
+                )
+                .show(ctx, |ui| {
+                    ui.push_id(self.salt, |ui| {
+                        if let Some(looking) = &self.looking {
+                            act = file_view::show(ui, looking, self.job.is_some());
+                        }
+                    });
+                });
+            if let Some(act) = act {
+                self.act_on_file(act);
+            }
+            self.toasting(ctx);
+            return;
         }
 
         let frame = match self.view {
@@ -2384,9 +2549,13 @@ impl Open {
             })
             });
 
-        // Last, over the panels and after whatever has just been pressed, so
-        // that a toast asked for this very frame is up before the frame ends.
-        // It takes itself away when its time is up.
+        self.toasting(ctx);
+    }
+
+    /// Last, over the panels and after whatever has just been pressed, so
+    /// that a toast asked for this very frame is up before the frame ends.
+    /// It takes itself away when its time is up.
+    fn toasting(&mut self, ctx: &egui::Context) {
         if let Some(toast) = &self.toast {
             if !toast::show(ctx, toast) {
                 self.toast = None;
@@ -2788,6 +2957,7 @@ impl Open {
         }
         match clicked {
             Some(detail_view::Pick::File(path)) => self.select_detail_file(path),
+            Some(detail_view::Pick::Open(path)) => self.look_at(path),
             Some(detail_view::Pick::Tag { name, message }) => self.create_tag(name, message),
             None => {}
         }
