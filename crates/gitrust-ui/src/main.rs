@@ -3265,12 +3265,20 @@ impl Open {
         let mut clicked = None;
         let mut action = None;
 
+        // How far it can be dragged open. There is a cap because without one
+        // a commit with a long message widens the panel until the graph's
+        // column is nothing, but the cap was a fixed 520 pixels, which is a
+        // third of a laptop and a quarter of a desk monitor: on a wide screen
+        // it stopped the panel while there was still room to spare, and a
+        // diff is read at whatever width there is. Half the window is as far
+        // as it can go and still leave a graph behind it. The floor is the
+        // old number, so a narrow window is no worse off than before.
+        let widest = (ctx.screen_rect().width() * 0.5).max(520.0);
+
         egui::SidePanel::right(egui::Id::new(("detail", self.salt)))
             .resizable(true)
             .default_width(420.0)
-            // Capped: without it, a commit with a long message widens the
-            // panel until the graph's column is nothing.
-            .width_range(300.0..=520.0)
+            .width_range(300.0..=widest)
             .frame(
                 egui::Frame::NONE
                     .fill(theme::PANEL)
