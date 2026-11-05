@@ -42,8 +42,9 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] One file across the window: its whole history beside the commit you
       pick, as a diff, as the file itself, or blamed line by line
 - [x] Undo one hunk of an old commit, into the working tree
-- [ ] Interactive rebase: squash, reorder, edit, drop
+- [x] Rewrite a run of commits: squash, fixup, reword, drop, reorder
 - [ ] Three-way editor with line-by-line picking
+- [ ] Submodules, bisect, LFS, signing
 
 ## Architecture
 
@@ -59,6 +60,7 @@ crates/
     stash.rs        the pile of changes set aside
     graph.rs        the lane algorithm, and the uncommitted-changes row
     history.rs      taking a commit along, taking one back, moving a branch
+    rewrite.rs      a plan for a run of commits, carried out in memory
     board.rs        which column each branch falls in, and what came from what
     backlog.rs      the work with no branch yet, and how it travels
     note.rs         what a branch is for, in the words somebody used
@@ -83,6 +85,7 @@ crates/
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
     file_view.rs    one file across the window: its history, and three readings
+    rewrite_view.rs one row per commit, and what is to become of it
     conflict_view.rs the two answers side by side, and the ways out
     changes_view.rs the change lists, the diff and the commit box
     diff_view.rs    the shared painting of diff lines
@@ -100,6 +103,20 @@ network takes as long as it takes, and laying the board out, because weighing
 thirty branches against each other is well over a second. The board already on
 screen stays up until the new one arrives. The painting thread waits for
 nobody.
+
+**Rewriting history is all of it or none of it.** Everything else here that
+writes stops where it clashes and waits to be decided. Rewriting a run of
+commits does not, and the reason is worth knowing before you press it. A
+merge is one clash. A rebase is one clash per commit, and libgit2 keeps that
+sequence in `.git`, which is what lets the application put it down and pick it
+up — and what lets `git status` explain the repository if you look at it with
+anything else. A plan with squashing and reordering in it is not something
+libgit2 has at all. Stopping halfway through one would mean inventing a
+sequencer and writing it somewhere in `.git` that no other tool understands,
+and then a repository caught in the middle would be one nothing could account
+for. So the whole plan is worked out in memory, and the branch moves in one
+step at the end. If anything clashes, nothing has been written and the plan
+comes back with the commit that would not go.
 
 **Git backend:** `git2` (libgit2) for the bulk of the operations. For
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
@@ -208,8 +225,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and sixty-two
-tests, a hundred and ninety-one of them against real repositories made in
+files. Those are the ones that carry cover: two hundred and seventy-eight
+tests, two hundred and seven of them against real repositories made in
 `/tmp` and
 deleted when they finish.
 

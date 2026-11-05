@@ -16,6 +16,7 @@ mod file_view;
 mod graph_view;
 mod picker;
 mod refs_view;
+mod rewrite_view;
 mod theme;
 mod toast;
 
@@ -612,6 +613,10 @@ struct Open {
     clashes: Vec<gitrust_core::Clash>,
     /// The conflict screen, while it is up.
     deciding: Option<conflict_view::Deciding>,
+    /// The plan for rewriting a run of commits, while one is being arranged.
+    /// Nothing in it has happened: it is a list of intentions until the
+    /// button at the top of that screen is pressed.
+    rewriting: Option<gitrust_core::Plan>,
 
     // The working tree.
     work: WorkingState,
@@ -795,6 +800,7 @@ impl Open {
             half: gitrust_core::Half::None,
             clashes: Vec::new(),
             deciding: None,
+            rewriting: None,
             selected_commit: None,
             detail: None,
             detail_file: None,
@@ -1181,6 +1187,71 @@ impl Open {
 
         if let Some(looking) = &mut self.looking {
             looking.trouble = trouble;
+        }
+    }
+
+    /// Opens the screen for arranging what becomes of a run of commits.
+    ///
+    /// Reading the range can refuse -- a merge in the way, a commit that is
+    /// not on this branch -- and that refusal is the answer, so it goes where
+    /// every other refusal goes rather than opening an empty screen.
+    fn start_rewrite(&mut self, oid: gitrust_core::Oid) {
+        match self.repo().and_then(|repo| repo.plan_from(oid)) {
+            Ok(plan) => {
+                self.looking = None;
+                self.deciding = None;
+                self.rewriting = Some(plan);
+            }
+            Err(err) => self.note_error(format!("{err:#}")),
+        }
+    }
+
+    fn act_on_rewrite(&mut self, act: rewrite_view::Act) {
+        match act {
+            rewrite_view::Act::Close => self.rewriting = None,
+            rewrite_view::Act::Step { at, step } => {
+                if let Some(plan) = &mut self.rewriting {
+                    if let Some(line) = plan.lines.get_mut(at) {
+                        line.step = step;
+                    }
+                }
+            }
+            rewrite_view::Act::Typed { at, text } => {
+                if let Some(plan) = &mut self.rewriting {
+                    if let Some(line) = plan.lines.get_mut(at) {
+                        line.message = text;
+                    }
+                }
+            }
+            rewrite_view::Act::Move { at, up } => {
+                if let Some(plan) = &mut self.rewriting {
+                    let with = match up {
+                        true => at.checked_sub(1),
+                        false => (at + 1 < plan.lines.len()).then_some(at + 1),
+                    };
+                    if let Some(with) = with {
+                        plan.lines.swap(at, with);
+                    }
+                }
+            }
+            rewrite_view::Act::Go => {
+                let Some(plan) = self.rewriting.take() else {
+                    return;
+                };
+                // Put back if it would not run, so the arranging is not lost
+                // along with the attempt: a plan that clashes is a line or
+                // two away from a plan that does not.
+                match self.repo().and_then(|repo| repo.rewrite(&plan)) {
+                    Ok(note) => {
+                        self.load();
+                        self.said(note);
+                    }
+                    Err(err) => {
+                        self.rewriting = Some(plan);
+                        self.note_error(format!("{err:#}"));
+                    }
+                }
+            }
         }
     }
 
@@ -2462,7 +2533,11 @@ impl Open {
         self.status_bar(ctx);
         self.refs_panel(ctx);
 
-        if self.view == View::History && self.looking.is_none() && self.deciding.is_none() {
+        if self.view == View::History
+            && self.looking.is_none()
+            && self.deciding.is_none()
+            && self.rewriting.is_none()
+        {
             self.detail_panel(ctx);
         }
 
@@ -2494,6 +2569,30 @@ impl Open {
                 });
             if let Some(act) = act {
                 self.act_on_conflict(act);
+            }
+            self.toasting(ctx);
+            return;
+        }
+
+        // Arranging a rewrite takes the middle of the window too, and for
+        // the same reason: it is a list you read before you run it.
+        if self.rewriting.is_some() {
+            let mut act = None;
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::CANVAS)
+                        .inner_margin(egui::Margin::symmetric(14, 0)),
+                )
+                .show(ctx, |ui| {
+                    ui.push_id(self.salt, |ui| {
+                        if let Some(plan) = &self.rewriting {
+                            act = rewrite_view::show(ui, plan, self.job.is_some());
+                        }
+                    });
+                });
+            if let Some(act) = act {
+                self.act_on_rewrite(act);
             }
             self.toasting(ctx);
             return;
@@ -3094,6 +3193,7 @@ impl Open {
                 self.spawn(&doing, move |repo| repo.revert(oid));
             }
             refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
+            refs_view::Pick::Rewrite(oid) => self.start_rewrite(oid),
             refs_view::Pick::Visit(path) => self.visit(path),
             refs_view::Pick::Release(name) => self.ask_release(name),
             refs_view::Pick::Join { from, onto } => self.ask_join(from, onto, ctx),

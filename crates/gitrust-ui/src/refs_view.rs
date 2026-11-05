@@ -43,6 +43,8 @@ pub enum Pick {
     CherryPick(Oid),
     /// Write a commit that undoes that one.
     Revert(Oid),
+    /// Arrange what should become of every commit from that one to the tip.
+    Rewrite(Oid),
     /// Move the branch you are on to that commit.
     MoveTo(Oid, Move),
     /// Ask for a name, then rename that branch.
@@ -624,6 +626,17 @@ pub fn menu(
                 .clicked()
             {
                 *picked = Some(Pick::Revert(target));
+                ui.close_menu();
+            }
+            if ui
+                .button("Rewrite from this commit\u{2026}")
+                .on_hover_text(
+                    "squash, reword, drop or reorder everything from here to the tip. \
+                     Nothing happens until you say so",
+                )
+                .clicked()
+            {
+                *picked = Some(Pick::Rewrite(target));
                 ui.close_menu();
             }
         }
