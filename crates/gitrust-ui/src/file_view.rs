@@ -260,6 +260,12 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            // A row is at least `interact_size` tall, and that is a size for
+            // buttons. Two of them stacked came to more than the band drawn
+            // behind them, so the second line -- the date and who wrote it --
+            // sat below its own row and outside the highlight. Here a line is
+            // as tall as the words in it.
+            ui.spacing_mut().interact_size.y = 0.0;
 
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

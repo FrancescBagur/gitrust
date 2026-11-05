@@ -57,13 +57,21 @@ const FILE_HISTORY: usize = 4_000;
 /// nameless window. 256 is the largest any title bar or switcher asks for.
 const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
 
+/// What this is, where somebody reads it before anything else: the title bar
+/// and whatever the desktop's switcher puts under the icon.
+///
+/// The crate's description and the README's first paragraph say the same
+/// thing at more length. This is that line cut to what a title bar can hold
+/// without the desktop snipping the end off it.
+const SLOGAN: &str = "built around the commit graph";
+
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1500.0, 900.0])
         .with_min_inner_size([900.0, 480.0])
-        .with_title("gitrust")
+        .with_title(format!("gitrust \u{2014} {SLOGAN}"))
         // What the desktop files this window under. It has to be the name of
         // the .desktop file in packaging/ word for word: on Wayland the icon
         // comes from that file and never from the window, so the one below
