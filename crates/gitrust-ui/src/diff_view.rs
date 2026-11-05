@@ -8,11 +8,26 @@
 //! hugging the text and leaving a ragged border on the right. It also leaves
 //! room for a gutter with both sides' line numbers, which is what you need in
 //! order to place a change.
+//!
+//! # Two kinds of colour on the same line
+//!
+//! A diff already says something with colour -- the band and the edge say
+//! what changed -- and the syntax says something else on top of it. They are
+//! kept apart by what carries each: the change is the background and the
+//! stripe down the side, the code is the text. Lines that did not change get
+//! their colour let down, because a diff where everything shouts equally is
+//! a diff you have to search.
+//!
+//! A hunk is read for colour on its own, which is the one thing here that is
+//! knowingly approximate: a comment or a string that opened before the hunk
+//! began cannot be known from inside it. Reading the whole of both sides of
+//! the file to get those few lines right is a great deal of work for a case
+//! that looks, when it happens, like a few lines of the wrong colour.
 
-use eframe::egui::{self, Align2, Color32, Pos2, Rect, Stroke};
+use eframe::egui::{self, text::LayoutJob, Align2, Color32, Pos2, Rect, Stroke, TextFormat};
 use gitrust_core::Hunk;
 
-use crate::theme;
+use crate::{syntax, theme};
 
 pub const ADDED: Color32 = theme::ADDED;
 pub const REMOVED: Color32 = theme::REMOVED;
@@ -37,7 +52,10 @@ pub fn header(ui: &mut egui::Ui, hunk: &Hunk) {
 }
 
 /// A hunk's lines, each with its band of color running the full width.
-pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
+///
+/// `path` is only for the colour: it is what says whether `#` starts a
+/// comment or an attribute.
+pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
     let font = theme::mono(11.5);
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(
@@ -46,6 +64,18 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
     );
     let painter = ui.painter_at(rect);
 
+    // Read once for the whole hunk rather than once a line, so that a comment
+    // running down several of its lines is one comment. Everything after this
+    // is read back by position, so a result that does not line up is not used
+    // at all.
+    let text: Vec<&str> = hunk
+        .lines
+        .iter()
+        .map(|line| line.content.trim_end_matches(['\n', '\r']))
+        .collect();
+    let painted = syntax::read_lines(&text, path);
+    let painted = (painted.len() == hunk.lines.len()).then_some(painted);
+
     for (index, line) in hunk.lines.iter().enumerate() {
         let top = rect.top() + index as f32 * LINE_H;
         let band = Rect::from_min_size(
@@ -53,6 +83,13 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
             egui::vec2(rect.width(), LINE_H),
         );
         let y = band.center().y;
+
+        // A commit can be thousands of lines and none of this is virtualised.
+        // What is off screen is not drawn, and laying out a line is the most
+        // expensive thing on this path.
+        if !painter.clip_rect().intersects(band) {
+            continue;
+        }
 
         let (foreground, background) = match line.origin {
             '+' => (theme::ADDED_FG, theme::ADDED_BG),
@@ -85,13 +122,35 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
         number(line.old_lineno, rect.left() + NUM_W);
         number(line.new_lineno, rect.left() + NUM_W * 2.0);
 
-        painter.text(
-            Pos2::new(rect.left() + GUTTER, y),
-            Align2::LEFT_CENTER,
-            &line.content,
-            font.clone(),
-            foreground,
-        );
+        let left = rect.left() + GUTTER;
+        match painted.as_ref().and_then(|all| all.get(index)) {
+            Some(pieces) if !pieces.is_empty() => {
+                let mut job = LayoutJob::default();
+                for piece in pieces {
+                    job.append(
+                        &piece.text,
+                        0.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: shade(piece.kind.color(), line.origin),
+                            ..Default::default()
+                        },
+                    );
+                }
+                let galley = painter.layout_job(job);
+                let top = y - galley.size().y / 2.0;
+                painter.galley(Pos2::new(left, top), galley, foreground);
+            }
+            _ => {
+                painter.text(
+                    Pos2::new(left, y),
+                    Align2::LEFT_CENTER,
+                    &line.content,
+                    font.clone(),
+                    foreground,
+                );
+            }
+        }
     }
 
     // The gutter is set off from the code with a hair, not with a box.
@@ -100,6 +159,18 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk) {
         rect.top()..=rect.bottom(),
         Stroke::new(1.0, theme::HAIRLINE),
     );
+}
+
+/// A syntax colour, as strong as the line it is on deserves.
+///
+/// Full on a line that changed, let down on one that did not. The lines
+/// around a change are there to place it, and a diff where every line is as
+/// loud as every other is a diff you have to search rather than read.
+fn shade(color: Color32, origin: char) -> Color32 {
+    match origin {
+        '+' | '-' => color,
+        _ => theme::tint(color, 170),
+    }
 }
 
 /// The hunk's or the file's `+n -n`.

@@ -128,9 +128,21 @@ enum Carry {
 /// The whole file at once rather than a line at a time, because a comment
 /// that opened three lines up is only knowable from here.
 pub fn read(text: &str, path: &str) -> Vec<Vec<Piece>> {
+    let lines: Vec<&str> = text.lines().collect();
+    read_lines(&lines, path)
+}
+
+/// The same, for somebody who already has the lines.
+///
+/// This is the one the callers with lines in hand use, and not for tidiness:
+/// joining lines with a newline and letting this split them again loses a
+/// last line that is empty, and every one of these results is read back by
+/// position. One line in, one line out, always.
+pub fn read_lines(lines: &[&str], path: &str) -> Vec<Vec<Piece>> {
     let tongue = Tongue::of(path);
     let mut carry = Carry::Nothing;
-    text.lines()
+    lines
+        .iter()
         .map(|line| cut(line, tongue, &mut carry))
         .collect()
 }
@@ -534,6 +546,31 @@ mod tests {
             let want: Vec<String> = text.lines().map(str::to_string).collect();
             assert_eq!(back, want, "in {path}");
         }
+    }
+
+    /// The reason `read_lines` exists. A hunk whose last line is empty used
+    /// to come back one line shorter, and everything that reads these by
+    /// position would then be colouring the wrong line.
+    #[test]
+    fn one_line_in_is_always_one_line_out() {
+        for lines in [
+            vec!["a", ""],
+            vec!["", ""],
+            vec![""],
+            vec!["let x = 1;", "", "", "let y = 2;", ""],
+            vec![],
+        ] {
+            assert_eq!(read_lines(&lines, "a.rs").len(), lines.len(), "{lines:?}");
+        }
+    }
+
+    /// A hunk is a fragment, and a fragment cannot know what opened before
+    /// it. Said here so that it is a decision and not a surprise.
+    #[test]
+    fn a_fragment_does_not_know_about_a_comment_that_opened_above_it() {
+        let inside = read_lines(&["still inside the comment", "*/ let x = 1;"], "a.rs");
+        assert_ne!(inside[0][0].kind, Kind::Comment, "it cannot know: {inside:?}");
+        assert!(inside[1].iter().any(|p| p.text == "let" && p.kind == Kind::Keyword));
     }
 
     #[test]

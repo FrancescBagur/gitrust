@@ -325,7 +325,7 @@ fn diff(ui: &mut egui::Ui, looking: &Looking, busy: bool, act: &mut Option<Act>)
         {
             *act = Some(Act::Revert(hunk.id));
         }
-        diff_view::lines(ui, hunk);
+        diff_view::lines(ui, hunk, &looking.path);
         ui.add_space(10.0);
     }
 }

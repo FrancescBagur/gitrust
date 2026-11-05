@@ -41,7 +41,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Carry a rebase on commit by commit, or throw the whole thing away
 - [x] One file across the window: its whole history beside the commit you
       pick, as a diff, as the file itself, or blamed line by line
-- [x] Syntax colour in the file and the blame, out of the graph's own palette
+- [x] Syntax colour everywhere code is shown, out of the graph's own palette
 - [x] Undo one hunk of an old commit, into the working tree
 - [x] Rewrite a run of commits: squash, fixup, reword, drop, reorder
 - [ ] Three-way editor with line-by-line picking
@@ -135,6 +135,15 @@ things, azure for what you call, brass for quotes, rose for numbers, grey for
 what is said to a human. The rule is that colour comes from the graph's
 family or it does not come, and a code view is exactly where a rule like that
 gets broken by somebody reaching for a generic editor palette.
+
+A diff carries both kinds of colour at once, and they are kept apart by what
+carries each: the change is the background band and the stripe down the side,
+the code is the text. Lines that did not change get their colour let down,
+because a diff where everything shouts equally is a diff you have to search.
+A hunk is read on its own, so a comment or a string that opened before the
+hunk began cannot be known from inside it — reading both whole sides of the
+file to get those few lines right is a great deal of work for something that
+looks, when it happens, like a few lines of the wrong colour.
 
 **Git backend:** `git2` (libgit2) for the bulk of the operations. For
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
@@ -243,7 +252,7 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and eighty-nine
+files. Those are the ones that carry cover: two hundred and ninety-one
 tests, two hundred and seven of them against real repositories made in
 `/tmp` and
 deleted when they finish.

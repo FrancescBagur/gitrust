@@ -1191,8 +1191,7 @@ impl Open {
                             if looking.read.painted.is_none() {
                                 let text: Vec<&str> =
                                     lines.iter().map(|line| line.text.as_str()).collect();
-                                looking.read.painted =
-                                    Some(syntax::read(&text.join("\n"), &path));
+                                looking.read.painted = Some(syntax::read_lines(&text, &path));
                             }
                             looking.read.blame = Some(lines);
                         }

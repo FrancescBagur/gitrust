@@ -510,7 +510,7 @@ fn show_diff(
                     });
                 });
 
-                diff_view::lines(ui, hunk);
+                diff_view::lines(ui, hunk, path);
                 ui.add_space(8.0);
             }
         });

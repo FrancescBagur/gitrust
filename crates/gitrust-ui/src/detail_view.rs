@@ -196,7 +196,7 @@ pub fn show(
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for hunk in &diff.hunks {
                         diff_view::header(ui, hunk);
-                        diff_view::lines(ui, hunk);
+                        diff_view::lines(ui, hunk, &diff.path);
                         ui.add_space(8.0);
                     }
                 });
