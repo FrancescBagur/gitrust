@@ -6,6 +6,39 @@ A desktop Git client in Rust. The aim is to cover the day-to-day flow without
 depending on a commercial licence, starting with what is hardest to find free
 and well made: **the commit graph with every branch woven through it**.
 
+![The commit graph, reading git's own repository](assets/screens/graph.png)
+
+That is git's own history: five thousand commits across a thousand and
+fifteen references, drawn in nine hundred milliseconds.
+
+## What it looks like
+
+**The board is not stored anywhere.** The columns are worked out from the
+branches, a branch cut from another branch is a subtask of it with the count
+on the card, *in review* means a pull request is open, and the only thing
+written down is the work nobody has begun yet -- which lives in a Git
+reference and travels with the repository.
+
+![The board, worked out from the branches](assets/screens/board.png)
+
+**What is uncommitted, the diff and the commit box on one screen**, so that
+staging a piece of a file and writing the message about it are not two
+places you go.
+
+![The working tree](assets/screens/changes.png)
+
+**One file across the window**: everything that ever happened to it down the
+left, and on the right what this commit did to it, the whole of it as it
+stood, or who wrote each line.
+
+![A file, its history beside it](assets/screens/file.png)
+
+**A clash is decided file by file**: this branch on one side, the other one
+on the other, take either or write the answer yourself. A merge, a rebase, a
+cherry-pick and an undo all stop here instead of being thrown away.
+
+![Deciding a clash](assets/screens/clash.png)
+
 ## State
 
 - [x] Open a repository and walk every reference
@@ -96,6 +129,7 @@ crates/
     diff_view.rs    the shared painting of diff lines
 assets/             the art, and everything cut out of it
   source/           the three pictures as they were drawn
+  screens/          what it looks like running, for the pictures above
   make.py           how the cut-outs were made, so they can be made again
 packaging/          the desktop entry, and the scripts that put it in place
 ```

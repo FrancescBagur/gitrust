@@ -842,7 +842,53 @@ impl Open {
             toast: None,
         };
         app.load();
+        if let Ok(shot) = std::env::var("GITRUST_SHOT") {
+            app.pose(&shot);
+        }
         app
+    }
+
+    /// Opens the window straight onto one screen, for photographing it.
+    ///
+    /// `GITRUST_SHOT=board`, `changes:<path>`, `diff:<path>`, `whole:<path>`,
+    /// `blame:<path>` or `clash`.
+    ///
+    /// It is here because the pictures in the README are the first thing
+    /// anybody sees of a program with a window, and they go stale every time
+    /// the window changes. Taking them again means getting to each screen,
+    /// and the machines that take them have no way to move a pointer: a
+    /// screen you can only reach by clicking is a screen that cannot be
+    /// photographed. So each one can be opened by name instead.
+    ///
+    /// It puts the window where a click would have put it and does nothing
+    /// else -- no state that clicking could not reach, and nothing written.
+    fn pose(&mut self, shot: &str) {
+        let (what, rest) = shot.split_once(':').unwrap_or((shot, ""));
+        match what {
+            "board" => self.view = View::Board,
+            "changes" => {
+                self.view = View::Changes;
+                if !rest.is_empty() {
+                    self.handle(changes_view::Action::Select {
+                        path: rest.to_string(),
+                        staged: false,
+                    });
+                }
+            }
+            "diff" | "whole" | "blame" => {
+                self.look_at(rest.to_string());
+                if let Some(looking) = self.looking.as_mut() {
+                    looking.how = match what {
+                        "whole" => file_view::Look::Whole,
+                        "blame" => file_view::Look::Blame,
+                        _ => file_view::Look::Diff,
+                    };
+                }
+                self.read_file();
+            }
+            "clash" => self.decide(),
+            _ => {}
+        }
     }
 
     fn repo(&self) -> Result<Repo> {
