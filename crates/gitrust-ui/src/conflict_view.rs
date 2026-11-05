@@ -20,7 +20,7 @@
 use eframe::egui::{self, RichText};
 use gitrust_core::{Clash, Contents, Half, Side};
 
-use crate::theme;
+use crate::{syntax, theme};
 
 /// What has been asked for.
 pub enum Act {
@@ -310,14 +310,17 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
                     });
                 });
                 ui.add_space(4.0);
-                version(ui, contents, label);
+                version(ui, contents, label, &clash.path);
             });
         }
     });
 }
 
 /// One side's version of the file, under whatever that side is called here.
-fn version(ui: &mut egui::Ui, contents: &Contents, label: &str) {
+///
+/// `path` is only for the colour: it is what says whether `#` starts a
+/// comment or an attribute.
+fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
     // Deliberately not scrolled on its own. Two panes scrolling separately
     // means two files you cannot line up, and lining them up is the whole of
     // what you are doing here.
@@ -337,6 +340,13 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str) {
             );
         }
         Contents::Text(text) => {
+            // Read for colour here, every frame, rather than once when the
+            // clash is loaded: this view keeps nothing between frames. It is
+            // the cheaper half of what this loop already does -- every line
+            // below is a widget of its own, laid out whether or not anybody
+            // scrolls down to it, and that is what costs.
+            let painted = syntax::read(text, path);
+
             egui::ScrollArea::vertical()
                 .id_salt(("version", label))
                 .max_height(ui.available_height() - 20.0)
@@ -359,11 +369,18 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str) {
                                         .color(theme::FAINT),
                                 ),
                             );
-                            ui.label(
-                                RichText::new(line)
-                                    .font(theme::mono(11.0))
-                                    .color(theme::TEXT),
-                            );
+                            match painted.get(index) {
+                                Some(pieces) => {
+                                    ui.label(syntax::laid(pieces, theme::mono(11.0)));
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new(line)
+                                            .font(theme::mono(11.0))
+                                            .color(theme::TEXT),
+                                    );
+                                }
+                            }
                         });
                     }
                 });

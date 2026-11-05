@@ -451,29 +451,15 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
 }
 
 /// One line of a file, coloured if it has been read for colour.
-///
-/// Laid out as a single run with sections rather than as a label per piece:
-/// a file is thousands of lines and every widget costs, so a line is one
-/// widget here whether it has one colour in it or nine.
 fn code(ui: &mut egui::Ui, line: &str, pieces: Option<&Vec<syntax::Piece>>) {
-    let Some(pieces) = pieces else {
-        ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::TEXT));
-        return;
-    };
-
-    let mut job = egui::text::LayoutJob::default();
-    for piece in pieces {
-        job.append(
-            &piece.text,
-            0.0,
-            egui::TextFormat {
-                font_id: theme::mono(11.5),
-                color: piece.kind.color(),
-                ..Default::default()
-            },
-        );
+    match pieces {
+        Some(pieces) => {
+            ui.label(syntax::laid(pieces, theme::mono(11.5)));
+        }
+        None => {
+            ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::TEXT));
+        }
     }
-    ui.label(job);
 }
 
 fn when(seconds: i64) -> String {

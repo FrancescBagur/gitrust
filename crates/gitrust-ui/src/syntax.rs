@@ -586,3 +586,24 @@ mod tests {
         assert!(line.iter().any(|(t, k)| t == "1_000.5" && *k == Kind::Number), "{line:?}");
     }
 }
+
+/// Lays one line of pieces out as a single run.
+///
+/// One widget a line whether the line has one colour in it or nine. The
+/// screens that show code show whole files, and a label a piece is the
+/// difference between a file that opens and a file that takes a moment to.
+pub fn laid(pieces: &[Piece], font: eframe::egui::FontId) -> eframe::egui::text::LayoutJob {
+    let mut job = eframe::egui::text::LayoutJob::default();
+    for piece in pieces {
+        job.append(
+            &piece.text,
+            0.0,
+            eframe::egui::TextFormat {
+                font_id: font.clone(),
+                color: piece.kind.color(),
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
