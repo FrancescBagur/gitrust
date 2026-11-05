@@ -39,6 +39,9 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Decide a clash file by file: take a side, or write it yourself
 - [x] A merge, a rebase, a cherry-pick and an undo all stop where they clash
 - [x] Carry a rebase on commit by commit, or throw the whole thing away
+- [x] One file across the window: its whole history beside the commit you
+      pick, as a diff, as the file itself, or blamed line by line
+- [x] Undo one hunk of an old commit, into the working tree
 - [ ] Interactive rebase: squash, reorder, edit, drop
 - [ ] Three-way editor with line-by-line picking
 
@@ -79,7 +82,7 @@ crates/
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
     detail_view.rs  the commit detail panel
-    file_view.rs    one file across the window, in its four readings
+    file_view.rs    one file across the window: its history, and three readings
     conflict_view.rs the two answers side by side, and the ways out
     changes_view.rs the change lists, the diff and the commit box
     diff_view.rs    the shared painting of diff lines

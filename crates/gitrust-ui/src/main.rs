@@ -1099,12 +1099,13 @@ impl Open {
         self.read_file();
     }
 
-    /// Reads whatever the question being asked needs, once.
+    /// Reads whatever is needed and not already read.
     ///
-    /// Each of the four is read the first time it is asked for and then kept,
-    /// so going back and forth between them costs nothing. None of them is
-    /// read on opening: blame and the history of a file are both work, and
-    /// doing them for somebody who only wanted the diff is work for nothing.
+    /// Each of the three questions is read the first time it is asked for and
+    /// then kept, so going back and forth between them costs nothing. The
+    /// history of the file is different: it is the column on the left, so it
+    /// is always needed, and it belongs to the file rather than to the commit
+    /// picked -- which is why moving between commits does not throw it away.
     fn read_file(&mut self) {
         let Some(looking) = &self.looking else {
             return;
@@ -1115,9 +1116,9 @@ impl Open {
             file_view::Look::Diff => looking.read.diff.is_none(),
             file_view::Look::Whole => looking.read.whole.is_none(),
             file_view::Look::Blame => looking.read.blame.is_none(),
-            file_view::Look::Story => looking.read.story.is_none(),
         };
-        if !needed {
+        let walking = looking.read.story.is_none();
+        if !needed && !walking {
             return;
         }
 
@@ -1130,6 +1131,24 @@ impl Open {
         // one -- bounded by the limit it is given. If that limit ever has to
         // go up, this is the line that has to move off here first.
         let mut trouble = None;
+
+        if walking {
+            let read = repo.file_history(&path, FILE_HISTORY);
+            if let Some(looking) = &mut self.looking {
+                match read {
+                    Ok(story) => looking.read.story = Some(story),
+                    Err(err) => trouble = Some(format!("{err:#}")),
+                }
+            }
+        }
+
+        if !needed {
+            if let Some(looking) = &mut self.looking {
+                looking.trouble = trouble;
+            }
+            return;
+        }
+
         match how {
             file_view::Look::Diff => {
                 let read = repo.commit_file_diff(at, &path);
@@ -1154,15 +1173,6 @@ impl Open {
                 if let Some(looking) = &mut self.looking {
                     match read {
                         Ok(lines) => looking.read.blame = Some(lines),
-                        Err(err) => trouble = Some(format!("{err:#}")),
-                    }
-                }
-            }
-            file_view::Look::Story => {
-                let read = repo.file_history(&path, FILE_HISTORY);
-                if let Some(looking) = &mut self.looking {
-                    match read {
-                        Ok(story) => looking.read.story = Some(story),
                         Err(err) => trouble = Some(format!("{err:#}")),
                     }
                 }
@@ -1288,13 +1298,17 @@ impl Open {
                 }
                 self.read_file();
             }
-            // Another commit is another file, as far as all four questions
-            // are concerned: everything read about the last one is thrown
-            // away rather than shown beside the wrong hash.
+            // Another commit is another diff, another file and another
+            // blame, so all three are thrown away rather than shown beside
+            // the wrong hash. The history is not: it is about the file, it
+            // is the list being clicked in, and walking it again on every
+            // click would be the most expensive thing in the window
+            // happening for no reason at all.
             file_view::Act::At(oid) => {
                 if let Some(looking) = &mut self.looking {
                     looking.at = oid;
-                    looking.read = file_view::Read::default();
+                    let story = looking.read.story.take();
+                    looking.read = file_view::Read { story, ..Default::default() };
                     looking.trouble = None;
                 }
                 self.read_file();
