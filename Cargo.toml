@@ -8,7 +8,7 @@ edition = "2021"
 license = "GPL-3.0-only"
 description = "A desktop Git client in Rust, built around the commit graph"
 repository = "https://github.com/Coffee-Software-SLU/gitrust"
-authors = ["Francesc Bagur <fbagurc@coffeesoftware.io>"]
+authors = ["Francesc Bagur <francesc.bagur@coffeesoftware.io>"]
 
 [workspace.dependencies]
 anyhow = "1"
