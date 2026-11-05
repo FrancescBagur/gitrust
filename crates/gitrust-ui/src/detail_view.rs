@@ -104,16 +104,33 @@ pub fn show(
     // The body is cut into blocks before it is painted: the prose is wrapped
     // again to the panel's width, and the lists, the code and the trailers are
     // left as they were, in mono, because there a line break means something.
+    //
+    // It is the one thing in this panel with no size of its own -- a commit
+    // message is a line or it is two pages -- so it is given a ceiling and a
+    // scroll inside it. Without one, a long message pushes the files and the
+    // change itself off the bottom of a panel that does not scroll, and there
+    // is no way left to reach them.
     if !detail.body.is_empty() {
         ui.add_space(10.0);
-        for block in gitrust_core::blocks(&detail.body) {
-            let text = match &block {
-                Block::Prose(text) => RichText::new(text).font(theme::body(12.5)),
-                Block::Literal(text) => RichText::new(text).font(theme::mono(11.0)),
-            };
-            ui.add(egui::Label::new(text.color(theme::MUTED)).wrap());
-            ui.add_space(7.0);
-        }
+        let ceiling = (ui.available_height() * 0.4).clamp(90.0, 320.0);
+        egui::ScrollArea::vertical()
+            // Salted with the commit, so that a message you read to the end
+            // does not leave the next one opened halfway down.
+            .id_salt(("commit-body", detail.short_id.as_str()))
+            // Shrinking down the page but not across it: a two-line message
+            // takes two lines, and a long one stops at the ceiling.
+            .auto_shrink([false, true])
+            .max_height(ceiling)
+            .show(ui, |ui| {
+                for block in gitrust_core::blocks(&detail.body) {
+                    let text = match &block {
+                        Block::Prose(text) => RichText::new(text).font(theme::body(12.5)),
+                        Block::Literal(text) => RichText::new(text).font(theme::mono(11.0)),
+                    };
+                    ui.add(egui::Label::new(text.color(theme::MUTED)).wrap());
+                    ui.add_space(7.0);
+                }
+            });
     }
 
     // What can be done to this commit. One thing for now, but the row is set
