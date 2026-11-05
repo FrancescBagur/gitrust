@@ -30,12 +30,7 @@ impl Repo {
         // One at a time. Starting a merge on top of a half-done anything
         // means two sets of markers in one working tree and no way to tell
         // which decision belongs to which.
-        let half = self.half_done();
-        anyhow::ensure!(
-            half == crate::conflict::Half::None,
-            "{} is half-done here. Finish it or abandon it first",
-            half.says()
-        );
+        self.nothing_half_done()?;
 
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?.to_string();
@@ -290,15 +285,8 @@ impl Repo {
     /// every commit that had already gone up clean along with the one that
     /// could not.
     pub fn rebase_onto(&self, upstream: &str) -> Result<String> {
-        // One at a time, for the same reason a merge is: two half-done things
-        // in one working tree and there is no telling which decision belongs
-        // to which.
-        let half = self.half_done();
-        anyhow::ensure!(
-            half == crate::conflict::Half::None,
-            "{} is half-done here. Finish it or abandon it first",
-            half.says()
-        );
+        // One at a time, for the same reason a merge is.
+        self.nothing_half_done()?;
         anyhow::ensure!(
             self.status()?.is_clean(),
             "commit or stash what you have half-done before rebasing"
@@ -336,8 +324,7 @@ impl Repo {
             "there is no half-done rebase here"
         );
 
-        let left: Vec<String> = self.clashes()?.into_iter().map(|clash| clash.path).collect();
-        anyhow::ensure!(left.is_empty(), "still to decide: {}", crate::conflict::named(&left));
+        self.nothing_left_to_decide()?;
 
         let signature = self
             .inner
@@ -456,7 +443,7 @@ fn shorten(name: Option<&str>) -> Option<String> {
 
 /// The files that clash, named the way you would name them aloud: three and
 /// whatever is left. The whole list fits in no status bar, and is not needed.
-fn conflicting(index: &git2::Index) -> String {
+pub(crate) fn conflicting(index: &git2::Index) -> String {
     let Ok(conflicts) = index.conflicts() else {
         return "some file".to_string();
     };

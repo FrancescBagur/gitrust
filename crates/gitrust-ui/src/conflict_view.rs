@@ -1,4 +1,5 @@
-//! Deciding the files a merge or a rebase could not decide on its own.
+//! Deciding the files a merge, a rebase, a cherry-pick or an undo could not
+//! decide on its own.
 //!
 //! Two columns, because two is what there is. What the two *are* depends on
 //! what is half-done, and the screen never says "ours" and "theirs": a rebase
@@ -106,19 +107,16 @@ pub fn show(
                 act = Some(Act::Abandon);
             }
 
-            // A merge ends here and a rebase does not, so the button says
-            // which. "Write the merge" on something that writes one commit of
-            // nine and stops again at the next clash would be a lie told at
-            // exactly the moment somebody is deciding whether to trust this.
+            // Four things behind one button, and only three of them end
+            // anything. "Write the merge" on a rebase that writes one commit
+            // of nine and stops again at the next clash would be a lie told
+            // at exactly the moment somebody is deciding whether to trust
+            // this, so the core says what each one is called.
             if half.ours_to_finish() {
-                let onward = match half {
-                    Half::Rebase => "Carry on",
-                    _ => "Write the merge",
-                };
                 let ready = clashes.is_empty() && !busy;
                 let write = ui.add_enabled(
                     ready,
-                    egui::Button::new(RichText::new(onward).font(theme::medium(12.5)))
+                    egui::Button::new(RichText::new(half.onward()).font(theme::medium(12.5)))
                         .fill(theme::CHOSEN),
                 );
                 let write = match clashes.is_empty() {
@@ -127,6 +125,8 @@ pub fn show(
                             "writes this commit and goes on to the next one, \
                              which may clash as well"
                         }
+                        Half::CherryPick => "writes the change here as a commit of its own",
+                        Half::Revert => "writes the commit that undoes it",
                         _ => "writes the merge commit",
                     }),
                     false => write.on_disabled_hover_text(
@@ -163,6 +163,10 @@ pub fn show(
                     "Every file is decided. This commit is waiting to be written, \
                      and the rebase goes on from there."
                 }
+                Half::CherryPick => {
+                    "Every file is decided. The change is waiting to be written here."
+                }
+                Half::Revert => "Every file is decided. The undo is waiting to be written.",
                 _ => "Every file is decided. The merge is waiting to be written.",
             },
         );

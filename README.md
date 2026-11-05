@@ -37,6 +37,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Right-click a branch for everything that can be done to it or from it
 - [x] Take a commit along, take one back, and move a branch to one
 - [x] Decide a clash file by file: take a side, or write it yourself
+- [x] A merge, a rebase, a cherry-pick and an undo all stop where they clash
 - [x] Carry a rebase on commit by commit, or throw the whole thing away
 - [ ] Interactive rebase: squash, reorder, edit, drop
 - [ ] Three-way editor with line-by-line picking
@@ -204,8 +205,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and fifty-one
-tests, a hundred and eighty of them against real repositories made in
+files. Those are the ones that carry cover: two hundred and sixty-two
+tests, a hundred and ninety-one of them against real repositories made in
 `/tmp` and
 deleted when they finish.
 

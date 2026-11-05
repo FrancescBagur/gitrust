@@ -6,10 +6,14 @@
 //! by halves.
 //!
 //! Taking along and taking back are worked out in memory first, exactly as a
-//! merge is. If the result would clash, nothing is written and nothing is
-//! checked out: a repository half-way through a cherry-pick is a place you
-//! have to know how to get out of, and this application has no conflict
-//! editor to get anybody out of it.
+//! merge is, so that the ordinary case writes one commit and disturbs
+//! nothing. If the result clashes they are really started and left standing
+//! to be decided in [`crate::conflict`], and each has its own way of being
+//! written once it is: see [`Repo::finish_cherry_pick`] and
+//! [`Repo::finish_revert`].
+//!
+//! Unlike a rebase, both really do end there. One commit was being written,
+//! and once it is written there is nothing after it.
 //!
 //! Moving a branch is the one that cannot be made safe, only honest. Of its
 //! three kinds, two keep your files and one does not, and the one that does
@@ -18,7 +22,7 @@
 //! before it is used.
 
 use anyhow::{Context, Result};
-use git2::{build::CheckoutBuilder, Oid, ResetType};
+use git2::{build::CheckoutBuilder, CherrypickOptions, Oid, ResetType, RevertOptions};
 
 use crate::repo::Repo;
 
@@ -64,7 +68,19 @@ impl Repo {
     /// writes a new commit here that does the same thing. Its message comes
     /// along, since the point of taking a change along is that it is the same
     /// change.
+    ///
+    /// If it clashes it is really started and left to be decided, the way a
+    /// merge is. See [`Repo::finish_cherry_pick`].
     pub fn cherry_pick(&self, oid: Oid) -> Result<String> {
+        self.nothing_half_done()?;
+        // Required before anything is written, and not only for the clash:
+        // what this writes on the way out is a forced checkout, which would
+        // walk straight over anything uncommitted. It always would have.
+        anyhow::ensure!(
+            self.status()?.is_clean(),
+            "commit or stash what you have half-done before taking a change along"
+        );
+
         let (head, head_commit) = self.here()?;
         let commit = self
             .inner
@@ -85,16 +101,27 @@ impl Repo {
             short(oid)
         );
 
-        // Worked out in memory. Only a clean result is written.
+        // Worked out in memory first, so that the ordinary case writes one
+        // commit and touches nothing else on the way.
         let mut index = self
             .inner
             .cherrypick_commit(&commit, &head_commit, 0, None)
             .context("could not work the change out")?;
-        anyhow::ensure!(
-            !index.has_conflicts(),
-            "{} clashes with {head}, and there is no conflict editor yet",
-            short(oid)
-        );
+
+        if index.has_conflicts() {
+            let files = crate::merge::conflicting(&index);
+            let mut how = CherrypickOptions::new();
+            let mut checkout = CheckoutBuilder::new();
+            checkout.safe();
+            how.checkout_builder(checkout);
+            self.inner
+                .cherrypick(&commit, Some(&mut how))
+                .with_context(|| format!("could not start taking {} along", short(oid)))?;
+            return Ok(format!(
+                "{} clashes with {head} in {files}. Decide each one and it can be written",
+                short(oid)
+            ));
+        }
 
         let tree = self.inner.find_tree(index.write_tree_to(&self.inner)?)?;
         if tree.id() == head_commit.tree_id() {
@@ -122,7 +149,16 @@ impl Repo {
     /// stays exactly where it is, and a new one on top says what it said
     /// backwards. It is the only way to take something back that has already
     /// gone out to other people.
+    ///
+    /// If it clashes it is really started and left to be decided, the way a
+    /// merge is. See [`Repo::finish_revert`].
     pub fn revert(&self, oid: Oid) -> Result<String> {
+        self.nothing_half_done()?;
+        anyhow::ensure!(
+            self.status()?.is_clean(),
+            "commit or stash what you have half-done before undoing a commit"
+        );
+
         let (head, head_commit) = self.here()?;
         let commit = self
             .inner
@@ -139,11 +175,22 @@ impl Repo {
             .inner
             .revert_commit(&commit, &head_commit, 0, None)
             .context("could not work the undo out")?;
-        anyhow::ensure!(
-            !index.has_conflicts(),
-            "undoing {} clashes with what {head} has since, and there is no conflict editor yet",
-            short(oid)
-        );
+
+        if index.has_conflicts() {
+            let files = crate::merge::conflicting(&index);
+            let mut how = RevertOptions::new();
+            let mut checkout = CheckoutBuilder::new();
+            checkout.safe();
+            how.checkout_builder(checkout);
+            self.inner
+                .revert(&commit, Some(&mut how))
+                .with_context(|| format!("could not start undoing {}", short(oid)))?;
+            return Ok(format!(
+                "undoing {} clashes with what {head} has since, in {files}. \
+                 Decide each one and it can be written",
+                short(oid)
+            ));
+        }
 
         let tree = self.inner.find_tree(index.write_tree_to(&self.inner)?)?;
         if tree.id() == head_commit.tree_id() {
@@ -163,6 +210,104 @@ impl Repo {
         self.checkout_here()?;
 
         Ok(format!("{} is undone on {head}", short(oid)))
+    }
+
+    /// Writes the commit a cherry-pick stopped in the middle of.
+    ///
+    /// Unlike a rebase this really is the end: one commit was being taken
+    /// along, and once it is written there is nothing after it.
+    pub fn finish_cherry_pick(&self) -> Result<String> {
+        anyhow::ensure!(
+            self.half_done() == crate::conflict::Half::CherryPick,
+            "there is nothing half-taken-along here"
+        );
+        self.nothing_left_to_decide()?;
+
+        let taken = self
+            .inner
+            .revparse_single("CHERRY_PICK_HEAD")
+            .context("the repository says a change is being taken along but not which")?
+            .id();
+        let taken = self.inner.find_commit(taken)?;
+        let (head, head_commit) = self.here()?;
+
+        let mut index = self.inner.index()?;
+        let tree = self.inner.find_tree(index.write_tree()?)?;
+
+        // Deciding every file the way this branch already had it leaves
+        // nothing to write. Saying so beats writing an empty commit, and
+        // beats refusing: the decisions were a real answer.
+        if tree.id() == head_commit.tree_id() {
+            self.inner.cleanup_state()?;
+            self.checkout_here()?;
+            return Ok(format!(
+                "nothing of {} was left after deciding, so nothing was written",
+                short(taken.id())
+            ));
+        }
+
+        let signature = self.who()?;
+        let message = taken.message().unwrap_or("a change taken along");
+        self.inner.commit(
+            Some("HEAD"),
+            &taken.author(),
+            &signature,
+            message,
+            &tree,
+            &[&head_commit],
+        )?;
+        self.inner
+            .cleanup_state()
+            .context("it was written but the half-done state is still here")?;
+        self.checkout_here()?;
+
+        Ok(format!("{} is on {head} now too", short(taken.id())))
+    }
+
+    /// Writes the commit an undo stopped in the middle of.
+    pub fn finish_revert(&self) -> Result<String> {
+        anyhow::ensure!(
+            self.half_done() == crate::conflict::Half::Revert,
+            "there is no half-done undo here"
+        );
+        self.nothing_left_to_decide()?;
+
+        let undone = self
+            .inner
+            .revparse_single("REVERT_HEAD")
+            .context("the repository says a commit is being undone but not which")?
+            .id();
+        let undone = self.inner.find_commit(undone)?;
+        let (head, head_commit) = self.here()?;
+
+        let mut index = self.inner.index()?;
+        let tree = self.inner.find_tree(index.write_tree()?)?;
+
+        if tree.id() == head_commit.tree_id() {
+            self.inner.cleanup_state()?;
+            self.checkout_here()?;
+            return Ok(format!(
+                "nothing of {} was left to undo after deciding",
+                short(undone.id())
+            ));
+        }
+
+        let subject = undone.summary().unwrap_or("a commit").to_string();
+        let signature = self.who()?;
+        self.inner.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            &format!("revert: {subject}\n\nThis undoes {}.\n", undone.id()),
+            &tree,
+            &[&head_commit],
+        )?;
+        self.inner
+            .cleanup_state()
+            .context("it was written but the half-done state is still here")?;
+        self.checkout_here()?;
+
+        Ok(format!("{} is undone on {head}", short(undone.id())))
     }
 
     /// Moves the current branch to another commit.
@@ -207,7 +352,7 @@ impl Repo {
     }
 
     /// The branch we are on and the commit it points at.
-    fn here(&self) -> Result<(String, git2::Commit<'_>)> {
+    pub(crate) fn here(&self) -> Result<(String, git2::Commit<'_>)> {
         let head = self.inner.head().context("the repository has no commits")?;
         anyhow::ensure!(
             !self.inner.head_detached()?,
@@ -223,7 +368,7 @@ impl Repo {
     /// Forced, and that is safe here: it is run straight after writing a
     /// commit whose tree was worked out from what was already there, so there
     /// is nothing of yours it can be walking over.
-    fn checkout_here(&self) -> Result<()> {
+    pub(crate) fn checkout_here(&self) -> Result<()> {
         let head = self.inner.head()?.peel_to_commit()?;
         self.inner
             .checkout_tree(head.as_object(), Some(CheckoutBuilder::new().force()))?;

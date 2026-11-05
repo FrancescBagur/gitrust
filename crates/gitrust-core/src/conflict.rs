@@ -32,11 +32,12 @@
 //! three panes and line-by-line picking is a real thing to build and this is
 //! not it; what is here is what gets you out, which is what was missing.
 //!
-//! **No cherry-pick, no revert.** Both still work out their answer in memory
-//! and refuse if it would clash, as a rebase used to. The shape of them is a
-//! sequence like a rebase, so the way in is the same way in, but neither has
-//! been done and neither pretends to have been: a repository half-done in one
-//! of them says so and offers to throw it away.
+//! **No sequences of cherry-picks or reverts.** One of each is seen through
+//! here. Git can be told to take a run of commits along or undo a run of
+//! them, and then there is a sequencer with a list of what is left, like a
+//! rebase but without libgit2 having an opinion about it. Nothing in gitrust
+//! starts one of those, so nothing here finishes one; a repository found in
+//! the middle of one says so and offers to throw it away.
 //!
 //! # A rebase is not a merge with more steps
 //!
@@ -120,7 +121,25 @@ impl Half {
 
     /// Whether this module can see it through.
     pub fn ours_to_finish(self) -> bool {
-        matches!(self, Half::Merge | Half::Rebase)
+        matches!(
+            self,
+            Half::Merge | Half::Rebase | Half::CherryPick | Half::Revert
+        )
+    }
+
+    /// What pressing the button through does, in two or three words.
+    ///
+    /// Four different things, and the difference is not decoration: a merge
+    /// and a rebase both write a commit, but one of them is the end and the
+    /// other walks straight into the next clash. Somebody deciding whether to
+    /// press it is deciding about that.
+    pub fn onward(self) -> &'static str {
+        match self {
+            Half::Rebase => "Carry on",
+            Half::CherryPick => "Write it here",
+            Half::Revert => "Write the undo",
+            _ => "Write the merge",
+        }
     }
 
     /// What the two versions of a clashing file actually are, here.
@@ -139,6 +158,8 @@ impl Half {
     pub fn sides(self) -> (&'static str, &'static str) {
         match self {
             Half::Rebase => ("the branch underneath", "the commit being replayed"),
+            Half::CherryPick => ("this branch", "the commit being taken along"),
+            Half::Revert => ("this branch", "the commit being undone"),
             _ => ("this branch", "the other branch"),
         }
     }
@@ -188,6 +209,49 @@ impl Repo {
             CherryPick | CherryPickSequence => Half::CherryPick,
             Revert | RevertSequence => Half::Revert,
             _ => Half::Other,
+        }
+    }
+
+    /// Refuses while anything is half-done.
+    ///
+    /// Said the same way by everything that starts something, because two
+    /// half-done things in one working tree means two sets of markers and no
+    /// telling which decision belongs to which.
+    pub(crate) fn nothing_half_done(&self) -> Result<()> {
+        let half = self.half_done();
+        anyhow::ensure!(
+            half == Half::None,
+            "{} is half-done here. Finish it or abandon it first",
+            half.says()
+        );
+        Ok(())
+    }
+
+    /// Refuses while any file still has both answers in it.
+    pub(crate) fn nothing_left_to_decide(&self) -> Result<()> {
+        let left: Vec<String> = self.clashes()?.into_iter().map(|clash| clash.path).collect();
+        anyhow::ensure!(left.is_empty(), "still to decide: {}", named(&left));
+        Ok(())
+    }
+
+    /// Sees through whatever is half-done, whichever thing it is.
+    ///
+    /// One way in, because the screen has one button. What is behind it is
+    /// four different things and only one of them is an ending -- a rebase
+    /// goes on to the next commit -- but which one is a fact about the
+    /// repository, and this is where the repository is known.
+    pub fn see_it_through(&self) -> Result<String> {
+        match self.half_done() {
+            Half::Merge => self.finish_merge(),
+            Half::Rebase => self.carry_on_rebase(),
+            Half::CherryPick => self.finish_cherry_pick(),
+            Half::Revert => self.finish_revert(),
+            Half::None => anyhow::bail!("there is nothing half-done here"),
+            half => anyhow::bail!(
+                "{} is half-done here, and gitrust did not start it. \
+                 Throwing it away works, or carry on at the command line",
+                half.says()
+            ),
         }
     }
 
@@ -330,18 +394,9 @@ impl Repo {
             "there is no half-done merge here"
         );
 
-        let mut index = self.inner.index()?;
-        let left: Vec<String> = self
-            .clashes()?
-            .into_iter()
-            .map(|clash| clash.path)
-            .collect();
-        anyhow::ensure!(
-            left.is_empty(),
-            "still to decide: {}",
-            named(&left)
-        );
+        self.nothing_left_to_decide()?;
 
+        let mut index = self.inner.index()?;
         let head = self.inner.head().context("the repository has no commits")?;
         let refname = head.name().context("HEAD has no name")?.to_string();
         let current = head.shorthand().unwrap_or("HEAD").to_string();

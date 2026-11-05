@@ -62,10 +62,11 @@ fn taking_along_something_you_already_have_is_refused_rather_than_repeated() {
     assert!(err.contains("already has"), "{err}");
 }
 
-/// The repository is left exactly as it was. That is the whole point: there
-/// is no conflict editor to get anybody out of a half-applied pick.
+/// Nothing is written and the branch has not moved: the change is left
+/// standing to be decided. What happens after that is tested where deciding
+/// is the subject.
 #[test]
-fn a_change_that_clashes_is_not_half_taken_along() {
+fn a_change_that_clashes_is_left_standing_rather_than_written() {
     let temp = TempRepo::new("cherry-pick-clash");
     let trunk = start(&temp);
 
@@ -74,11 +75,12 @@ fn a_change_that_clashes_is_not_half_taken_along() {
     temp.open().checkout_branch(&trunk).unwrap();
     let before = commit(&temp, "a.txt", "ours\n", "feat: ours");
 
-    let err = temp.open().cherry_pick(side).unwrap_err().to_string();
-    assert!(err.contains("clashes"), "{err}");
-    assert_eq!(tip(&temp.open()), before);
-    assert_eq!(read(&temp, "a.txt"), "ours\n");
-    assert!(temp.open().status().unwrap().is_clean());
+    let note = temp.open().cherry_pick(side).unwrap();
+    assert!(note.contains("clashes"), "{note}");
+    assert!(note.contains("a.txt"), "it says what clashes: {note}");
+
+    assert_eq!(tip(&temp.open()), before, "nothing is written");
+    assert_eq!(temp.open().half_done(), gitrust_core::Half::CherryPick);
 }
 
 #[test]

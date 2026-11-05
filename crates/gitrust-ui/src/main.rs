@@ -1225,15 +1225,12 @@ impl Open {
                 self.after_deciding();
             }
             conflict_view::Act::Finish => {
-                // The same button, two different things behind it. A merge
-                // ends; a rebase writes this one commit and walks on into the
-                // next, which is why the screen is pointed at whatever is
-                // clashing now rather than put away.
-                let half = self.half;
-                self.note_down(move |repo| match half {
-                    gitrust_core::Half::Rebase => repo.carry_on_rebase(),
-                    _ => repo.finish_merge(),
-                });
+                // One button, four things behind it, and which one is a fact
+                // about the repository rather than about this screen -- so
+                // the core picks. A rebase writes one commit and walks on
+                // into the next, which is why the screen is pointed at
+                // whatever is clashing now rather than put away.
+                self.note_down(|repo| repo.see_it_through());
                 self.after_deciding();
             }
             conflict_view::Act::Abandon => self.ask_abandon(),
@@ -1263,6 +1260,9 @@ impl Open {
         let also = match half {
             gitrust_core::Half::Rebase => {
                 " Any commits this rebase had already replayed go back where they were."
+            }
+            gitrust_core::Half::CherryPick | gitrust_core::Half::Revert => {
+                " The commit it came from is untouched either way."
             }
             _ => "",
         };
