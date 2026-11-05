@@ -1,3 +1,5 @@
+![gitrust](assets/banner.jpg)
+
 # gitrust
 
 A desktop Git client in Rust. The aim is to cover the day-to-day flow without
@@ -44,6 +46,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Syntax colour everywhere code is shown, out of the graph's own palette
 - [x] Undo one hunk of an old commit, into the working tree
 - [x] Rewrite a run of commits: squash, fixup, reword, drop, reorder
+- [x] An icon, a name on the dock, and one command that installs it
 - [ ] Three-way editor with line-by-line picking
 - [ ] Submodules, bisect, LFS, signing
 
@@ -91,6 +94,10 @@ crates/
     conflict_view.rs the two answers side by side, and the ways out
     changes_view.rs the change lists, the diff and the commit box
     diff_view.rs    the shared painting of diff lines
+assets/             the art, and everything cut out of it
+  source/           the three pictures as they were drawn
+  make.py           how the cut-outs were made, so they can be made again
+packaging/          the desktop entry, and the scripts that put it in place
 ```
 
 The views do not touch the repository: they give back an `Action` and `main.rs`
@@ -243,6 +250,37 @@ cargo run --release -- /path/to/a/repository
 ```
 
 With no argument it opens the repository in the current directory.
+
+## Installing
+
+To have it on the desktop like any other program -- on the path, in the
+launcher, with its icon:
+
+```bash
+./packaging/install.sh
+```
+
+That builds it and writes into `~/.local`: the binary in `bin`, the icon at
+every size under `share/icons/hicolor`, and `gitrust.desktop` in
+`share/applications`. Nothing is written outside that folder and nothing
+needs root. `PREFIX=/usr/local sudo -E ./packaging/install.sh` installs it
+for everybody instead, and `packaging/uninstall.sh` takes out exactly what
+went in, by name. The entry also joins the list of programs a folder can be
+opened with; it never becomes the one that opens them.
+
+**The icon had to be cut out of a picture of transparency.** The art came
+as three flat images with a checkerboard painted into them -- the pattern a
+tool draws to *say* "nothing here", arriving as pixels like any other. So
+the transparency is cut rather than read, and `assets/make.py` is where that
+cutting is written down instead of being something somebody once did in an
+editor and cannot repeat. The two pictures are cut in two different ways,
+because they are nothing alike: the plaque's outline is a shape, so it is
+cut as a rounded rectangle measured off the pixels, which leaves an edge
+with none of the JPEG's fringe on it; the mark is an eye and a word and a
+line of dots, which is not a shape at all, so it is cut by colour -- the
+checkerboard is grey to the byte and no part of the drawing is. What that
+second one gets wrong is worth knowing: it was drawn on a dark background,
+so on a white page a faint grey hem is left around the softest edges.
 
 ## Tests
 

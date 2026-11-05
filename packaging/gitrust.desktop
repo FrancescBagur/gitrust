@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=gitrust
+GenericName=Git client
+Comment=Read a repository's history and work in it
+Exec=gitrust %f
+Icon=gitrust
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;commit;branch;merge;rebase;diff;repository;
+# The name the window files itself under, set in main.rs. Without the two
+# matching, the dock shows a second, iconless entry beside this one.
+StartupWMClass=gitrust
+# So that a folder can be opened with it from the file manager. It never
+# becomes the thing that opens folders by default; it only joins the list.
+MimeType=inode/directory;

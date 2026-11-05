@@ -52,14 +52,35 @@ const JOIN_MENU: f32 = 300.0;
 /// that looks complete.
 const FILE_HISTORY: usize = 4_000;
 
+/// The window's icon, carried inside the binary so that the program run
+/// straight out of `target/release` looks like itself and not like a
+/// nameless window. 256 is the largest any title bar or switcher asks for.
+const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
+
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1500.0, 900.0])
+        .with_min_inner_size([900.0, 480.0])
+        .with_title("gitrust")
+        // What the desktop files this window under. It has to be the name of
+        // the .desktop file in packaging/ word for word: on Wayland the icon
+        // comes from that file and never from the window, so the one below
+        // is for X11 and for Windows, and this line is what gets an icon on
+        // the dock everywhere else.
+        .with_app_id("gitrust");
+
+    // Reading it costs no new dependency: the decoder is already in here,
+    // pulled in by eframe. If it ever fails to read, the window goes up
+    // without an icon -- the wrong picture on a title bar is not a reason to
+    // refuse to open a repository.
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON) {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1500.0, 900.0])
-            .with_min_inner_size([900.0, 480.0])
-            .with_title("gitrust"),
+        viewport,
         ..Default::default()
     };
 

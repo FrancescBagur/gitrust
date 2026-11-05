@@ -3,6 +3,9 @@ name = "gitrust-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 # The rustdoc shipped with Pop!_OS will not start (it is missing libLLVM) and
