@@ -1174,7 +1174,7 @@ impl Open {
         }
     }
 
-    /// Opens the screen for deciding what a merge could not.
+    /// Opens the screen for deciding what a merge or a rebase could not.
     fn decide(&mut self) {
         self.looking = None;
         let first = self.clashes.first().map(|clash| clash.path.clone());
@@ -1225,7 +1225,16 @@ impl Open {
                 self.after_deciding();
             }
             conflict_view::Act::Finish => {
-                self.note_down(|repo| repo.finish_merge());
+                // The same button, two different things behind it. A merge
+                // ends; a rebase writes this one commit and walks on into the
+                // next, which is why the screen is pointed at whatever is
+                // clashing now rather than put away.
+                let half = self.half;
+                self.note_down(move |repo| match half {
+                    gitrust_core::Half::Rebase => repo.carry_on_rebase(),
+                    _ => repo.finish_merge(),
+                });
+                self.after_deciding();
             }
             conflict_view::Act::Abandon => self.ask_abandon(),
         }
@@ -1243,17 +1252,26 @@ impl Open {
         }
     }
 
-    /// Throwing a half-done merge away loses work nothing gives back, so it
-    /// is asked about by name.
+    /// Throwing a half-done merge or rebase away loses work nothing gives
+    /// back, so it is asked about by name.
     fn ask_abandon(&mut self) {
         let half = self.half;
         let files = self.clashes.len();
+        // A rebase that has already replayed some commits loses those too,
+        // and that is the part somebody would not think of: the files in
+        // front of them are one commit of several.
+        let also = match half {
+            gitrust_core::Half::Rebase => {
+                " Any commits this rebase had already replayed go back where they were."
+            }
+            _ => "",
+        };
         self.ask(
             format!("Throw away {}?", half.says()),
             &format!(
                 "Everything goes: the markers, both sides, and anything typed into \
                  those {files} files since it started. The branch goes back to where \
-                 it was before, and nothing else is touched."
+                 it was before, and nothing else is touched.{also}"
             ),
             "Throw it away",
             Deed::Abandon,

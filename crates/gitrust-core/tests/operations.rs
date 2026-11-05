@@ -1103,8 +1103,11 @@ fn rebase_mode_leaves_the_history_straight() {
     let _ = std::fs::remove_dir_all(&bare);
 }
 
+/// Pulling with a rebase used to undo the whole thing at the first clash.
+/// Now it stops there and waits, which is the same promise the merge path
+/// makes: you are never left somewhere you have no way out of.
 #[test]
-fn a_rebase_that_clashes_is_undone_whole() {
+fn a_rebase_that_clashes_stops_there_and_waits_to_be_decided() {
     let temp = TempRepo::new("pull-rebase-clash");
     first_commit(&temp);
 
@@ -1132,12 +1135,20 @@ fn a_rebase_that_clashes_is_undone_whole() {
     repo.stage("a.txt").unwrap();
     let mine = repo.commit("feat: a my way").unwrap();
 
-    let err = temp.open().pull(PullMode::Rebase).unwrap_err().to_string();
-    assert!(err.contains("a.txt"), "it says what it clashes in: {err}");
-    assert!(err.contains("nothing changed"), "{err}");
+    let note = temp.open().pull(PullMode::Rebase).unwrap();
+    assert!(note.contains("a.txt"), "it says what it clashes in: {note}");
 
-    // And the repository is back where it was, with no half-done rebase.
+    // Half-done, with the file waiting rather than put back.
     let repo = temp.open();
+    assert_eq!(repo.half_done(), gitrust_core::Half::Rebase);
+    let clashes = repo.clashes().unwrap();
+    assert_eq!(clashes.len(), 1);
+    assert_eq!(clashes[0].path, "a.txt");
+
+    // Our commit is still ours to get back to, whichever way this is decided.
+    temp.open().abandon().unwrap();
+    let repo = temp.open();
+    assert_eq!(repo.half_done(), gitrust_core::Half::None);
     assert_eq!(repo.head_id(), Some(mine));
     assert!(repo.status().unwrap().is_clean());
     assert_eq!(

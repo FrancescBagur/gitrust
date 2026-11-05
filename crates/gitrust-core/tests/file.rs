@@ -7,7 +7,7 @@
 mod common;
 
 use common::TempRepo;
-use gitrust_core::{Contents, Oid, Repo};
+use gitrust_core::{Contents, Oid};
 
 fn commit(temp: &TempRepo, file: &str, body: &str, message: &str) -> Oid {
     temp.write(file, body);

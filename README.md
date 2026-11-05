@@ -30,13 +30,16 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Everything in English, interface and code alike
 - [x] Switch branch, including to one that only exists on the remote
 - [x] Delete branches, here or on the remote, saying what is lost
-- [x] Merge a branch into the current one, stopping dead if it clashes
+- [x] Merge a branch into the current one, or replay it on top with a rebase
 - [x] Amend the last commit, with a warning if it already went to the remote
 - [x] Tags: make them lightweight or annotated, and delete them
 - [x] Open a branch in a folder of its own, and jump between the folders
 - [x] Right-click a branch for everything that can be done to it or from it
 - [x] Take a commit along, take one back, and move a branch to one
-- [ ] Conflict editor, interactive rebase
+- [x] Decide a clash file by file: take a side, or write it yourself
+- [x] Carry a rebase on commit by commit, or throw the whole thing away
+- [ ] Interactive rebase: squash, reorder, edit, drop
+- [ ] Three-way editor with line-by-line picking
 
 ## Architecture
 
@@ -45,8 +48,8 @@ crates/
   gitrust-core/     Git logic, with no UI dependencies
     repo.rs         repository, commits, index and diffs (libgit2)
     branch.rs       making branches, switching between them and deleting them
-    merge.rs        joining two branches or rebasing one, or refusing untouched
-    conflict.rs     getting out of a merge that did not come out clean
+    merge.rs        joining two branches or rebasing one, and stopping where it clashes
+    conflict.rs     getting out of a merge or rebase that clashed
     tag.rs          lightweight and annotated tags
     remote.rs       fetching, pushing, and the distance to the remote branch
     stash.rs        the pile of changes set aside
@@ -201,8 +204,8 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and forty-one
-tests, a hundred and seventy of them against real repositories made in
+files. Those are the ones that carry cover: two hundred and fifty-one
+tests, a hundred and eighty of them against real repositories made in
 `/tmp` and
 deleted when they finish.
 

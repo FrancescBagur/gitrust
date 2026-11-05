@@ -352,12 +352,13 @@ fn a_join_that_fails_says_which_branch_it_left_you_on() {
     temp.open().checkout_branch(&trunk).unwrap();
     commit(&temp, "a.txt", "ours\n", "feat: ours");
 
-    // Rebasing is the one that still refuses: a conflicted rebase is a
-    // sequence of clashes and a notion of carrying on between them, which
-    // the conflict editor does not do.
+    // Moving up is the one that refuses outright here: the two have both
+    // moved, so there is no room, and saying so is the whole of what it
+    // does. A merge and a rebase would both start and stop at the clash,
+    // which is a different thing and is tested where that is the subject.
     let err = temp
         .open()
-        .join(&trunk, "side", gitrust_core::Join::Rebase)
+        .join(&trunk, "side", gitrust_core::Join::FastForward)
         .unwrap_err()
         .to_string();
 

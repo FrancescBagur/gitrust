@@ -1,11 +1,16 @@
-//! Deciding the files a merge could not decide on its own.
+//! Deciding the files a merge or a rebase could not decide on its own.
 //!
-//! Two columns, because two is what there is: what this branch says and what
-//! the other one says. A third pane for the common ancestor is what a proper
-//! three-way editor gives you, and it earns its place when you are picking
-//! line by line -- which this does not do. Here the ancestor is one line of
-//! text saying whether there was one, because the only thing it changes is
-//! what kind of clash you are looking at.
+//! Two columns, because two is what there is. What the two *are* depends on
+//! what is half-done, and the screen never says "ours" and "theirs": a rebase
+//! puts your own work in the column a merge puts the other branch in, and
+//! anybody going by those two words takes the wrong side about half the time.
+//! [`Half::sides`] names them and this draws whatever it is given.
+//!
+//! A third pane for the common ancestor is what a proper three-way editor
+//! gives you, and it earns its place when you are picking line by line --
+//! which this does not do. Here the ancestor is one line of text saying
+//! whether there was one, because the only thing it changes is what kind of
+//! clash you are looking at.
 //!
 //! The way out by hand is a text box with the file as it sits on disk,
 //! markers and all. It is not a merge editor either. It is the file, and
@@ -31,7 +36,8 @@ pub enum Act {
     Typed(String),
     /// Stop editing without settling anything.
     Drop,
-    /// Write the merge commit.
+    /// See it through: write the merge commit, or -- in a rebase -- write
+    /// this commit and carry on to the next one.
     Finish,
     /// Throw the whole half-done thing away.
     Abandon,
@@ -100,20 +106,29 @@ pub fn show(
                 act = Some(Act::Abandon);
             }
 
-            // Only this one can be seen through here. A rebase half-done is
-            // a sequence of clashes with a notion of carrying on between
-            // them, and saying so beats drawing a button that cannot work.
+            // A merge ends here and a rebase does not, so the button says
+            // which. "Write the merge" on something that writes one commit of
+            // nine and stops again at the next clash would be a lie told at
+            // exactly the moment somebody is deciding whether to trust this.
             if half.ours_to_finish() {
+                let onward = match half {
+                    Half::Rebase => "Carry on",
+                    _ => "Write the merge",
+                };
                 let ready = clashes.is_empty() && !busy;
                 let write = ui.add_enabled(
                     ready,
-                    egui::Button::new(
-                        RichText::new("Write the merge").font(theme::medium(12.5)),
-                    )
-                    .fill(theme::CHOSEN),
+                    egui::Button::new(RichText::new(onward).font(theme::medium(12.5)))
+                        .fill(theme::CHOSEN),
                 );
                 let write = match clashes.is_empty() {
-                    true => write,
+                    true => write.on_hover_text(match half {
+                        Half::Rebase => {
+                            "writes this commit and goes on to the next one, \
+                             which may clash as well"
+                        }
+                        _ => "writes the merge commit",
+                    }),
                     false => write.on_disabled_hover_text(
                         "there are still files with both answers in them",
                     ),
@@ -141,7 +156,16 @@ pub fn show(
 
     if clashes.is_empty() {
         ui.add_space(14.0);
-        theme::empty(ui, "Every file is decided. The merge is waiting to be written.");
+        theme::empty(
+            ui,
+            match half {
+                Half::Rebase => {
+                    "Every file is decided. This commit is waiting to be written, \
+                     and the rebase goes on from there."
+                }
+                _ => "Every file is decided. The merge is waiting to be written.",
+            },
+        );
         return act;
     }
 
@@ -180,7 +204,7 @@ pub fn show(
 
             match &state.draft {
                 Some(draft) => by_hand(ui, clash, draft, busy, &mut act),
-                None => sides(ui, clash, busy, &mut act),
+                None => sides(ui, half, clash, busy, &mut act),
             }
         });
     });
@@ -213,7 +237,7 @@ fn row(ui: &mut egui::Ui, clash: &Clash, state: &Deciding) -> Option<Act> {
 }
 
 /// The two answers, side by side, each with the button that takes it.
-fn sides(ui: &mut egui::Ui, clash: &Clash, busy: bool, act: &mut Option<Act>) {
+fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Option<Act>) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(
@@ -244,17 +268,22 @@ fn sides(ui: &mut egui::Ui, clash: &Clash, busy: bool, act: &mut Option<Act>) {
     });
     ui.add_space(8.0);
 
+    // Whose two answers these are is not fixed: a rebase replays your work
+    // on top of the other side, which puts them in the opposite columns to a
+    // merge. The core says which, and this draws it.
+    let (ours, theirs) = half.sides();
+
     let room = (ui.available_width() - 14.0) / 2.0;
     ui.horizontal_top(|ui| {
         for (side, label, contents) in [
-            (Side::Ours, "This branch", &clash.ours),
-            (Side::Theirs, "The other branch", &clash.theirs),
+            (Side::Ours, ours, &clash.ours),
+            (Side::Theirs, theirs, &clash.theirs),
         ] {
             ui.vertical(|ui| {
                 ui.set_width(room);
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(label)
+                        RichText::new(capitalise(label))
                             .font(theme::medium(12.0))
                             .color(match side {
                                 Side::Ours => theme::HEAD,
@@ -269,6 +298,7 @@ fn sides(ui: &mut egui::Ui, clash: &Clash, busy: bool, act: &mut Option<Act>) {
                                     RichText::new("Take this").font(theme::body(11.5)),
                                 ),
                             )
+                            .on_hover_text(format!("this file becomes {}", side.says(half)))
                             .clicked()
                         {
                             *act = Some(Act::Take { path: clash.path.clone(), side });
@@ -276,26 +306,23 @@ fn sides(ui: &mut egui::Ui, clash: &Clash, busy: bool, act: &mut Option<Act>) {
                     });
                 });
                 ui.add_space(4.0);
-                version(ui, contents, side);
+                version(ui, contents, label);
             });
         }
     });
 }
 
-/// One side's version of the file.
-fn version(ui: &mut egui::Ui, contents: &Contents, side: Side) {
+/// One side's version of the file, under whatever that side is called here.
+fn version(ui: &mut egui::Ui, contents: &Contents, label: &str) {
     // Deliberately not scrolled on its own. Two panes scrolling separately
     // means two files you cannot line up, and lining them up is the whole of
     // what you are doing here.
     match contents {
         Contents::Absent => {
             ui.label(
-                RichText::new(match side {
-                    Side::Ours => "Deleted on this branch",
-                    Side::Theirs => "Deleted on the other branch",
-                })
-                .font(theme::body(12.0))
-                .color(theme::REMOVED),
+                RichText::new(format!("Deleted in {label}"))
+                    .font(theme::body(12.0))
+                    .color(theme::REMOVED),
             );
         }
         Contents::Binary(size) => {
@@ -307,7 +334,7 @@ fn version(ui: &mut egui::Ui, contents: &Contents, side: Side) {
         }
         Contents::Text(text) => {
             egui::ScrollArea::vertical()
-                .id_salt(("version", matches!(side, Side::Ours)))
+                .id_salt(("version", label))
                 .max_height(ui.available_height() - 20.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {

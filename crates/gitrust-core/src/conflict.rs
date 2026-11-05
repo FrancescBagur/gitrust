@@ -7,9 +7,8 @@
 //! to know how to get out of, and until this module there was nothing here to
 //! get anybody out of it.
 //!
-//! So this is the module that lets the rest stop refusing. Only merge, for
-//! now -- see the note at the bottom about why a rebase is a different and
-//! harder thing.
+//! So this is the module that lets the rest stop refusing: a merge and a
+//! rebase both stop where they clash and are decided here.
 //!
 //! # What a conflicted state is
 //!
@@ -33,10 +32,28 @@
 //! three panes and line-by-line picking is a real thing to build and this is
 //! not it; what is here is what gets you out, which is what was missing.
 //!
-//! **No rebase.** A conflicted rebase is not one clash, it is a sequence of
-//! them: resolve, carry on, clash again, and a notion of "continue" that
-//! carries state between steps. Merge is one clash with one answer, and that
-//! is the one worth having first. Rebase still refuses and still says so.
+//! **No cherry-pick, no revert.** Both still work out their answer in memory
+//! and refuse if it would clash, as a rebase used to. The shape of them is a
+//! sequence like a rebase, so the way in is the same way in, but neither has
+//! been done and neither pretends to have been: a repository half-done in one
+//! of them says so and offers to throw it away.
+//!
+//! # A rebase is not a merge with more steps
+//!
+//! It is a sequence of clashes, one per commit, and three things follow from
+//! that and are easy to get wrong:
+//!
+//! - **Deciding is not finishing.** Settling every file writes *that* commit
+//!   and moves on to the next, which may clash too. See
+//!   [`Repo::carry_on_rebase`], which is a step and not an ending.
+//! - **The two sides are the other way round.** Your commits are the ones
+//!   being replayed, so stage 2 -- "ours" -- is the branch underneath and
+//!   stage 3 is your own work. [`Half::sides`] says which is which, because
+//!   taking the wrong one here is a mistake nothing complains about.
+//! - **Throwing it away is not a hard reset.** Half of a rebase lives in
+//!   `.git`: what is left to replay, which branch it came off, where HEAD
+//!   belongs afterwards. [`Repo::abandon`] hands a rebase to libgit2 rather
+//!   than putting the files back and hoping.
 
 use anyhow::{Context, Result};
 use git2::{build::CheckoutBuilder, IndexEntry, Oid, ResetType};
@@ -54,11 +71,19 @@ pub enum Side {
 }
 
 impl Side {
-    pub fn says(self) -> &'static str {
-        match self {
-            Side::Ours => "what this branch says",
-            Side::Theirs => "what the other branch says",
-        }
+    /// What taking this side means, in the words of whatever is half-done.
+    ///
+    /// It takes the [`Half`] because "ours" and "theirs" do not mean a fixed
+    /// thing: see [`Half::sides`].
+    pub fn says(self, half: Half) -> String {
+        let (ours, theirs) = half.sides();
+        format!(
+            "what {} says",
+            match self {
+                Side::Ours => ours,
+                Side::Theirs => theirs,
+            }
+        )
     }
 }
 
@@ -95,7 +120,27 @@ impl Half {
 
     /// Whether this module can see it through.
     pub fn ours_to_finish(self) -> bool {
-        self == Half::Merge
+        matches!(self, Half::Merge | Half::Rebase)
+    }
+
+    /// What the two versions of a clashing file actually are, here.
+    ///
+    /// A merge and a rebase put opposite things in the same two slots. In a
+    /// merge the first is the branch you are standing on and the second is
+    /// the one coming in, which is what anybody would guess. In a rebase your
+    /// own commits are the ones being replayed, so the first is the branch
+    /// underneath -- the one you are moving onto -- and the second is your
+    /// work. That reversal is famous for catching people out, and it catches
+    /// them out quietly: take the wrong side and nothing complains until the
+    /// change you meant to keep turns out to be gone.
+    ///
+    /// So the words "ours" and "theirs" are never put on the screen. These
+    /// are.
+    pub fn sides(self) -> (&'static str, &'static str) {
+        match self {
+            Half::Rebase => ("the branch underneath", "the commit being replayed"),
+            _ => ("this branch", "the other branch"),
+        }
     }
 }
 
@@ -224,12 +269,12 @@ impl Repo {
                 let whole = self.inner.workdir().context("there is no working tree here")?;
                 let _ = std::fs::remove_file(whole.join(path));
                 self.settle(path, None)?;
-                Ok(format!("{path} is gone, which is {}", side.says()))
+                Ok(format!("{path} is gone, which is {}", side.says(self.half_done())))
             }
             Some(entry) => {
                 let blob = self.inner.find_blob(entry.id)?;
                 self.settle(path, Some(blob.content()))?;
-                Ok(format!("{path} is now {}", side.says()))
+                Ok(format!("{path} is now {}", side.says(self.half_done())))
             }
         }
     }
@@ -349,6 +394,28 @@ impl Repo {
         let half = self.half_done();
         anyhow::ensure!(half != Half::None, "there is nothing half-done here");
 
+        // A rebase is not undone by putting the files back. Most of it is in
+        // `.git`: the commits still to replay, the branch it came off, where
+        // HEAD has to go afterwards. A hard reset would tidy the working tree
+        // and leave the repository standing in a rebase with nothing left in
+        // it, which is a worse place than the one it started in. libgit2 takes
+        // the whole thing apart in the right order; this only asks it to.
+        if half == Half::Rebase {
+            let mut rebase = self
+                .inner
+                .open_rebase(None)
+                .context("this rebase was not started here and cannot be undone here")?;
+            let branch = rebase
+                .orig_head_name()
+                .map(|name| name.strip_prefix("refs/heads/").unwrap_or(name).to_string());
+            rebase.abort().context("could not undo the rebase")?;
+
+            return Ok(match branch {
+                Some(branch) => format!("the rebase is abandoned, and you are back on {branch}"),
+                None => "the rebase is abandoned".to_string(),
+            });
+        }
+
         let head = self
             .inner
             .head()
@@ -409,7 +476,7 @@ fn is_marker(line: &str) -> bool {
 }
 
 /// A list of paths the way you would say them aloud: three, and the rest.
-fn named(paths: &[String]) -> String {
+pub(crate) fn named(paths: &[String]) -> String {
     match paths.len() {
         0 => String::new(),
         1..=3 => paths.join(", "),
