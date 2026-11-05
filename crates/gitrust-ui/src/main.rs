@@ -57,13 +57,15 @@ const FILE_HISTORY: usize = 4_000;
 /// nameless window. 256 is the largest any title bar or switcher asks for.
 const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
 
-/// What this is, where somebody reads it before anything else: the title bar
-/// and whatever the desktop's switcher puts under the icon.
+/// The line the project goes by, where somebody reads it before anything
+/// else: the title bar, and whatever the desktop's switcher puts under the
+/// icon.
 ///
-/// The crate's description and the README's first paragraph say the same
-/// thing at more length. This is that line cut to what a title bar can hold
-/// without the desktop snipping the end off it.
-const SLOGAN: &str = "built around the commit graph";
+/// It says what the two halves of the name are for. Trust is git's own
+/// promise -- a hash that cannot be quietly changed -- and this program is
+/// here to let somebody see it rather than take it on faith. The README
+/// says the same at the length a README has.
+const SLOGAN: &str = "Trust, protected. Code, eternal.";
 
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
