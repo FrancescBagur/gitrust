@@ -250,6 +250,14 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
 
         let inner = rect.shrink2(egui::vec2(8.0, 5.0));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+
+        // A label can be selected with the mouse, and a label that can be
+        // selected senses clicks -- so every word written in here lands on
+        // top of the row and swallows the click meant for it, leaving only
+        // the gaps between the words working. Nothing in a row is text
+        // anybody wants to copy; the row is one target and says so.
+        ui.style_mut().interaction.selectable_labels = false;
+
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
 
