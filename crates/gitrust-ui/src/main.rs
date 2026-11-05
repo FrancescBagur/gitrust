@@ -17,6 +17,7 @@ mod graph_view;
 mod picker;
 mod refs_view;
 mod rewrite_view;
+mod syntax;
 mod theme;
 mod toast;
 
@@ -1169,7 +1170,12 @@ impl Open {
                 let read = repo.file_at(at, &path);
                 if let Some(looking) = &mut self.looking {
                     match read {
-                        Ok(whole) => looking.read.whole = Some(whole),
+                        Ok(whole) => {
+                            if let gitrust_core::Contents::Text(text) = &whole {
+                                looking.read.painted = Some(syntax::read(text, &path));
+                            }
+                            looking.read.whole = Some(whole);
+                        }
                         Err(err) => trouble = Some(format!("{err:#}")),
                     }
                 }
@@ -1178,7 +1184,18 @@ impl Open {
                 let read = repo.blame(&path, Some(at));
                 if let Some(looking) = &mut self.looking {
                     match read {
-                        Ok(lines) => looking.read.blame = Some(lines),
+                        Ok(lines) => {
+                            // The same lines at the same commit as the file
+                            // itself, so whichever of the two is asked for
+                            // first is the one that pays for the colour.
+                            if looking.read.painted.is_none() {
+                                let text: Vec<&str> =
+                                    lines.iter().map(|line| line.text.as_str()).collect();
+                                looking.read.painted =
+                                    Some(syntax::read(&text.join("\n"), &path));
+                            }
+                            looking.read.blame = Some(lines);
+                        }
                         Err(err) => trouble = Some(format!("{err:#}")),
                     }
                 }

@@ -41,6 +41,7 @@ and well made: **the commit graph with every branch woven through it**.
 - [x] Carry a rebase on commit by commit, or throw the whole thing away
 - [x] One file across the window: its whole history beside the commit you
       pick, as a diff, as the file itself, or blamed line by line
+- [x] Syntax colour in the file and the blame, out of the graph's own palette
 - [x] Undo one hunk of an old commit, into the working tree
 - [x] Rewrite a run of commits: squash, fixup, reword, drop, reorder
 - [ ] Three-way editor with line-by-line picking
@@ -77,6 +78,7 @@ crates/
   gitrust-ui/       the egui application
     main.rs         window, state and carrying actions out
     theme.rs        color, typography and spacing
+    syntax.rs       code cut into coloured pieces, with no crate to do it
     action_bar.rs   pull, push, branch and stash
     refs_view.rs    the sidebar of branches, tags and checkouts
     picker.rs       choosing a repository, cloning one, starting one
@@ -117,6 +119,22 @@ and then a repository caught in the middle would be one nothing could account
 for. So the whole plan is worked out in memory, and the branch moves in one
 step at the end. If anything clashes, nothing has been written and the plan
 comes back with the commit that would not go.
+
+**Syntax colour without a syntax crate.** Code is read by something that
+knows five or six shapes — a comment, something in quotes, a number, a word
+the language owns, a word starting with a capital, a word with a bracket
+after it — which turns out to be very nearly all the colour anybody reads.
+The alternative was a grammar for two hundred languages and a parse tree, to
+make `import` purple. It gets things wrong and says which: a language whose
+comments are neither `//` nor `#`, and anything clever with quotes. One thing
+it does not get wrong is the text, and that is tested — whatever goes in
+comes back out character for character, because a piece dropped on the way
+is a character missing from the file on screen. The colours are the lanes':
+violet for the words the language owns, turquoise for the names you gave
+things, azure for what you call, brass for quotes, rose for numbers, grey for
+what is said to a human. The rule is that colour comes from the graph's
+family or it does not come, and a code view is exactly where a rule like that
+gets broken by somebody reaching for a generic editor palette.
 
 **Git backend:** `git2` (libgit2) for the bulk of the operations. For
 credential helpers, LFS and hooks the plan is to delegate to the real `git`
@@ -225,7 +243,7 @@ cargo test
 
 The graph algorithm is the piece most at risk of regression, and the operations
 that write — index, stash, branches and remote — are the ones that touch your
-files. Those are the ones that carry cover: two hundred and seventy-eight
+files. Those are the ones that carry cover: two hundred and eighty-nine
 tests, two hundred and seven of them against real repositories made in
 `/tmp` and
 deleted when they finish.

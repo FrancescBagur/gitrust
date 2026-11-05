@@ -20,7 +20,7 @@ use chrono::{Local, TimeZone};
 use eframe::egui::{self, RichText};
 use gitrust_core::{Commit, Contents, FileDiff, HunkId, Line, Oid, Story};
 
-use crate::{diff_view, theme};
+use crate::{diff_view, syntax, theme};
 
 /// How wide the list of commits is. Enough for a subject worth reading and
 /// the hash beside it, and no wider: every pixel here is a pixel the diff
@@ -82,6 +82,10 @@ pub struct Read {
     pub whole: Option<Contents>,
     pub blame: Option<Vec<Line>>,
     pub story: Option<Story>,
+    /// The file's lines cut into coloured pieces, worked out once when its
+    /// text first arrives. Both the file and the blame are the same lines at
+    /// the same commit, so there is one of these and not two.
+    pub painted: Option<Vec<Vec<syntax::Piece>>>,
 }
 
 /// The file being looked at, and what has been read about it.
@@ -342,6 +346,7 @@ fn whole(ui: &mut egui::Ui, looking: &Looking) {
             // is not a thing that can be done.
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.spacing_mut().interact_size.y = 13.0;
+            let painted = looking.read.painted.as_deref();
             for (index, line) in text.lines().enumerate() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
@@ -353,7 +358,7 @@ fn whole(ui: &mut egui::Ui, looking: &Looking) {
                                 .color(theme::FAINT),
                         ),
                     );
-                    ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::TEXT));
+                    code(ui, line, painted.and_then(|all| all.get(index)));
                 });
             }
         }
@@ -370,7 +375,7 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
 
     ui.spacing_mut().item_spacing.y = 1.0;
     ui.spacing_mut().interact_size.y = 13.0;
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
@@ -428,13 +433,39 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
                         .color(theme::FAINT),
                 ),
             );
-            ui.label(
-                RichText::new(&line.text)
-                    .font(theme::mono(11.5))
-                    .color(theme::TEXT),
+            code(
+                ui,
+                &line.text,
+                looking.read.painted.as_deref().and_then(|all| all.get(index)),
             );
         });
     }
+}
+
+/// One line of a file, coloured if it has been read for colour.
+///
+/// Laid out as a single run with sections rather than as a label per piece:
+/// a file is thousands of lines and every widget costs, so a line is one
+/// widget here whether it has one colour in it or nine.
+fn code(ui: &mut egui::Ui, line: &str, pieces: Option<&Vec<syntax::Piece>>) {
+    let Some(pieces) = pieces else {
+        ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::TEXT));
+        return;
+    };
+
+    let mut job = egui::text::LayoutJob::default();
+    for piece in pieces {
+        job.append(
+            &piece.text,
+            0.0,
+            egui::TextFormat {
+                font_id: theme::mono(11.5),
+                color: piece.kind.color(),
+                ..Default::default()
+            },
+        );
+    }
+    ui.label(job);
 }
 
 fn when(seconds: i64) -> String {
