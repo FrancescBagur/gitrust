@@ -479,6 +479,40 @@ pub fn rule(ui: &mut egui::Ui) {
     ui.add_space(6.0);
 }
 
+/// The same hair, but you can take hold of it and move it.
+///
+/// Gives back how far it was dragged this frame, in pixels, downwards
+/// positive. Whoever called it decides what that means; this only reports.
+///
+/// A line one pixel tall is not something anybody can hit with a mouse, so
+/// the whole band a rule sits in -- the line and the breathing space above
+/// and below it -- is what takes the drag. It is drawn exactly like a rule
+/// until the pointer is on it, and thickens then: a panel full of handles
+/// announcing themselves is a panel you cannot read.
+///
+/// `name` has to be the same every frame and different from the other grips
+/// in the window. It cannot be left to egui, which names a widget by where
+/// it is -- and where this one is, is the thing being dragged.
+pub fn grip(ui: &mut egui::Ui, name: &'static str) -> f32 {
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), 13.0));
+    let response = ui.interact(rect, egui::Id::new(("grip", name)), egui::Sense::drag());
+
+    let live = response.hovered() || response.dragged();
+    if live {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    ui.painter().hline(
+        rect.left()..=rect.right(),
+        rect.center().y,
+        match live {
+            true => Stroke::new(2.0, CHOSEN),
+            false => Stroke::new(1.0, HAIRLINE),
+        },
+    );
+
+    response.drag_delta().y
+}
+
 /// The same line, standing, to part groups inside a bar.
 ///
 /// A shade lighter than the horizontal one: against the bar's grey, the

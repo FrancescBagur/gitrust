@@ -27,6 +27,41 @@ pub struct TagDraft {
     message: String,
 }
 
+/// How much of what is left each of the first two stretches takes, before
+/// anybody has moved them.
+///
+/// Shares rather than heights, so that the panel still parts itself sensibly
+/// when the window is resized or the panel is dragged wider -- and so that
+/// moving a line means the same thing at any size.
+const BODY: f32 = 0.34;
+const FILES: f32 = 0.30;
+
+/// Nothing may be dragged shut, and nothing may be dragged so far open that
+/// the change underneath it is left with nowhere to go.
+const LEAST: f32 = 0.06;
+const MOST: f32 = 0.72;
+
+/// Where the two lines sit, kept in egui's own memory rather than handed in
+/// by the application.
+///
+/// That is a deliberate exception to this crate's rule that a view owns
+/// nothing: where somebody dragged a line is the same kind of thing as how
+/// far a list is scrolled or how wide the panel itself was pulled, and egui
+/// is already keeping both of those in the same place. Nothing here is a
+/// decision the application has to hear about, and none of it is worth
+/// writing down anywhere.
+#[derive(Clone, Copy)]
+struct Shares {
+    body: f32,
+    files: f32,
+}
+
+impl Default for Shares {
+    fn default() -> Self {
+        Self { body: BODY, files: FILES }
+    }
+}
+
 fn kind_color(kind: ChangeKind) -> Color32 {
     match kind {
         ChangeKind::Added => theme::ADDED,
@@ -52,6 +87,12 @@ pub fn show(
     };
 
     let mut picked = None;
+
+    // Read once here and written once at the end, so that no stretch is laid
+    // out against a line that a later one has already moved.
+    let id = egui::Id::new("detail-shares");
+    let was: Shares = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    let mut shares = was;
 
     ui.add_space(12.0);
 
@@ -110,9 +151,13 @@ pub fn show(
     // scroll inside it. Without one, a long message pushes the files and the
     // change itself off the bottom of a panel that does not scroll, and there
     // is no way left to reach them.
+    //
+    // The ceiling is a share of what is left below this point, and the line
+    // under it can be dragged to change that share.
+    let body_room = ui.available_height();
     if !detail.body.is_empty() {
         ui.add_space(10.0);
-        let ceiling = (ui.available_height() * 0.4).clamp(90.0, 320.0);
+        let ceiling = body_room * shares.body;
         egui::ScrollArea::vertical()
             // Salted with the commit, so that a message you read to the end
             // does not leave the next one opened halfway down.
@@ -140,7 +185,14 @@ pub fn show(
         picked = Some(action);
     }
 
-    theme::rule(ui);
+    // A line with nothing above it to resize is just a line.
+    match detail.body.is_empty() {
+        true => theme::rule(ui),
+        false => {
+            let moved = theme::grip(ui, "detail-body");
+            shares.body = (shares.body + moved / body_room).clamp(LEAST, MOST);
+        }
+    }
 
     let (added, modified, deleted) = detail.counts();
     ui.horizontal(|ui| {
@@ -168,9 +220,12 @@ pub fn show(
     });
     ui.add_space(4.0);
 
-    // The file list takes up a third of the panel at most; the rest is for
-    // the diff, which is what actually gets read.
-    let list_height = (ui.available_height() * 0.35).clamp(80.0, 260.0);
+    // The file list takes about a third of what is left; the rest is for the
+    // diff, which is what actually gets read. A commit that touches forty
+    // files is a commit where that is the wrong share, which is what the
+    // line below it is for.
+    let list_room = ui.available_height();
+    let list_height = list_room * shares.files;
     egui::ScrollArea::vertical()
         .id_salt("commit-files")
         .max_height(list_height)
@@ -184,7 +239,8 @@ pub fn show(
             }
         });
 
-    theme::rule(ui);
+    let moved = theme::grip(ui, "detail-files");
+    shares.files = (shares.files + moved / list_room).clamp(LEAST, MOST);
 
     // The way to the other three questions about this file. It is a button
     // rather than a double click because a double click on a row that
@@ -218,6 +274,12 @@ pub fn show(
                     }
                 });
         }
+    }
+
+    // Written only when a line actually moved: every commit in the graph
+    // comes through here, and a write a frame for nothing is a write a frame.
+    if shares.body != was.body || shares.files != was.files {
+        ui.data_mut(|data| data.insert_temp(id, shares));
     }
 
     picked
