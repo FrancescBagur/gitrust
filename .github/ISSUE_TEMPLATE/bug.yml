@@ -1,0 +1,61 @@
+name: Something is wrong
+description: It crashed, it drew the wrong thing, or it did the wrong thing to a repository.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If it **ate work** -- lost a commit, threw away changes without
+        asking -- say so in the first line and don't bother with the rest
+        of this form. Those go to the front of the queue.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead. A screenshot of a wrong graph is worth more than a paragraph about it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to get there
+      placeholder: |
+        1. Open a repository with ...
+        2. Click ...
+        3. The graph shows ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`gitrust --version`, or the tag you downloaded."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: repo
+    attributes:
+      label: The shape of the repository
+      description: >
+        This is the part that usually decides whether a Git bug can be
+        reproduced. Roughly how many commits and branches; whether a merge,
+        rebase or cherry-pick was in flight; whether the remote was
+        reachable; whether there are worktrees or submodules.
+    validations:
+      required: true

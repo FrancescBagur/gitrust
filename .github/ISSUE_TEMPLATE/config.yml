@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A question, or an idea that is not an issue yet
+    url: https://github.com/FrancescBagur/gitrust/discussions
+    about: Anything that starts with "is it supposed to..." belongs here.
+  - name: A security hole
+    url: https://github.com/FrancescBagur/gitrust/security/policy
+    about: Not a public issue. Read this first.

@@ -1,0 +1,44 @@
+name: It does not work on my Mac or my Windows
+description: The two systems it is built for and has never been run on.
+labels: ["bug", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        gitrust is built on macOS and on Windows by CI and has never been
+        *run* on either. So this is not a complaint, it is the most useful
+        thing anybody can send right now, and it is expected to be a mess.
+        Partial reports are welcome: "it opens and the fonts are wrong" is a
+        report.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Which
+      options:
+        - macOS, Apple silicon
+        - macOS, Intel
+        - Windows 11
+        - Windows 10
+    validations:
+      required: true
+
+  - type: dropdown
+    id: far
+    attributes:
+      label: How far it got
+      options:
+        - It would not build
+        - It built but would not start
+        - It starts and the window is wrong
+        - It works, but something in it is broken
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: What you saw
+      description: The error in full if there is one, a screenshot if there is a window. Copy the whole of a build failure rather than the last line.
+    validations:
+      required: true

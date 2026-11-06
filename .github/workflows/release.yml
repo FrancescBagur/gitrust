@@ -25,9 +25,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Pinned, and not to the latest one. A binary built against a C library
+  # asks for that version or newer, so the machine it is built on sets the
+  # oldest system it will install on: `ubuntu-latest` moved to Ubuntu 26 and
+  # produced a .deb that asks for glibc 2.43, which 24.04 LTS -- the Ubuntu
+  # most people are actually running -- does not have and will not get.
+  #
+  # Building on the oldest LTS worth supporting is what makes the package
+  # install on everything newer. ci.yml is deliberately left on `latest`:
+  # that one is there to find out what breaks next, and this one is there to
+  # be installable today.
   linux:
     name: Linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -184,7 +194,7 @@ jobs:
     name: Publish
     needs: [linux, macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # nothing is built here, only moved and signed for
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

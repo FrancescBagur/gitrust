@@ -1,0 +1,27 @@
+name: Something is missing
+description: A thing it does not do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The README has a list of what is done and what is not. If it is
+        already on the undone half -- the three-way editor, submodules,
+        bisect, LFS, signing -- an issue is still useful: say what *you*
+        need it for, because that is what decides the order.
+
+  - type: textarea
+    id: need
+    attributes:
+      label: What you were trying to do
+      description: The task, not the feature. "I wanted to see which of these forty branches was already merged" rather than "add a merged column".
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do about it today
+      description: The CLI command, the other program, the thing you gave up on. Knowing the workaround says how much this is worth.
+    validations:
+      required: true
