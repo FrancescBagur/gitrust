@@ -348,6 +348,51 @@ fn switching_to_a_remote_makes_the_local_one_and_leaves_it_tracking() {
     let _ = std::fs::remove_dir_all(&copy);
 }
 
+/// A refusal has to leave the repository as it was found. Going to a branch
+/// that is only on a remote means making the local one first, and if the
+/// switch is then refused, that branch was made for nothing.
+#[test]
+fn a_refused_switch_to_a_remote_leaves_no_branch_behind() {
+    let temp = TempRepo::new("remote-refused");
+    first_commit(&temp);
+    let bare = with_remote(&temp, "remote-refused-bare");
+    temp.open().push().unwrap();
+
+    // A branch on the remote that changes a file, so that going to it has
+    // to write over that file.
+    temp.open().branch_here("release").unwrap();
+    temp.write("a.txt", "the release says this\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("feat: the release changes a.txt").unwrap();
+    repo.push().unwrap();
+
+    let copy = temp_dir("remote-refused-copy");
+    git2::Repository::clone(&bare.display().to_string(), &copy).unwrap();
+
+    // And the same file changed here and not committed. Now the switch
+    // cannot happen without walking over somebody's work, so it will not.
+    std::fs::write(copy.join("a.txt"), "but I was in the middle of this\n").unwrap();
+
+    let err = Repo::open(&copy).unwrap().checkout_remote("origin/release").unwrap_err();
+    assert!(format!("{err:#}").contains("unsaved changes"), "{err:#}");
+
+    let after = git2::Repository::open(&copy).unwrap();
+    assert!(
+        after.find_branch("release", git2::BranchType::Local).is_err(),
+        "the branch was made on the way and not taken back"
+    );
+    // And nothing else moved either.
+    assert_eq!(Repo::open(&copy).unwrap().head_name(), "master");
+    assert_eq!(
+        std::fs::read_to_string(copy.join("a.txt")).unwrap(),
+        "but I was in the middle of this\n"
+    );
+
+    let _ = std::fs::remove_dir_all(&bare);
+    let _ = std::fs::remove_dir_all(&copy);
+}
+
 #[test]
 fn if_the_local_one_exists_you_go_to_it_untouched() {
     let temp = TempRepo::new("remote-existing");

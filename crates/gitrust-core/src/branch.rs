@@ -184,7 +184,27 @@ impl Repo {
             .with_context(|| format!("could not create '{local}'"))?
             .set_upstream(Some(name))?;
 
-        self.checkout_branch(local)
+        // The branch was a step on the way to being on it, not a thing asked
+        // for on its own. If the switch is refused -- unsaved changes in the
+        // way, the branch open in another checkout -- the step is taken back,
+        // so that a refusal leaves the repository exactly as it was found.
+        //
+        // Without this the sidebar answers a refusal by growing a branch, and
+        // pressing the same row again goes down the other path above, where
+        // the local one already exists: a second attempt would behave
+        // differently from the first for no reason anybody could see.
+        match self.checkout_branch(local) {
+            Ok(said) => Ok(said),
+            Err(err) => {
+                if let Ok(mut made) = self.inner.find_branch(local, BranchType::Local) {
+                    // Best effort on purpose. If this fails there is a spare
+                    // branch and a clear message about the real problem,
+                    // which beats a message about the clean-up.
+                    let _ = made.delete();
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Deletes a local branch.
