@@ -53,6 +53,8 @@ pub enum Pick {
     Copy(String),
     /// Look at another folder this same repository is checked out in.
     Visit(std::path::PathBuf),
+    /// The same folder, in a tab of its own, leaving this one where it is.
+    VisitTab(std::path::PathBuf),
     /// Take that checkout away, leaving the branch where it is.
     Release(String),
     /// One branch was dropped on another. Which of the three things that
@@ -276,6 +278,22 @@ fn checkouts(
     busy: bool,
     picked: &mut Option<Pick>,
 ) {
+    // A click and the first half of a double click are the same event, and
+    // egui cannot tell them apart any more than anybody could: it has not
+    // seen the second click yet. So the single click is held for as long as
+    // a double click is allowed to take, and let go only if no second one
+    // arrives. Without this, double-clicking would first send this tab to
+    // the other folder and only then open a tab for it, which is both of the
+    // two things at once and neither of the ones anybody asked for.
+    //
+    // The wait is egui's own, not a number picked here, so it matches every
+    // other double click on the machine.
+    let delay = ui.ctx().options(|options| options.input_options.max_double_click_delay);
+    let now = ui.input(|input| input.time);
+    let held = egui::Id::new("worktree-held");
+    let before: Option<(std::path::PathBuf, f64)> = ui.data(|data| data.get_temp(held));
+    let mut waiting = before.clone();
+
     theme::section(ui, "Worktrees", theme::Glyph::Trees, trees.len(), false, |ui| {
         ui.add_space(2.0);
         for tree in trees {
@@ -320,7 +338,10 @@ fn checkouts(
                 hint.push_str(&format!("\nLocked: {why}"));
             }
             if !current && !tree.missing {
-                hint.push_str("\n\nClick to look at it. Nothing is written");
+                hint.push_str(
+                    "\n\nClick to look at it here, double-click to open it in \
+                     a tab of its own. Nothing is written either way",
+                );
             }
             let response = response.on_hover_text(hint);
 
@@ -338,11 +359,41 @@ fn checkouts(
                 });
             }
 
-            if response.clicked() && !current && !tree.missing {
-                *picked = Some(Pick::Visit(tree.path.clone()));
+            if !current && !tree.missing {
+                if response.double_clicked() {
+                    // Whatever was being held was the first half of this.
+                    waiting = None;
+                    *picked = Some(Pick::VisitTab(tree.path.clone()));
+                } else if response.clicked() {
+                    waiting = Some((tree.path.clone(), now));
+                }
             }
         }
     });
+
+    match &waiting {
+        // Long enough: nobody is coming with a second click.
+        // Unless something else already spoke this frame: one ask goes back
+        // at a time, and a click dropped on the floor is a click the person
+        // made and nothing came of.
+        Some((path, since)) if now - since >= delay && picked.is_none() => {
+            *picked = Some(Pick::Visit(path.clone()));
+            waiting = None;
+        }
+        // Still waiting, and nothing else is going to ask for a frame while
+        // the pointer sits still -- so this asks for the one that lets the
+        // click through.
+        Some((_, since)) => {
+            let left = delay - (now - since);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left.max(0.0)));
+        }
+        None => {}
+    }
+    // Only when it moved. The sidebar is drawn every frame and a write a
+    // frame to say nothing changed is still a write a frame.
+    if waiting != before {
+        ui.data_mut(|data| data.insert_temp(held, waiting));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

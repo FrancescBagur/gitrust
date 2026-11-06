@@ -209,6 +209,21 @@ impl App {
         app
     }
 
+    /// Opens a folder in a tab of its own, or goes to the tab already on it.
+    ///
+    /// Two tabs onto one working tree would be two windows onto one set of
+    /// files with nothing to tell them apart, and the second one would
+    /// quietly disagree with the first as soon as anything was staged.
+    fn open_tab(&mut self, path: std::path::PathBuf) {
+        match self.open.iter().position(|open| std::path::Path::new(&open.path) == path) {
+            Some(which) => {
+                self.at = which;
+                self.picking = None;
+            }
+            None => self.add(path.display().to_string()),
+        }
+    }
+
     fn add(&mut self, path: String) {
         self.open.push(Open::new(path, self.opened));
         self.opened += 1;
@@ -266,18 +281,7 @@ impl App {
     /// Acts on what the screen asked for.
     fn act_on_pick(&mut self, act: picker::Act) {
         match act {
-            picker::Act::Open(path) => {
-                // Already in a tab: go to it rather than opening a second one
-                // on the same folder, which would be two windows onto one
-                // working tree with no way to tell them apart.
-                match self.open.iter().position(|open| std::path::Path::new(&open.path) == path) {
-                    Some(which) => {
-                        self.at = which;
-                        self.picking = None;
-                    }
-                    None => self.add(path.display().to_string()),
-                }
-            }
+            picker::Act::Open(path) => self.open_tab(path),
             picker::Act::Start(path) => match gitrust_core::start::init(&path) {
                 Ok(_) => self.add(path.display().to_string()),
                 Err(err) => self.complain(err),
@@ -609,8 +613,13 @@ impl eframe::App for App {
         match self.picking.is_some() {
             true => self.picker(ctx),
             false => {
+                let mut elsewhere = None;
                 if let Some(open) = self.open.get_mut(self.at) {
                     open.draw(ctx, &mut self.settings);
+                    elsewhere = open.elsewhere.take();
+                }
+                if let Some(path) = elsewhere {
+                    self.open_tab(path);
                 }
             }
         }
@@ -635,6 +644,12 @@ struct Open {
     /// onto somebody else's remembered state.
     salt: u64,
     path: String,
+    /// A folder this tab has asked for a tab of its own.
+    ///
+    /// A tab cannot make a tab: the list of them belongs to the window, and
+    /// this is the whole of what one tab can say about it. Taken by the
+    /// window on the frame it is set and never read twice.
+    elsewhere: Option<std::path::PathBuf>,
     head: String,
     /// What is in the repository: it stays put in the bottom bar.
     summary: String,
@@ -854,6 +869,7 @@ impl Open {
         let mut app = Self {
             salt,
             path,
+            elsewhere: None,
             head: String::new(),
             summary: String::new(),
             status: String::new(),
@@ -3360,6 +3376,7 @@ impl Open {
             refs_view::Pick::MoveTo(oid, how) => self.ask_move(oid, how),
             refs_view::Pick::Rewrite(oid) => self.start_rewrite(oid),
             refs_view::Pick::Visit(path) => self.visit(path),
+            refs_view::Pick::VisitTab(path) => self.elsewhere = Some(path),
             refs_view::Pick::Release(name) => self.ask_release(name),
             refs_view::Pick::Join { from, onto } => self.ask_join(from, onto, ctx),
             refs_view::Pick::Copy(text) => {
