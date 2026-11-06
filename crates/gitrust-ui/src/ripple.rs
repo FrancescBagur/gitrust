@@ -62,11 +62,13 @@ pub const CARRIES: usize = 4;
 
 // ── The snake running down the lane ───────────────────────────────────────
 
-/// How far sideways the lane is pushed where it was struck, in pixels. A
-/// lane is seventeen wide, so this is a bend of about a lane from side to
-/// side: as much as can be taken before the lane reads as having moved
-/// rather than as having been pushed.
-const SWAY: f32 = 8.0;
+/// How far sideways the lane is pushed where it was struck, in pixels.
+///
+/// Well inside the seventeen a lane is wide. Once the bends were lengthened
+/// to six rows they carried further on their own, and the lane no longer
+/// needs to be shoved as hard to read as moving: a long bend of four pixels
+/// says more than a short one of six.
+const SWAY: f32 = 6.5;
 /// How far up and down the history the snake runs, in rows. This is the
 /// "more to less": it stands tallest at the hand and tapers to nothing at
 /// the end of its reach, which is what makes it look like something being
@@ -100,7 +102,7 @@ const ONSET_SOFT: f32 = 110.0;
 /// meant to read as more waves in more places, not as one enormous one:
 /// dragging the pointer down a lane gets a couple of pixels more bend than
 /// tapping it once, and everything past that is swallowed.
-const CEILING: f32 = 8.0;
+const CEILING: f32 = 6.5;
 const SWELL_CEILING: f32 = 0.5;
 /// How many points a row's worth of lane is cut into while it is bending.
 /// A bend is four rows long, so this is near thirty points to a bend: past
