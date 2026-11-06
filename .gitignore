@@ -8,3 +8,6 @@
 
 # The drafts go with the plan: neither is the program.
 /docs/posts.md
+
+# Built from tools/poke.c by the line at the top of it.
+/tools/poke

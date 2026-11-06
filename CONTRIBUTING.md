@@ -38,6 +38,13 @@ A change to the graph layout or to anything that writes -- index, stash,
 branches, remote -- comes with a test. Those are the parts that touch
 somebody's files.
 
+**What a test cannot do is click.** Everything that answers one was checked
+by reading the code until [`tools/poke.c`](tools/poke.c), which moves the
+pointer and clicks on an X display. Build it once with the line at the top
+of the file, start gitrust on an Xvfb, and drive it. If you change something
+a pointer reaches, run it and take a screenshot; the first thing it was ever
+used for turned up a bug that reading had missed.
+
 ## Signing off: the DCO
 
 Every commit carries a `Signed-off-by:` line, which `git commit -s` adds for

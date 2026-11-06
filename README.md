@@ -172,6 +172,8 @@ assets/             the art, and everything cut out of it
   screens/          what it looks like running, and waves.gif of it in use
   make.py           how the cut-outs were made, so they can be made again
 packaging/          the desktop entry, and the scripts that put it in place
+tools/              poke.c, which clicks, so that what answers a click
+                    can be run instead of only read
 ```
 
 The views do not touch the repository: they give back an `Action` and `main.rs`
