@@ -142,6 +142,25 @@ pub struct Asked {
     pub pick: Option<Pick>,
 }
 
+/// A chip as it was actually drawn.
+///
+/// The graph is painted, not built out of widgets: one rectangle takes the
+/// clicks and the row is worked out from where in it the pointer was. That
+/// is right for rows, which are a stack of equal bands, and no use at all
+/// for chips, which sit at whatever width their name needs. So each one
+/// says where it ended up, and a click is matched against the list.
+///
+/// Only the ones that were drawn are in here. A chip scrolled off the top
+/// or elided down to "+3" cannot be double-clicked, which is correct: you
+/// cannot double-click what you cannot see.
+struct Chip {
+    rect: Rect,
+    name: String,
+    kind: RefKind,
+    /// The branch HEAD is on. There is nowhere to switch to from it.
+    current: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -185,6 +204,7 @@ pub fn show(
     let lanes = graph.lane_count.clamp(1, MAX_LANES);
     let graph_w = GUTTER * 2.0 + lanes as f32 * LANE_W;
     let mut clicked = None;
+    let mut chips: Vec<Chip> = Vec::new();
 
     egui::ScrollArea::vertical()
         .id_salt("graph")
@@ -463,8 +483,47 @@ pub fn show(
                     // What does not match the search is dimmed, but stays: its
                     // lane is still needed in order to read the rest.
                     let dim = !needle.is_empty() && !row.commit.matches(needle);
-                    draw_refs(&painter, ui, row, lanes_left, rect.left() + 8.0, row_y(index));
+                    draw_refs(
+                        &painter,
+                        ui,
+                        row,
+                        lanes_left,
+                        rect.left() + 8.0,
+                        row_y(index),
+                        &mut chips,
+                    );
                     draw_row(&painter, ui, row, text_left, row_y(index), &columns, dim);
+                }
+            }
+
+            // After the rows, because until they are drawn there are no
+            // chips to hit. The single click that came with the double has
+            // already selected the commit by then, which is what you want:
+            // you end up on the branch, looking at its newest commit.
+            let under = |pos: Pos2| {
+                chips.iter().find(|chip| chip.rect.contains(pos)).filter(|chip| {
+                    !chip.current
+                        && matches!(chip.kind, RefKind::LocalBranch | RefKind::RemoteBranch)
+                })
+            };
+
+            // The pointer says so before anybody double-clicks anything.
+            // Nothing else in the graph has a hand under it, so a hand here
+            // means this one thing is more than a drawing.
+            if !busy {
+                if let Some(pos) = response.hover_pos() {
+                    if under(pos).is_some() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+            }
+
+            if response.double_clicked() && !busy {
+                if let Some(chip) = response.interact_pointer_pos().and_then(under) {
+                    picked = Some(Pick::Switch {
+                        name: chip.name.clone(),
+                        remote: chip.kind == RefKind::RemoteBranch,
+                    });
                 }
             }
         });
@@ -663,7 +722,16 @@ fn refs_width(ui: &egui::Ui, graph: &Graph, available: f32) -> f32 {
 /// is keeping quiet about. The names line up against the graph rather than
 /// against the window's border: that way they form a column even though they
 /// measure different things.
-fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left: f32, y: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_refs(
+    painter: &egui::Painter,
+    ui: &egui::Ui,
+    row: &Row,
+    right: f32,
+    left: f32,
+    y: f32,
+    chips: &mut Vec<Chip>,
+) {
     let refs = row.commit.ordered_refs();
     if refs.is_empty() {
         return;
@@ -707,7 +775,10 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
             let text = elide(ui, &label.name, room, &font);
             let width = ui.fonts(|fonts| badge_w(fonts, &text, &font));
             x -= width;
-            draw_badge(painter, &text, label.kind, current, lane, x, y, width);
+            let rect = draw_badge(painter, &text, label.kind, current, lane, x, y, width);
+            // The name as it is, not as it was shortened to fit: what gets
+            // checked out is a branch, and `feat/jury-p…` is not one.
+            chips.push(Chip { rect, name: label.name.clone(), kind: label.kind, current });
             x -= BADGE_GAP;
             shown = 1;
             from = 1;
@@ -717,7 +788,9 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
     for index in from..shown {
         let (label, current) = refs[index];
         x -= widths[index];
-        draw_badge(painter, &label.name, label.kind, current, lane, x, y, widths[index]);
+        let rect =
+            draw_badge(painter, &label.name, label.kind, current, lane, x, y, widths[index]);
+        chips.push(Chip { rect, name: label.name.clone(), kind: label.kind, current });
         x -= BADGE_GAP;
     }
 
@@ -732,7 +805,8 @@ fn draw_refs(painter: &egui::Painter, ui: &egui::Ui, row: &Row, right: f32, left
     }
 }
 
-/// A reference chip.
+/// A reference chip. Gives back where it was drawn, so that a click can be
+/// matched to it afterwards.
 ///
 /// The branch you are on goes solid, and it is the only one in the whole
 /// window that does. Weight does what color cannot: one of the eight lanes is
@@ -751,7 +825,7 @@ fn draw_badge(
     x: f32,
     y: f32,
     width: f32,
-) {
+) -> Rect {
     let chip = Rect::from_min_size(Pos2::new(x, y - 9.0), egui::vec2(width, 18.0));
     let radius = CornerRadius::same(3);
     let text = Pos2::new(chip.left() + BADGE_PAD, y);
@@ -760,7 +834,7 @@ fn draw_badge(
     if current {
         painter.rect_filled(chip, radius, theme::HEAD);
         painter.text(text, Align2::LEFT_CENTER, name, font, theme::CANVAS);
-        return;
+        return chip;
     }
 
     let (color, filled) = match kind {
@@ -781,6 +855,7 @@ fn draw_badge(
         );
     }
     painter.text(text, Align2::LEFT_CENTER, name, font, color);
+    chip
 }
 
 fn badge_w(fonts: &egui::epaint::Fonts, text: &str, font: &FontId) -> f32 {
