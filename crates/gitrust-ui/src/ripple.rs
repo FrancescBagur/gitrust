@@ -8,8 +8,12 @@
 //! history as a snake, smallest the further it gets from the hand; the dot
 //! it was struck at rings; and the dots the bend passes through ride it.
 //!
-//! Everything in here is over in a second and a bit and then stops asking for
-//! frames. An effect that keeps breathing for as long as the mouse rests
+//! Taps add up: moving on to another row does not cut the last one off, the
+//! lane carries the sum of whatever is still ringing, and each dies on its
+//! own schedule.
+//!
+//! Everything in here is over in a second and a half and then stops asking
+//! for frames. An effect that keeps breathing for as long as the mouse rests
 //! somewhere stops being an answer to a movement and becomes a thing in the
 //! corner of the eye that has to be ignored, which is worse than no effect at
 //! all. Movement earns its place by being brief.
@@ -62,7 +66,7 @@ pub const CARRIES: usize = 4;
 /// lane is seventeen wide, so this is a bend of about a lane from side to
 /// side: as much as can be taken before the lane reads as having moved
 /// rather than as having been pushed.
-const SWAY: f32 = 8.0;
+const SWAY: f32 = 9.5;
 /// How far up and down the history the snake runs, in rows. This is the
 /// "more to less": it stands tallest at the hand and tapers to nothing at
 /// the end of its reach, which is what makes it look like something being
@@ -81,6 +85,10 @@ const UNDULATION: f32 = 3.2;
 /// being thrown rather than as something let loose.
 const ONSET: f32 = 1800.0;
 const ONSET_SOFT: f32 = 110.0;
+/// How far the lane may be pushed in the end, in pixels, however many taps
+/// are adding up, and the most a dot may swell, as a share of its radius.
+const CEILING: f32 = 11.0;
+const SWELL_CEILING: f32 = 0.6;
 /// How many points a row's worth of lane is cut into while it is bending.
 /// A bend is four rows long, so this is near thirty points to a bend: past
 /// the number where another would show.
@@ -100,38 +108,68 @@ const CREST_ALPHA: f32 = 26.0;
 /// the point where the steps can be seen on a row this short.
 const STRIPS: usize = 40;
 
-/// How long the pointer has been on `row`, or `None` if it is on no row.
+/// One tap that has not finished yet: the row it landed on, and how long
+/// ago it did.
+pub type Live = (usize, f32);
+
+/// How many taps are carried at once.
 ///
-/// The row it was on last frame and the clock reading when it got there are
-/// kept in egui's scratch memory under `id`; moving to another row, or off
-/// the list, starts the count again. Frames are asked for here, where we
-/// know whether anything is still moving, so that a window nobody is
-/// pointing at goes quiet.
-pub fn age(ui: &egui::Ui, id: egui::Id, row: Option<usize>) -> Option<f32> {
+/// Running the pointer down the list is a second's work and lands a tap a
+/// row, so there has to be a cap or a slow drag would be paying for fifty
+/// waves. Half a dozen is past the point where another can be picked out of
+/// the sum, and the one dropped is the oldest, which is the one with least
+/// left in it.
+const KEPT: usize = 6;
+
+/// Every tap still ringing, oldest first, after landing a new one if the
+/// pointer has just arrived somewhere.
+///
+/// The taps add up rather than replace each other. Moving to a new row while
+/// the last row is still ringing used to cut it off, and cutting a wave off
+/// mid-swing is the one thing that makes the whole effect read as a trick:
+/// real things that are moving do not stop because you looked away. So the
+/// lane carries the sum of whatever is still going, and each tap dies on its
+/// own schedule.
+///
+/// They are kept in egui's scratch memory under `id`, along with the row the
+/// pointer was on last frame -- which is what says a tap has happened, and
+/// is held apart from the list so that leaving a row and coming back to it
+/// taps it again instead of finding it already there.
+pub fn waves(ui: &egui::Ui, id: egui::Id, row: Option<usize>) -> Vec<Live> {
     let now = ui.input(|input| input.time);
-    let before: Option<(usize, f64)> = ui.data(|data| data.get_temp(id));
+    let on = id.with("on");
 
-    // `usize::MAX` is no row: it is written rather than the entry removed so
-    // that coming back to the row just left starts a new wave instead of
-    // resuming the old one.
-    let Some(row) = row else {
-        ui.data_mut(|data| data.insert_temp(id, (usize::MAX, now)));
-        return None;
-    };
+    let mut struck: Vec<(usize, f64)> = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    struck.retain(|(_, born)| ((now - born) as f32) < LIFE);
 
-    let born = match before {
-        Some((was, born)) if was == row => born,
-        _ => {
-            ui.data_mut(|data| data.insert_temp(id, (row, now)));
-            now
+    let before: usize = ui.data(|data| data.get_temp(on)).unwrap_or(usize::MAX);
+    // `usize::MAX` is no row, so that moving off the list and back on again
+    // counts as arriving.
+    let arrived = row.unwrap_or(usize::MAX);
+    if arrived != before {
+        if let Some(row) = row {
+            struck.push((row, now));
         }
-    };
+    }
+    if struck.len() > KEPT {
+        struck.drain(..struck.len() - KEPT);
+    }
 
-    let age = (now - born) as f32;
-    if age < LIFE {
+    ui.data_mut(|data| {
+        data.insert_temp(id, struck.clone());
+        data.insert_temp(on, arrived);
+    });
+
+    // Frames are asked for here, where we know whether anything is still
+    // moving, so that a window nobody is pointing at goes quiet.
+    if !struck.is_empty() {
         ui.ctx().request_repaint();
     }
-    Some(age)
+
+    struck
+        .into_iter()
+        .map(|(row, born)| (row, (now - born) as f32))
+        .collect()
 }
 
 /// How much a dot `away` rows from the struck one is swollen at `age`,
@@ -176,6 +214,29 @@ pub fn sway(age: f32, along: f32) -> f32 {
     let fading = (1.0 - age / LIFE).max(0.0);
 
     SWAY * taper * laid * fading * fading * phase.sin()
+}
+
+/// The sum of what several taps are asking for, held to what the graph can
+/// take: `bound` for how far the lane is pushed, `bound_swell` for how far
+/// a dot is blown up.
+///
+/// Waves add, and a pointer dragged down a lane lands a tap a row. Six of
+/// them nearly in step come to some twenty-six pixels, which is not a bend
+/// any more, it is the lane somewhere else -- and a dot asked to grow by
+/// two and a half of its radius is asked, half a swing later, to have a
+/// negative one.
+///
+/// Neither is a clamp. A clamp flattens the crest, and a flat crest reads
+/// as a drawing fault rather than as a big wave. This is a curve that is
+/// itself for the first few pixels and bends over towards the ceiling
+/// without ever arriving: one tap passes through untouched, a pile of them
+/// is caught.
+pub fn bound(sway: f32) -> f32 {
+    CEILING * (sway / CEILING).tanh()
+}
+
+pub fn bound_swell(swell: f32) -> f32 {
+    SWELL_CEILING * (swell / SWELL_CEILING).tanh()
 }
 
 /// The rings leaving a dot, which is the part that is actually a wave.

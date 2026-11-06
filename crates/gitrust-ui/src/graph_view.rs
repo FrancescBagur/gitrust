@@ -221,18 +221,10 @@ pub fn show(
 
             let hovered = response.hover_pos().and_then(|pos| row_at(pos.y));
 
-            // How long the pointer has been on that row. Everything that
-            // moves below is a function of this one number, and it is only
-            // asked for once so that the rings and the tremor stay in step.
-            let struck = ripple::age(ui, egui::Id::new("graph-wave"), hovered);
-
-            // How far a row is from the one that was struck, while the wave
-            // still has anything left for it.
-            let away = |index: usize| {
-                let hit = hovered?;
-                let away = index.abs_diff(hit);
-                (away <= ripple::CARRIES).then_some(away)
-            };
+            // Every tap still ringing, which is usually none and at most a
+            // handful. Asked for once a frame, here, because it is also what
+            // lands the new one.
+            let waves = ripple::waves(ui, egui::Id::new("graph-waves"), hovered);
 
             // The menu is about the row the pointer was on when it opened,
             // not wherever it has wandered to since, so which row that was is
@@ -278,21 +270,44 @@ pub fn show(
             let lane_x = |lane: usize| lanes_left + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
             let row_y = |row: usize| rect.top() + row as f32 * row_h + row_h / 2.0;
 
-            // Where the string was plucked: the one lane that bends, and the
-            // height the bend runs away from. Everything else in the graph
-            // holds still, or the wave would say nothing about which commit
-            // the pointer is on.
-            let struck_at = hovered.map(|index| (graph.rows[index].lane, row_y(index)));
-            let bending = |lane: usize| {
-                struck.is_some() && struck_at.is_some_and(|(hit, _)| hit == lane)
+            // Where each string was plucked: the lane that bends and the
+            // height its bend runs away from. A tap on a row that is no
+            // longer there -- the repository was read again under us -- is
+            // dropped rather than carried as a lane it never belonged to.
+            let struck: Vec<(usize, usize, f32, f32)> = waves
+                .iter()
+                .filter(|(row, _)| *row < graph.rows.len())
+                .map(|(row, age)| (*row, graph.rows[*row].lane, row_y(*row), *age))
+                .collect();
+
+            // The waves add up. Two taps a few rows apart leave a lane
+            // carrying both, which is the whole point: it is one string, and
+            // a string does not forget the first tap when it gets a second.
+            let sway = |lane: usize, y: f32| {
+                ripple::bound(
+                    struck
+                        .iter()
+                        .filter(|(_, hit, _, _)| *hit == lane)
+                        .map(|(_, _, from, age)| ripple::sway(*age, (y - from).abs()))
+                        .sum(),
+                )
             };
-            let sway = |lane: usize, y: f32| match (struck, struck_at) {
-                (Some(age), Some((hit, from))) if hit == lane => {
-                    ripple::sway(age, (y - from).abs())
-                }
-                _ => 0.0,
-            };
+            let bending = |lane: usize| struck.iter().any(|(_, hit, _, _)| *hit == lane);
             let lane_at = |lane: usize, y: f32| Pos2::new(lane_x(lane) + sway(lane, y), y);
+
+            // And so does the shake of the dots, each tap reaching a few
+            // rows either side of where it landed.
+            let swell = |index: usize| {
+                ripple::bound_swell(
+                    struck
+                        .iter()
+                        .map(|(row, _, _, age)| match index.abs_diff(*row) {
+                            away if away <= ripple::CARRIES => ripple::swell(*age, away),
+                            _ => 0.0,
+                        })
+                        .sum(),
+                )
+            };
 
             let text_left = lanes_left + graph_w;
             let columns = Columns::for_width(text_left, rect.right());
@@ -342,9 +357,16 @@ pub fn show(
                         true => theme::MUTED,
                         false => theme::lane(row.color),
                     };
-                    // No wave on a hovered row means its wave is over, which
-                    // is what an age past its life says to the wash.
-                    let age = struck.unwrap_or(ripple::LIFE);
+                    // The wash stays with the pointer rather than adding up:
+                    // it is the background saying where you are, and two lit
+                    // rows would be two answers to that. The newest tap is
+                    // the one on this row; no tap at all means its wave is
+                    // over, which is what an age past its life says.
+                    let age = struck
+                        .iter()
+                        .rev()
+                        .find(|(hit, _, _, _)| *hit == index)
+                        .map_or(ripple::LIFE, |(_, _, _, age)| *age);
                     ripple::wash(&painter, band, lane_x(row.lane), age, color);
                 }
             }
@@ -402,29 +424,23 @@ pub fn show(
                     }
                 }
 
-                // The dot rings like a struck string, and the ones a row or
-                // two away along the history ring after it, a little later
-                // and a good deal less.
-                let swell = match (struck, away(index)) {
-                    (Some(age), Some(away)) => ripple::swell(age, away),
-                    _ => 0.0,
-                };
                 // The dot rides the bend: it is a bead on the string, not a
                 // mark pinned to the canvas behind it.
                 let center = lane_at(row.lane, row_y(index));
-                draw_commit(&lanes_painter, row, center, swell);
+                draw_commit(&lanes_painter, row, center, swell(index));
 
-                // The rings go out on the unclipped painter: the lane strip
-                // is narrower than their reach, and a ring cut off square at
-                // the edge of a strip is not a ring.
-                if hovered == Some(index) {
-                    if let Some(age) = struck {
-                        let color = match row.commit.is_working() {
-                            true => theme::MUTED,
-                            false => theme::lane(row.color),
-                        };
-                        ripple::rings(&painter, center, age, color, DOT_R + 3.0);
-                    }
+                // One set of rings per tap this row has had, so that running
+                // the pointer down the graph leaves a trail of them going
+                // out rather than one that keeps starting over. They go on
+                // the unclipped painter: the lane strip is narrower than
+                // their reach, and a ring cut off square at the edge of a
+                // strip is not a ring.
+                for (_, _, _, age) in struck.iter().filter(|(hit, _, _, _)| *hit == index) {
+                    let color = match row.commit.is_working() {
+                        true => theme::MUTED,
+                        false => theme::lane(row.color),
+                    };
+                    ripple::rings(&painter, center, *age, color, DOT_R + 3.0);
                 }
 
                 if row.commit.is_working() {
