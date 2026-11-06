@@ -5,9 +5,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0-only"
+license = "AGPL-3.0-only"
 description = "A desktop Git client in Rust, built around the commit graph"
-repository = "https://github.com/Coffee-Software-SLU/gitrust"
+repository = "https://github.com/FrancescBagur/gitrust"
 authors = ["Francesc Bagur <francesc.bagur@coffeesoftware.io>"]
 
 [workspace.dependencies]

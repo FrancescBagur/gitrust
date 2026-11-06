@@ -84,7 +84,7 @@ Priority: optional
 Architecture: $arch
 Depends: ${linked:+$linked, }$opened_at_runtime
 Maintainer: Francesc Bagur <francesc.bagur@coffeesoftware.io>
-Homepage: https://github.com/Coffee-Software-SLU/gitrust
+Homepage: https://github.com/FrancescBagur/gitrust
 Description: A desktop Git client built around the commit graph
  Draws a repository's whole history -- every branch and tag in one graph,
  with the merges entwined -- and lets you work in it: stage, commit, push,
