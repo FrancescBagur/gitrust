@@ -77,11 +77,23 @@ jobs:
       # One binary that runs on both kinds of Mac. The runner is an Apple
       # one, so without this an Intel Mac gets a file it cannot execute and
       # no explanation of why.
+      # --features vendored-openssl, for two reasons that are really one.
+      # Cross-compiling to Intel fails outright without it: openssl-sys goes
+      # looking for an OpenSSL to link and the only one on the runner is
+      # Homebrew's, built for Apple silicon. And the Apple build that does
+      # find it links it by its path under /opt/homebrew -- a path on the
+      # machine that built it, not on the Mac of whoever downloads this. An
+      # app has to carry its own.
+      #
+      # Linux is deliberately not built this way: there the system OpenSSL is
+      # the one that gets security updates.
       - name: Build for both architectures
         run: |
           rustup target add x86_64-apple-darwin aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --features vendored-openssl \
+            --target x86_64-apple-darwin
+          cargo build --release --locked --features vendored-openssl \
+            --target aarch64-apple-darwin
           lipo -create -output gitrust \
             target/x86_64-apple-darwin/release/gitrust \
             target/aarch64-apple-darwin/release/gitrust

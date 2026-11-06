@@ -12,6 +12,14 @@ authors.workspace = true
 # we have no runnable examples in the doc comments.
 doctest = false
 
+# Not on by default, and not wanted on Linux: there the system OpenSSL is
+# the one that gets security updates, and a copy built into the binary is a
+# copy nobody patches. It is for the builds that have no system one to link
+# -- a Mac app has to carry its own, or it only runs on a machine with
+# Homebrew's OpenSSL in the same place as the machine that built it.
+[features]
+vendored-openssl = ["git2/vendored-openssl"]
+
 [dependencies]
 anyhow.workspace = true
 git2.workspace = true

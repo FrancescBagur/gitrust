@@ -11,6 +11,10 @@ authors.workspace = true
 name = "gitrust"
 path = "src/main.rs"
 
+# Passed straight down; see gitrust-core for what it is for.
+[features]
+vendored-openssl = ["gitrust-core/vendored-openssl"]
+
 [dependencies]
 gitrust-core = { path = "../gitrust-core" }
 anyhow.workspace = true
