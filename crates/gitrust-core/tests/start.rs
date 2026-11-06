@@ -67,6 +67,18 @@ fn a_repository_cloned_from_a_folder_arrives_with_its_history() {
     std::fs::create_dir_all(&source).unwrap();
     gitrust_core::start::init(&source).unwrap();
 
+    // Who the commit below is by. Without this the test borrows whatever
+    // identity the machine happens to have in its global config, which means
+    // it passes on the desk of anybody who has ever used Git and fails on a
+    // fresh clone, on a build machine, and for the first person who tries
+    // this repository out. The other tests get theirs from `common`; this
+    // file makes its repositories by hand, because making one is what it is
+    // testing.
+    let made = git2::Repository::open(&source).unwrap();
+    let mut config = made.config().unwrap();
+    config.set_str("user.name", "gitrust test").unwrap();
+    config.set_str("user.email", "test@example.invalid").unwrap();
+
     let repo = gitrust_core::Repo::open(source.to_str().unwrap()).unwrap();
     std::fs::write(source.join("a.txt"), "one\n").unwrap();
     repo.stage("a.txt").unwrap();
