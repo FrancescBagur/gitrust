@@ -25,6 +25,7 @@ mod graph_view;
 mod picker;
 mod refs_view;
 mod rewrite_view;
+mod ripple;
 mod syntax;
 mod theme;
 mod toast;

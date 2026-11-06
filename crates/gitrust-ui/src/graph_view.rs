@@ -18,6 +18,7 @@ use eframe::egui::{
 use gitrust_core::{Graph, Oid, RefEntry, RefKind, Row, WorkingState};
 
 use crate::refs_view::{self, Named, On, Pick};
+use crate::ripple;
 
 use crate::theme;
 
@@ -220,6 +221,19 @@ pub fn show(
 
             let hovered = response.hover_pos().and_then(|pos| row_at(pos.y));
 
+            // How long the pointer has been on that row. Everything that
+            // moves below is a function of this one number, and it is only
+            // asked for once so that the rings and the tremor stay in step.
+            let struck = ripple::age(ui, egui::Id::new("graph-wave"), hovered);
+
+            // How far a row is from the one that was struck, while the wave
+            // still has anything left for it.
+            let away = |index: usize| {
+                let hit = hovered?;
+                let away = index.abs_diff(hit);
+                (away <= ripple::CARRIES).then_some(away)
+            };
+
             // The menu is about the row the pointer was on when it opened,
             // not wherever it has wandered to since, so which row that was is
             // remembered rather than asked again each frame.
@@ -307,7 +321,15 @@ pub fn show(
                         edge,
                     );
                 } else if hovered == Some(index) {
-                    painter.rect_filled(band_of(index), 0.0, theme::HOVER);
+                    let band = band_of(index);
+                    let color = match row.commit.is_working() {
+                        true => theme::MUTED,
+                        false => theme::lane(row.color),
+                    };
+                    // No wave on a hovered row means its wave is over, which
+                    // is what an age past its life says to the wash.
+                    let age = struck.unwrap_or(ripple::LIFE);
+                    ripple::wash(&painter, band, lane_x(row.lane), age, color);
                 }
             }
 
@@ -352,7 +374,28 @@ pub fn show(
                     }
                 }
 
-                draw_commit(&lanes_painter, row, lane_x(row.lane), row_y(index));
+                // The dot rings like a struck string, and the ones a row or
+                // two away along the history ring after it, a little later
+                // and a good deal less.
+                let swell = match (struck, away(index)) {
+                    (Some(age), Some(away)) => ripple::swell(age, away),
+                    _ => 0.0,
+                };
+                let center = Pos2::new(lane_x(row.lane), row_y(index));
+                draw_commit(&lanes_painter, row, center, swell);
+
+                // The rings go out on the unclipped painter: the lane strip
+                // is narrower than their reach, and a ring cut off square at
+                // the edge of a strip is not a ring.
+                if hovered == Some(index) {
+                    if let Some(age) = struck {
+                        let color = match row.commit.is_working() {
+                            true => theme::MUTED,
+                            false => theme::lane(row.color),
+                        };
+                        ripple::rings(&painter, center, age, color, DOT_R + 3.0);
+                    }
+                }
 
                 if row.commit.is_working() {
                     draw_working(&painter, text_left, row_y(index), &pending_label);
@@ -375,35 +418,37 @@ pub fn show(
     Asked { show: clicked, pick: picked }
 }
 
-fn draw_commit(painter: &egui::Painter, row: &Row, x: f32, y: f32) {
+/// `swell` is what the wave is doing to this dot right now, as a share of its
+/// radius: zero when nothing is passing through it.
+fn draw_commit(painter: &egui::Painter, row: &Row, center: Pos2, swell: f32) {
     let color = theme::lane(row.color);
-    let center = Pos2::new(x, y);
+    let dot_r = DOT_R * (1.0 + swell);
 
     // The uncommitted changes go hollow and grey: they are not a commit, and
     // giving them the branch's color would be saying they are already part of
     // it. The ring sits flush with the dot so as not to eat the dashes of its
     // line, which is short and has few to spare.
     if row.commit.is_working() {
-        painter.circle_filled(center, DOT_R + 1.0, theme::CANVAS);
-        painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(1.6, theme::MUTED));
+        painter.circle_filled(center, dot_r + 1.0, theme::CANVAS);
+        painter.circle_stroke(center, dot_r - 0.5, Stroke::new(1.6, theme::MUTED));
         return;
     }
 
     // A ring in the canvas's color lifts the dot off the lines passing behind
     // it; without one the graph smears at the junctions.
-    painter.circle_filled(center, DOT_R + 2.5, theme::CANVAS);
+    painter.circle_filled(center, dot_r + 2.5, theme::CANVAS);
 
     // A merge is marked with a hollow dot; an ordinary commit, solid.
     if row.commit.parents.len() > 1 {
-        painter.circle_filled(center, DOT_R, theme::CANVAS);
-        painter.circle_stroke(center, DOT_R - 0.5, Stroke::new(2.0, color));
+        painter.circle_filled(center, dot_r, theme::CANVAS);
+        painter.circle_stroke(center, dot_r - 0.5, Stroke::new(2.0, color));
     } else {
-        painter.circle_filled(center, DOT_R, color);
+        painter.circle_filled(center, dot_r, color);
     }
 
     // Where HEAD is can be seen from across the room.
     if row.commit.refs.iter().any(|r| r.kind == RefKind::Head) {
-        painter.circle_stroke(center, DOT_R + 3.5, Stroke::new(1.5, theme::HEAD));
+        painter.circle_stroke(center, dot_r + 3.5, Stroke::new(1.5, theme::HEAD));
     }
 }
 
