@@ -64,30 +64,33 @@ pub const CARRIES: usize = 4;
 
 /// How far sideways the lane is pushed where it was struck, in pixels.
 ///
-/// Well inside the seventeen a lane is wide. Once the bends were lengthened
-/// to six rows they carried further on their own, and the lane no longer
-/// needs to be shoved as hard to read as moving: a long bend of four pixels
-/// says more than a short one of six.
-const SWAY: f32 = 6.5;
+/// Well under the seventeen a lane is wide, and it came down as the bends
+/// below were lengthened. A long bend carries on its own and does not need
+/// the lane shoved as hard to read as moving: at nine rows to a bend, three
+/// or four pixels says more than six did when a bend was four rows.
+const SWAY: f32 = 5.5;
 /// How far up and down the history the snake runs, in rows. This is the
 /// "more to less": it stands tallest at the hand and tapers to nothing at
 /// the end of its reach, which is what makes it look like something being
 /// shaken from one end rather than a decoration laid over the lane.
 const LENGTH: f32 = 14.0;
-/// How long one bend is, in pixels: six rows, so three dots lean one way
-/// and the next three the other.
+/// How long one bend is, in pixels: nine rows, so four or five dots lean
+/// one way and the next four or five the other.
 ///
 /// This is set against the row height, not picked for looks. A bend of four
 /// rows is close enough to the spacing of the dots that consecutive ones
 /// land on opposite sides of the lane, and a column of dots alternating
 /// left and right is not read as a wave at all -- it is read as a jagged
-/// line. Six rows puts three dots on each side of each bend, which is the
-/// fewest that still looks like one thing moving.
-const BEND: f32 = 168.0;
+/// line. Six rows is the fewest that still looks like one thing moving,
+/// and this leans them in bigger groups than that. It cannot grow much
+/// further without the reach below growing too: at nine rows to a bend
+/// there are only a bend and a half inside the fourteen the snake runs,
+/// and one bend is an S-curve, not a snake.
+const BEND: f32 = 252.0;
 /// How many times a second a point on the lane swings. Lowered along with
 /// the bend above, so that the crests still travel down the lane at about
 /// the speed they did when the bends were shorter.
-const UNDULATION: f32 = 2.4;
+const UNDULATION: f32 = 1.6;
 /// How fast the snake lays itself out from the dot, in pixels a second, and
 /// how soft its far end is while it does. It is not a pulse crawling away --
 /// the whole length is there inside a third of a second -- but it does not
@@ -102,7 +105,7 @@ const ONSET_SOFT: f32 = 110.0;
 /// meant to read as more waves in more places, not as one enormous one:
 /// dragging the pointer down a lane gets a couple of pixels more bend than
 /// tapping it once, and everything past that is swallowed.
-const CEILING: f32 = 6.5;
+const CEILING: f32 = 5.5;
 const SWELL_CEILING: f32 = 0.5;
 /// How many points a row's worth of lane is cut into while it is bending.
 /// A bend is four rows long, so this is near thirty points to a bend: past
