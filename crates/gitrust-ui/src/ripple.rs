@@ -66,7 +66,7 @@ pub const CARRIES: usize = 4;
 /// lane is seventeen wide, so this is a bend of about a lane from side to
 /// side: as much as can be taken before the lane reads as having moved
 /// rather than as having been pushed.
-const SWAY: f32 = 9.5;
+const SWAY: f32 = 8.0;
 /// How far up and down the history the snake runs, in rows. This is the
 /// "more to less": it stands tallest at the hand and tapers to nothing at
 /// the end of its reach, which is what makes it look like something being
@@ -87,8 +87,13 @@ const ONSET: f32 = 1800.0;
 const ONSET_SOFT: f32 = 110.0;
 /// How far the lane may be pushed in the end, in pixels, however many taps
 /// are adding up, and the most a dot may swell, as a share of its radius.
-const CEILING: f32 = 11.0;
-const SWELL_CEILING: f32 = 0.6;
+///
+/// Set close to what a single tap asks for, on purpose. A pile of taps is
+/// meant to read as more waves in more places, not as one enormous one:
+/// dragging the pointer down a lane gets a couple of pixels more bend than
+/// tapping it once, and everything past that is swallowed.
+const CEILING: f32 = 8.0;
+const SWELL_CEILING: f32 = 0.5;
 /// How many points a row's worth of lane is cut into while it is bending.
 /// A bend is four rows long, so this is near thirty points to a bend: past
 /// the number where another would show.
@@ -115,11 +120,16 @@ pub type Live = (usize, f32);
 /// How many taps are carried at once.
 ///
 /// Running the pointer down the list is a second's work and lands a tap a
-/// row, so there has to be a cap or a slow drag would be paying for fifty
-/// waves. Half a dozen is past the point where another can be picked out of
-/// the sum, and the one dropped is the oldest, which is the one with least
-/// left in it.
-const KEPT: usize = 6;
+/// row, so there has to be a cap or a drag would be paying for fifty waves.
+/// The one dropped is the oldest, which is the one with least left in it.
+///
+/// The cap is set loose rather than tight, because dropping a tap is the
+/// very thing this is here to avoid. At half a dozen, a quick drag threw
+/// away waves that were still half alive -- the same cut, moved rather than
+/// mended. Sixteen takes a drag fast enough that the sum is against its
+/// ceiling anyway, and against the ceiling losing the oldest moves the lane
+/// by a tenth of a pixel.
+const KEPT: usize = 16;
 
 /// Every tap still ringing, oldest first, after landing a new one if the
 /// pointer has just arrived somewhere.
