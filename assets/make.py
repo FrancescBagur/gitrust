@@ -25,6 +25,7 @@ into the edge, which comes out as a dark hem at the small sizes.
 """
 
 import pathlib
+import struct
 import subprocess
 import sys
 
@@ -225,6 +226,53 @@ def banner():
     print(f"  assets/banner.jpg  1400 wide")
 
 
+def ico():
+    """The Windows one: every size in a single file.
+
+    Nothing is drawn here and nothing is decoded. An .ico is a short
+    directory followed by the images themselves, and Windows has taken PNG
+    images inside one since Vista -- so the PNGs written above go in
+    untouched, byte for byte, and this only writes the directory in front of
+    them.
+
+    It is one file rather than seven because that is what gets embedded in
+    the .exe: without it, a window and a taskbar button come up wearing the
+    blank sheet Windows gives to a program that brought no icon.
+    """
+    # Biggest first, which is the order Windows reads them in when it is
+    # looking for the one nearest the size it wants.
+    #
+    # 512 is left out, and cannot be put back: the width in the directory is
+    # one byte, so the largest it can say is 256 -- which is why 256 itself
+    # is written as a zero. A 512 image in here would arrive claiming to be
+    # 256 and be drawn at half scale.
+    pngs = [(size, (HERE / f"icon-{size}.png").read_bytes())
+            for size in SIZES if size <= 256]
+
+    HEADER, ENTRY = 6, 16
+    at = HEADER + ENTRY * len(pngs)
+    directory = struct.pack("<HHH", 0, 1, len(pngs))
+    for size, data in pngs:
+        directory += struct.pack(
+            "<BBBBHHII",
+            # 256 and above is written as a zero: the field is one byte, and
+            # 256 does not fit in one byte.
+            0 if size >= 256 else size,
+            0 if size >= 256 else size,
+            0,          # no palette
+            0,          # reserved
+            1,          # one plane
+            32,         # bits a pixel
+            len(data),
+            at,
+        )
+        at += len(data)
+
+    out = HERE / "icon.ico"
+    out.write_bytes(directory + b"".join(data for _, data in pngs))
+    print(f"  assets/icon.ico  {len(pngs)} sizes, {out.stat().st_size // 1024}K")
+
+
 if __name__ == "__main__":
     if not SOURCE.is_dir():
         sys.exit("there is no assets/source to work from")
@@ -232,3 +280,5 @@ if __name__ == "__main__":
     icon()
     mark()
     banner()
+    # After icon(), which writes the files this gathers up.
+    ico()
