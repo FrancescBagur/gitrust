@@ -71,6 +71,24 @@ impl RefEntry {
         name.rsplit_once('/').map(|(folder, _)| folder)
     }
 
+    /// The branch this is, with no remote in front of it.
+    ///
+    /// `origin/feat/login` and the local `feat/login` are one branch under
+    /// two names; this is the name they share, and comparing it is how you
+    /// tell that the two rows in the sidebar are the same thing.
+    ///
+    /// Deliberately not `leaf`, which takes the last segment: by that
+    /// reading `origin/feat/login` and `other/fix/login` are the same
+    /// branch, and they are not.
+    pub fn branch_name(&self) -> &str {
+        match self.kind {
+            RefKind::RemoteBranch => {
+                self.name.split_once('/').map_or(self.name.as_str(), |(_, rest)| rest)
+            }
+            _ => self.name.as_str(),
+        }
+    }
+
     /// The name without the folder.
     pub fn leaf(&self) -> &str {
         self.name.rsplit_once('/').map_or(self.name.as_str(), |(_, leaf)| leaf)

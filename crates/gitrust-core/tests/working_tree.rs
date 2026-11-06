@@ -278,6 +278,48 @@ fn a_branch_with_slashes_is_grouped_by_its_folder() {
     assert_eq!(leaves, vec!["login", "signup"]);
 }
 
+/// A local branch and its counterpart on a remote are one branch under two
+/// names, and `branch_name` is the name they share. The sidebar compares it
+/// to say whether a branch is on this disk, on a remote, or on both.
+#[test]
+fn a_branch_and_its_remote_copy_share_a_name_even_inside_a_folder() {
+    let temp = TempRepo::new("same-branch");
+    temp.write("a.txt", "one\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("base").unwrap();
+
+    let git = git2::Repository::open(temp.path()).unwrap();
+    let head = git.head().unwrap().peel_to_commit().unwrap();
+    git.branch("feat/login", &head, false).unwrap();
+    // A remote branch is a reference like any other; this is what a fetch
+    // would have left behind.
+    git.reference("refs/remotes/origin/feat/login", head.id(), false, "")
+        .unwrap();
+    // Same last segment, different branch. Whatever matches these two to
+    // each other is matching on the wrong thing.
+    git.reference("refs/remotes/origin/fix/login", head.id(), false, "")
+        .unwrap();
+
+    let refs = repo.references().unwrap();
+    let named = |name: &str| {
+        refs.iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("{name} is not there"))
+            .branch_name()
+            .to_string()
+    };
+
+    // The remote drops away; the folder stays, because the folder is part
+    // of the branch's name and the remote is not.
+    assert_eq!(named("feat/login"), "feat/login");
+    assert_eq!(named("origin/feat/login"), "feat/login");
+    assert_eq!(named("origin/fix/login"), "fix/login");
+
+    // Which is the whole point: these two are not the same branch.
+    assert_ne!(named("origin/fix/login"), named("feat/login"));
+}
+
 #[test]
 fn a_commit_with_no_message_is_refused() {
     let temp = TempRepo::new("empty-msg");

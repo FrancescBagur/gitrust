@@ -100,13 +100,20 @@ pub fn show(
     );
     ui.add_space(8.0);
 
-    // Which remote branch each local one would follow, by the only
-    // convention there is: the same name on a remote. Worked out once here
-    // rather than per row, and empty when the remote has nothing like it.
-    let on_remotes: Vec<&str> = refs
+    // Both sides of every branch, worked out once here rather than per row.
+    //
+    // A branch is in one of three states and the sidebar never said which:
+    // on this disk only, on a remote only, or on both. All three look the
+    // same in a list of names, and which one it is decides whether there is
+    // anything to push, anything to pull, and whether deleting it here
+    // throws the work away.
+    let remote_branches: Vec<&RefEntry> = refs
         .iter()
         .filter(|entry| entry.kind == RefKind::RemoteBranch)
-        .map(|entry| entry.name.as_str())
+        .collect();
+    let local_branches: Vec<&RefEntry> = refs
+        .iter()
+        .filter(|entry| entry.kind == RefKind::LocalBranch)
         .collect();
 
     let needle = filter.trim().to_lowercase();
@@ -135,7 +142,8 @@ pub fn show(
                         mark,
                         kind,
                         &matching,
-                        &on_remotes,
+                        &remote_branches,
+                        &local_branches,
                         selected,
                         head,
                         busy,
@@ -202,7 +210,8 @@ fn section(
     mark: theme::Glyph,
     kind: RefKind,
     refs: &[&RefEntry],
-    on_remotes: &[&str],
+    remote_branches: &[&RefEntry],
+    local_branches: &[&RefEntry],
     selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
@@ -235,7 +244,7 @@ fn section(
         for entry in &entries {
             match entry.folder() {
                 Some(folder) => folders.entry(folder).or_default().push(entry),
-                None => leaf(ui, entry, on_remotes, selected, head, busy, picked),
+                None => leaf(ui, entry, remote_branches, local_branches, selected, head, busy, picked),
             }
         }
 
@@ -244,7 +253,7 @@ fn section(
             // nobody can see.
             theme::group(ui, folder, searching, |ui| {
                 for entry in group {
-                    leaf(ui, entry, on_remotes, selected, head, busy, picked);
+                    leaf(ui, entry, remote_branches, local_branches, selected, head, busy, picked);
                 }
             });
         }
@@ -340,7 +349,8 @@ fn checkouts(
 fn leaf(
     ui: &mut egui::Ui,
     entry: &RefEntry,
-    on_remotes: &[&str],
+    remote_branches: &[&RefEntry],
+    local_branches: &[&RefEntry],
     selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
@@ -361,6 +371,19 @@ fn leaf(
     } else {
         theme::body(12.5)
     };
+
+    // Where this branch is, which is three states and not two. The sections
+    // say two of them -- a row under Branches is on this disk, a row under
+    // Remotes is on a remote -- and the graph's chips say it again, `master`
+    // beside `origin/master`. What none of them says is whether the other
+    // side has it too, so it is said in the hover and drawn nowhere: a mark
+    // on every row costs every row to answer a question asked of one.
+    let is_branch = matches!(entry.kind, RefKind::LocalBranch | RefKind::RemoteBranch);
+    let mine = entry.branch_name();
+    let on_disk = entry.kind == RefKind::LocalBranch
+        || (is_branch && local_branches.iter().any(|other| other.branch_name() == mine));
+    let on_remote = entry.kind == RefKind::RemoteBranch
+        || (is_branch && remote_branches.iter().any(|other| other.branch_name() == mine));
 
     // The glyph and the name are one row, and the name alone is the thing you
     // press: a hit area that swallowed the glyph would start a drag from a
@@ -432,6 +455,16 @@ fn leaf(
     }
 
     let mut hint = entry.name.clone();
+    if is_branch {
+        hint.push_str(match (on_disk, on_remote) {
+            (true, true) => "\nOn this machine and on a remote",
+            (true, false) => "\nOn this machine only: no remote has it",
+            (false, true) => "\nOn a remote only: not on this machine yet",
+            // Neither, which cannot happen: a branch came from one of the
+            // two lists this was worked out from.
+            (false, false) => "",
+        });
+    }
     if switchable {
         hint.push_str("\nDouble-click to switch to it");
     }
@@ -441,10 +474,17 @@ fn leaf(
     let response = response.on_hover_text(hint);
 
     let remote = entry.kind == RefKind::RemoteBranch;
-    let upstream: Option<String> = on_remotes
-        .iter()
-        .find(|remote| remote.rsplit_once('/').is_some_and(|(_, leaf)| leaf == entry.name))
-        .map(|remote| remote.to_string());
+    // Which remote branch this local one would follow, by the only
+    // convention there is: the same branch name on a remote. Matched on the
+    // name without the remote in front, so a branch in a folder finds its
+    // own counterpart and not somebody else's with the same last segment.
+    let upstream: Option<String> = match entry.kind {
+        RefKind::LocalBranch => remote_branches
+            .iter()
+            .find(|other| other.branch_name() == entry.branch_name())
+            .map(|other| other.name.clone()),
+        _ => None,
+    };
 
     let on = On {
         target: entry.target,
