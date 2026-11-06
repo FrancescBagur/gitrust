@@ -76,8 +76,42 @@ const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
 /// says the same at the length a README has.
 const SLOGAN: &str = "Trust, protected. Code, eternal.";
 
+/// What `--help` prints, and what `--version` prints the first line of. A
+/// graphical program still gets run from a terminal once -- by whoever is
+/// about to report a bug and is asked which version they have -- and a
+/// window that opens on a repository called `--version` is the wrong answer
+/// to that question.
+fn tell_and_stop(arg: &str) -> bool {
+    match arg {
+        "-V" | "--version" => {
+            println!("gitrust {}", env!("CARGO_PKG_VERSION"));
+            true
+        }
+        "-h" | "--help" => {
+            println!(
+                "gitrust {} \u{2014} {}\n\n\
+                 Usage: gitrust [REPOSITORY]\n\n\
+                 With no argument it opens the repository in the current\n\
+                 directory. A folder dragged onto the window opens too.\n\n\
+                 \x20 -V, --version   print the version and stop\n\
+                 \x20 -h, --help      print this and stop\n\n\
+                 {}\n",
+                env!("CARGO_PKG_VERSION"),
+                SLOGAN,
+                env!("CARGO_PKG_REPOSITORY"),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+
+    if tell_and_stop(&path) {
+        return Ok(());
+    }
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1500.0, 900.0])
