@@ -72,12 +72,20 @@ const SWAY: f32 = 8.0;
 /// the end of its reach, which is what makes it look like something being
 /// shaken from one end rather than a decoration laid over the lane.
 const LENGTH: f32 = 14.0;
-/// How long one bend is, in pixels. Four rows, so that three or four of them
-/// are in sight at once: fewer and it is a lane gone crooked, more and it is
-/// a vibration rather than a snake.
-const BEND: f32 = 115.0;
-/// How many times a second a point on the lane swings.
-const UNDULATION: f32 = 3.2;
+/// How long one bend is, in pixels: six rows, so three dots lean one way
+/// and the next three the other.
+///
+/// This is set against the row height, not picked for looks. A bend of four
+/// rows is close enough to the spacing of the dots that consecutive ones
+/// land on opposite sides of the lane, and a column of dots alternating
+/// left and right is not read as a wave at all -- it is read as a jagged
+/// line. Six rows puts three dots on each side of each bend, which is the
+/// fewest that still looks like one thing moving.
+const BEND: f32 = 168.0;
+/// How many times a second a point on the lane swings. Lowered along with
+/// the bend above, so that the crests still travel down the lane at about
+/// the speed they did when the bends were shorter.
+const UNDULATION: f32 = 2.4;
 /// How fast the snake lays itself out from the dot, in pixels a second, and
 /// how soft its far end is while it does. It is not a pulse crawling away --
 /// the whole length is there inside a third of a second -- but it does not
