@@ -4,6 +4,8 @@
 
 > **Trust, protected. Code, eternal.**
 
+[![CI](https://github.com/Coffee-Software-SLU/gitrust/actions/workflows/ci.yml/badge.svg)](https://github.com/Coffee-Software-SLU/gitrust/actions/workflows/ci.yml)
+
 A desktop Git client in Rust. The aim is to cover the day-to-day flow without
 depending on a commercial licence, starting with what is hardest to find free
 and well made: **the commit graph with every branch woven through it**.

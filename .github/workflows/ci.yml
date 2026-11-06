@@ -1,0 +1,70 @@
+# Builds the program and runs its tests on every push and every pull request.
+#
+# What this is here to say, to somebody who has just found the repository:
+# that the tests in it pass, and that the claim is checked by something other
+# than the person making it.
+#
+# The toolchain is whatever the runner ships. Pinning a version would mean
+# promising a version, and nothing here needs one: the crate is edition 2021
+# and uses nothing newer than the compiler everybody already has.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace from a test that fails on a machine nobody can log into is
+  # the difference between a fix and a guess.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Build and test on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Four groups, and each one is here for a reason:
+      #   pkg-config and libssl-dev   git2 builds libgit2 itself and links
+      #                               the system OpenSSL to talk https
+      #   zlib                        the same build wants it
+      #   the x11 and wayland set     winit opens a window on whichever of
+      #                               the two the desktop is running
+      #   mesa                        eframe draws through OpenGL
+      # None of it is needed to run the tests, which never open a window --
+      # it is needed to link the binary at all.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libssl-dev zlib1g-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      # No display, deliberately: a test that needs a window is a test that
+      # will pass on a desk and fail here, and none of these needs one.
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # Neither of these runs the tests, and neither has ever been tried: the
+  # program has only ever been built on Linux. They are here to find out
+  # whether it builds elsewhere, which is the first thing anybody on another
+  # machine will ask.
+  elsewhere:
+    name: Build on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --workspace --locked
