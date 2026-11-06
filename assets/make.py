@@ -35,8 +35,13 @@ SOURCE = HERE / "source"
 # The plaque's place in source/icon.jpg, in pixels, measured rather than
 # guessed: left, top, right, bottom, and how round the corners are. Redo
 # these if the art is ever redrawn.
-PLAQUE = (400, 70, 1007, 698)
 ROUNDING = 105 / 608
+
+# What tells the drawing from the checkerboard behind it: the checkerboard is
+# grey to the byte and the drawing never is, so the two are told apart by how
+# far a pixel's channels are from each other.
+CLEAR = 25
+SOLID = 60
 
 # What the installed icon is wanted at. 512 is the one the desktop scales
 # from when it has nothing better; the rest are cut on purpose, because an
@@ -132,10 +137,37 @@ def unpremultiply(data):
     return out
 
 
+def plaque(width, height, rgb):
+    """Where the plaque is in the picture, found rather than written down.
+
+    It used to be four numbers at the top of this file, measured by hand
+    once. That worked until the art was drawn again and came back a
+    different size, with the plaque somewhere else in the frame -- at
+    which point the four numbers cut a window out of the middle of it and
+    said nothing was wrong.
+
+    The checkerboard is grey to the byte and the plaque is bronze, so they
+    are told apart the same way `mark` tells them apart: by how far a
+    pixel's channels are from each other. A row or column counts as part
+    of the plaque once several of its pixels are coloured, which keeps a
+    stray JPEG artefact in the grey from widening the box.
+    """
+    def coloured(x, y):
+        s = (y * width + x) * 3
+        return max(rgb[s], rgb[s + 1], rgb[s + 2]) - min(rgb[s], rgb[s + 1], rgb[s + 2]) > SOLID
+
+    xs = [x for x in range(width) if sum(coloured(x, y) for y in range(0, height, 8)) > 4]
+    ys = [y for y in range(height) if sum(coloured(x, y) for x in range(0, width, 8)) > 4]
+    if not xs or not ys:
+        sys.exit("no plaque found in assets/source/icon.jpg: is it all checkerboard?")
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def icon():
     """The plaque, cut to its own silhouette, at every size asked for."""
     width, height, rgb = read(SOURCE / "icon.jpg")
-    left, top, right, bottom = PLAQUE
+    left, top, right, bottom = plaque(width, height, rgb)
+    print(f"  the plaque sits at {left},{top} to {right},{bottom}")
     cut_w, cut_h = right - left + 1, bottom - top + 1
 
     # The plaque is a few pixels taller than it is wide, so it is drawn
@@ -168,13 +200,6 @@ def icon():
         small = box(premultiplied, side, side, size, size)
         name = "icon.png" if size == max(SIZES) else f"icon-{size}.png"
         write(HERE / name, size, size, unpremultiply(small))
-
-
-# Below this the drawing has started; above it there is only checkerboard.
-# The checkerboard is grey to the byte and the drawing never is, so the
-# two are told apart by how far a pixel's channels are from each other.
-CLEAR = 25
-SOLID = 60
 
 
 def mark():
