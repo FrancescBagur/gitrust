@@ -73,7 +73,13 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1500.0, 900.0])
         .with_min_inner_size([900.0, 480.0])
-        .with_title(format!("gitrust \u{2014} {SLOGAN}"))
+        // Capitalised here and nowhere else. This is the name read by a
+        // person, in a title bar and a window switcher, among the names of
+        // every other program they have open -- all of which are
+        // capitalised. Everywhere a machine reads it instead -- the binary,
+        // the crate, the app id below -- it stays lowercase, because those
+        // are not names, they are identifiers that have to match.
+        .with_title(format!("Gitrust \u{2014} {SLOGAN}"))
         // What the desktop files this window under. It has to be the name of
         // the .desktop file in packaging/ word for word: on Wayland the icon
         // comes from that file and never from the window, so the one below

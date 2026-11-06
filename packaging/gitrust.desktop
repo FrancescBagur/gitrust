@@ -1,6 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=gitrust
+# The name a person reads, under the icon and in the switcher, so it is
+# capitalised like every other name there. The lowercase gitrust below is
+# not a name: Exec, Icon and StartupWMClass are identifiers that have to
+# match the binary, the icon files and what the window calls itself.
+Name=Gitrust
 GenericName=Git client
 Comment=Read a repository's history and work in it
 Exec=gitrust %f
