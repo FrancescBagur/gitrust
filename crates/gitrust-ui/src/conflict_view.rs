@@ -277,14 +277,27 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
     // merge. The core says which, and this draws it.
     let (ours, theirs) = half.sides();
 
-    let room = (ui.available_width() - 14.0) / 2.0;
+    // The room is halved before anything is drawn in it, and each column is
+    // then given exactly its half and no more.
+    //
+    // Asking a column how wide it wants to be does not work here: a line of
+    // code is as long as whoever wrote it made it, so the side with the long
+    // line grew to fit it, and the other side was pushed off the edge of the
+    // window -- its "Take this" button with it. The half that is there is the
+    // half each one gets; what does not fit scrolls.
+    let gap = ui.spacing().item_spacing.x;
+    let room = ((ui.available_width() - gap) / 2.0).max(160.0);
+    let tall = ui.available_height();
+
     ui.horizontal_top(|ui| {
         for (side, label, contents) in [
             (Side::Ours, ours, &clash.ours),
             (Side::Theirs, theirs, &clash.theirs),
         ] {
-            ui.vertical(|ui| {
-                ui.set_width(room);
+            ui.allocate_ui_with_layout(
+                egui::vec2(room, tall),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(capitalise(label))
@@ -311,7 +324,8 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
                 });
                 ui.add_space(4.0);
                 version(ui, contents, label, &clash.path);
-            });
+                },
+            );
         }
     });
 }
@@ -321,9 +335,6 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
 /// `path` is only for the colour: it is what says whether `#` starts a
 /// comment or an attribute.
 fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
-    // Deliberately not scrolled on its own. Two panes scrolling separately
-    // means two files you cannot line up, and lining them up is the whole of
-    // what you are doing here.
     match contents {
         Contents::Absent => {
             ui.label(
@@ -340,6 +351,15 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
             );
         }
         Contents::Text(text) => {
+            // Scrolled both ways, and the across is not a nicety: the column
+            // is half the room whatever is written in it, and a line longer
+            // than that half would otherwise have an end nobody can read.
+            //
+            // What this costs is that the two sides scroll apart, and lining
+            // them up is most of what anybody is doing here. It is the lesser
+            // of the two: a column that keeps its place and hides the ends of
+            // its long lines is still a column you can read down.
+            //
             // Read for colour here, every frame, rather than once when the
             // clash is loaded: this view keeps nothing between frames. It is
             // the cheaper half of what this loop already does -- every line
@@ -347,7 +367,7 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
             // scrolls down to it, and that is what costs.
             let painted = syntax::read(text, path);
 
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .id_salt(("version", label))
                 .max_height(ui.available_height() - 20.0)
                 .auto_shrink([false, false])
