@@ -34,8 +34,8 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Join, Move, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
-    Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, StashEntry, Tracking, WorkingState,
-    Worktree,
+    Oid, PullMode, PullRequests, RefEntry, RefKind, Repo, Settings, StashEntry, Tracking,
+    WorkingState, Worktree,
 };
 
 /// How wide the repository menu is, measured inside its frame.
@@ -145,6 +145,10 @@ struct App {
     /// A folder being chosen in the desktop's own dialog, and which box the
     /// answer belongs in.
     browsing: Option<(bool, std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>>>)>,
+    /// What somebody has said they prefer. It is about this computer, not
+    /// about a repository, so it is held here and lent to whichever tab is
+    /// on top rather than being a copy per tab that would drift apart.
+    settings: Settings,
 }
 
 /// A repository being brought down, and where it is going.
@@ -165,6 +169,7 @@ impl App {
             glance: std::collections::HashMap::new(),
             cloning: None,
             browsing: None,
+            settings: Settings::load(),
         };
         app.remember(0);
         app
@@ -571,7 +576,7 @@ impl eframe::App for App {
             true => self.picker(ctx),
             false => {
                 if let Some(open) = self.open.get_mut(self.at) {
-                    open.draw(ctx);
+                    open.draw(ctx, &mut self.settings);
                 }
             }
         }
@@ -2632,8 +2637,8 @@ impl Open {
 
 impl Open {
     /// Everything this repository draws, in the order it is drawn.
-    fn draw(&mut self, ctx: &egui::Context) {
-        self.top_bar(ctx);
+    fn draw(&mut self, ctx: &egui::Context, settings: &mut Settings) {
+        self.top_bar(ctx, settings);
         self.confirm_dialog(ctx);
         self.note_dialog(ctx);
         self.name_dialog(ctx);
@@ -2775,6 +2780,7 @@ impl Open {
                         self.bring.take(),
                         on_branch.then_some(self.head.as_str()),
                         self.job.is_some(),
+                        settings.waves,
                     );
                     if let Some(oid) = asked.show {
                         self.select_commit(oid);
@@ -3013,7 +3019,7 @@ impl Open {
 }
 
 impl Open {
-    fn top_bar(&mut self, ctx: &egui::Context) {
+    fn top_bar(&mut self, ctx: &egui::Context, settings: &mut Settings) {
         egui::TopBottomPanel::top(egui::Id::new(("bar", self.salt)))
             .frame(
                 egui::Frame::NONE
@@ -3052,12 +3058,29 @@ impl Open {
                     );
 
                     let mut reload = false;
+                    // Taken out and put back rather than lent to the closure:
+                    // the closure already holds the rest of us.
+                    let mut waves = settings.waves;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         reload = ui
                             .add_enabled(self.job.is_none(), egui::Button::new("↻"))
                             .on_hover_text("Reload")
                             .clicked();
+                        ui.add_space(6.0);
+                        ui.toggle_value(&mut waves, "Waves")
+                            .on_hover_text("The wave the pointer leaves in the graph");
                     });
+
+                    if waves != settings.waves {
+                        settings.waves = waves;
+                        // Said out loud only when it fails. A preference that
+                        // cannot be written down is one that will be back on
+                        // tomorrow, and finding that out tomorrow is worse
+                        // than being told now.
+                        if let Err(err) = settings.save() {
+                            self.note_error(format!("could not remember that: {err:#}"));
+                        }
+                    }
 
                     if let Some(action) = action {
                         self.act(action);

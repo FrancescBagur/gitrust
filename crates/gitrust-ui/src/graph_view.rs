@@ -153,6 +153,10 @@ pub fn show(
     bring: Option<usize>,
     head: Option<&str>,
     busy: bool,
+    // Whether the pointer leaves a wave behind. Off, the graph is drawn the
+    // way it was before there was one: straight lanes, a flat band under the
+    // row, and no frames asked for.
+    waves: bool,
 ) -> Asked {
     if graph.rows.is_empty() {
         theme::empty(ui, "Open a repository to see its history");
@@ -223,8 +227,12 @@ pub fn show(
 
             // Every tap still ringing, which is usually none and at most a
             // handful. Asked for once a frame, here, because it is also what
-            // lands the new one.
-            let waves = ripple::waves(ui, egui::Id::new("graph-waves"), hovered);
+            // lands the new one. Turned off, nothing is asked for and nothing
+            // is remembered, so the graph costs what it always did.
+            let ringing = match waves {
+                true => ripple::waves(ui, egui::Id::new("graph-waves"), hovered),
+                false => Vec::new(),
+            };
 
             // The menu is about the row the pointer was on when it opened,
             // not wherever it has wandered to since, so which row that was is
@@ -274,7 +282,7 @@ pub fn show(
             // height its bend runs away from. A tap on a row that is no
             // longer there -- the repository was read again under us -- is
             // dropped rather than carried as a lane it never belonged to.
-            let struck: Vec<(usize, usize, f32, f32)> = waves
+            let struck: Vec<(usize, usize, f32, f32)> = ringing
                 .iter()
                 .filter(|(row, _)| *row < graph.rows.len())
                 .map(|(row, age)| (*row, graph.rows[*row].lane, row_y(*row), *age))
