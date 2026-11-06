@@ -5,6 +5,14 @@
 //! the right, so that clicking in the graph shows the diff without changing
 //! screen.
 
+// On Windows a program is either a console program or a window program, and
+// the default is the console one: a black terminal opens behind the window
+// and sits there for as long as the window is up. Released builds say they
+// are a window; a debug build keeps the console, because that is where a
+// panic goes and losing it is losing the one thing worth reading. Ignored
+// everywhere else.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod action_bar;
 mod board_view;
 mod changes_view;

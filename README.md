@@ -291,8 +291,26 @@ With no argument it opens the repository in the current directory.
 
 ## Installing
 
-To have it on the desktop like any other program -- on the path, in the
-launcher, with its icon:
+Every release carries a file for each of the three systems, built by the
+machine that runs the tests, from the tag and nothing else:
+
+| | |
+|---|---|
+| Debian, Ubuntu, Pop!_OS | the `.deb` |
+| Any other Linux | the `.tar.gz`, then `packaging/install.sh --no-build` from inside it |
+| macOS, Apple or Intel | the `.zip`: drag `Gitrust.app` to Applications |
+| Windows | the `.zip`: the `.exe` runs from wherever you put it |
+
+**None of it is signed.** There is no paid certificate behind these files,
+so macOS will say the developer cannot be verified -- right-click, Open,
+Open again, once -- and Windows may put a blue sheet in front of it. The
+`SHA256SUMS` beside them says what you downloaded is what was built; it says
+nothing about who built it, which is what signing is for and what there is
+none of yet. Saying so here costs nothing and leaving it to be discovered
+costs more than it saves.
+
+To build it yourself and have it on the desktop like any other program --
+on the path, in the launcher, with its icon:
 
 ```bash
 ./packaging/install.sh

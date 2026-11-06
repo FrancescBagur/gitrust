@@ -15,6 +15,14 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 prefix=${PREFIX:-$HOME/.local}
 binary=$here/target/release/gitrust
 
+# In a clone the binary is where cargo leaves it. In the tarball from a
+# release there is no target/ at all and the binary sits at the top, beside
+# packaging/ and assets/. Both are taken, so that the one command printed in
+# the release notes is the command that works.
+if [[ ! -x $binary && -x $here/gitrust ]]; then
+    binary=$here/gitrust
+fi
+
 if [[ ${1:-} == --no-build ]]; then
     [[ -x $binary ]] || { echo "there is no binary at $binary"; exit 1; }
 else

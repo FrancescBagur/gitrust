@@ -1,0 +1,224 @@
+# Builds something to download, for each of the three systems.
+#
+# Pushing a tag like v0.1.0 builds everything and publishes a release with
+# the files attached. Running it by hand builds the same files and leaves
+# them as artifacts of the run, so the packaging can be changed and checked
+# without naming a version that then exists forever.
+#
+# None of what comes out of here is signed. That is said plainly in the
+# release notes rather than left for somebody to discover: macOS will refuse
+# to open the app the first time and Windows will put a blue sheet in front
+# of the installer. Signing means a paid certificate from each of the two,
+# and until there is one, telling people the truth costs nothing and being
+# vague costs their trust.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libssl-dev zlib1g-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # The .deb, built by the same script anybody can run on their own
+      # machine. Nothing is done here that is not done there.
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          ./packaging/deb.sh --no-build
+
+          # And a plain folder, for every distribution that is not Debian's:
+          # the binary, the entry, the icons, and the script that puts them
+          # where the desktop looks.
+          out=gitrust-$version-linux-x86_64
+          mkdir -p "$out"
+          cp target/release/gitrust README.md LICENSE "$out/"
+          cp -r packaging assets "$out/"
+          rm -rf "$out/assets/source"
+          tar -czf "$out.tar.gz" "$out"
+
+          mkdir -p out
+          mv "$out.tar.gz" target/gitrust_*.deb out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # One binary that runs on both kinds of Mac. The runner is an Apple
+      # one, so without this an Intel Mac gets a file it cannot execute and
+      # no explanation of why.
+      - name: Build for both architectures
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin
+          lipo -create -output gitrust \
+            target/x86_64-apple-darwin/release/gitrust \
+            target/aarch64-apple-darwin/release/gitrust
+          lipo -info gitrust
+
+      # A .app is a folder with a plist in it and a name ending in .app.
+      # Without one there is nothing to double-click and nothing to drag to
+      # Applications, which is the only way anybody installs anything here.
+      - name: Bundle
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          app=Gitrust.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          mv gitrust "$app/Contents/MacOS/gitrust"
+
+          # The icon, in the one format macOS reads. The sizes it asks for
+          # are the ones assets/ already has; the @2x of a size is just the
+          # next size up, which is what @2x means.
+          mkdir gitrust.iconset
+          cp assets/icon-16.png  gitrust.iconset/icon_16x16.png
+          cp assets/icon-32.png  gitrust.iconset/icon_16x16@2x.png
+          cp assets/icon-32.png  gitrust.iconset/icon_32x32.png
+          cp assets/icon-64.png  gitrust.iconset/icon_32x32@2x.png
+          cp assets/icon-128.png gitrust.iconset/icon_128x128.png
+          cp assets/icon-256.png gitrust.iconset/icon_128x128@2x.png
+          cp assets/icon-256.png gitrust.iconset/icon_256x256.png
+          cp assets/icon.png     gitrust.iconset/icon_256x256@2x.png
+          cp assets/icon.png     gitrust.iconset/icon_512x512.png
+          iconutil -c icns gitrust.iconset -o "$app/Contents/Resources/gitrust.icns"
+
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Gitrust</string>
+            <key>CFBundleDisplayName</key><string>Gitrust</string>
+            <key>CFBundleExecutable</key><string>gitrust</string>
+            <key>CFBundleIdentifier</key><string>io.coffeesoftware.gitrust</string>
+            <key>CFBundleIconFile</key><string>gitrust</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          mkdir -p out
+          # zip, keeping the symlinks and the executable bit a .app needs.
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app" "out/gitrust-$version-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          out=gitrust-$version-windows-x86_64
+          mkdir -p "$out"
+          cp target/release/gitrust.exe README.md LICENSE "$out/"
+          mkdir -p out
+          7z a "out/$out.zip" "$out" >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+
+  # Only when a version was named. A run started by hand leaves its files on
+  # the run and publishes nothing, which is what makes it safe to use for
+  # trying a change to the packaging.
+  publish:
+    name: Publish
+    needs: [linux, macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+
+      - name: Gather
+        run: |
+          mkdir -p out
+          find files -type f -exec mv {} out/ \;
+          ( cd out && sha256sum * > SHA256SUMS )
+          ls -l out
+
+      # gh is on the runner already: no action from anybody else is needed
+      # to make a release, and this keeps the list of things that can go
+      # wrong here as short as the list of things in Cargo.toml.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Which file
+
+          - **Debian, Ubuntu, Pop!_OS and the rest of that family** -- the
+            `.deb`. It puts gitrust on the menu with its icon.
+          - **Any other Linux** -- the `.tar.gz`, then `packaging/install.sh
+            --no-build` from inside it, which installs into `~/.local` and
+            needs no root.
+          - **macOS**, Apple or Intel -- the `.zip`. Drag Gitrust.app to
+            Applications.
+          - **Windows** -- the `.zip`. There is no installer: the `.exe`
+            runs from wherever you put it.
+
+          ## None of this is signed
+
+          There is no paid certificate behind these files, so:
+
+          - **macOS** will say the app "cannot be opened because the
+            developer cannot be verified". Right-click it, choose Open, and
+            then Open again in the sheet that follows. That is needed once.
+          - **Windows** may show a blue "Windows protected your PC" sheet.
+            More info, then Run anyway.
+
+          `SHA256SUMS` is there to check that what you downloaded is what
+          was built. It says nothing about who built it, and it cannot: that
+          is what signing is for, and there is none yet.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md
