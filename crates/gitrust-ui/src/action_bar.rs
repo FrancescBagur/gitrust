@@ -70,7 +70,19 @@ pub fn show(
     let mut action = None;
 
     ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        // Two gaps, and the difference between them is the whole of what says
+        // which caret belongs to which button. A split control is one thing
+        // with two halves: its caret sits a hair from its own button and a
+        // clear step from the next control.
+        //
+        // The spacing in force when a widget is placed is the gap that opens
+        // *after* it, not before it. Set a pixel and then draw the caret and
+        // it is the caret that ends up glued to whatever comes next -- which
+        // is what was happening: every caret hung off the button to its
+        // right, and said so plainly, while the menu under it belonged to
+        // the one on its left.
+        const PAIRED: f32 = 1.0;
+        const APART: f32 = 14.0;
 
         let behind = tracking.map(|t| t.behind).unwrap_or(0);
         let ahead = tracking.map(|t| t.ahead).unwrap_or(0);
@@ -79,30 +91,28 @@ pub fn show(
         // pushing you can do, and that is exactly how one gets created.
         // The rectangle is kept because the menu behind the caret hangs from
         // the pair, not from the caret: see `anchored`.
+        ui.spacing_mut().item_spacing.x = PAIRED;
         let pull = count_button(ui, "↓ Pull", behind, tracking.is_some() && !busy)
             .on_hover_text(pull_hint(tracking, *mode));
         if pull.clicked() {
             action = Some(Action::Pull(*mode));
         }
 
-        ui.spacing_mut().item_spacing.x = 1.0;
+        ui.spacing_mut().item_spacing.x = APART;
         if let Some(other) = pull_menu(ui, busy, mode, pull.rect) {
             action = Some(other);
         }
-        ui.spacing_mut().item_spacing.x = 4.0;
 
+        ui.spacing_mut().item_spacing.x = PAIRED;
         let push = count_button(ui, "↑ Push", ahead, !busy).on_hover_text(push_hint(tracking));
         if push.clicked() {
             action = Some(Action::Push);
         }
 
-        // The caret sits flush against the button: it is one control with two
-        // positions, and what is behind it is not pressed in passing.
-        ui.spacing_mut().item_spacing.x = 1.0;
+        ui.spacing_mut().item_spacing.x = APART;
         if let Some(other) = push_menu(ui, busy, push.rect) {
             action = Some(other);
         }
-        ui.spacing_mut().item_spacing.x = 4.0;
 
         if let Some(name) = branch_menu(ui, busy, &mut draft.branch) {
             action = Some(Action::Branch(name));
