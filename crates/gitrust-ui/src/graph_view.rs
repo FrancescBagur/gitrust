@@ -278,6 +278,22 @@ pub fn show(
             let lane_x = |lane: usize| lanes_left + GUTTER + lane as f32 * LANE_W + LANE_W / 2.0;
             let row_y = |row: usize| rect.top() + row as f32 * row_h + row_h / 2.0;
 
+            // Where the string was plucked: the one lane that bends, and the
+            // height the bend runs away from. Everything else in the graph
+            // holds still, or the wave would say nothing about which commit
+            // the pointer is on.
+            let struck_at = hovered.map(|index| (graph.rows[index].lane, row_y(index)));
+            let bending = |lane: usize| {
+                struck.is_some() && struck_at.is_some_and(|(hit, _)| hit == lane)
+            };
+            let sway = |lane: usize, y: f32| match (struck, struck_at) {
+                (Some(age), Some((hit, from))) if hit == lane => {
+                    ripple::sway(age, (y - from).abs())
+                }
+                _ => 0.0,
+            };
+            let lane_at = |lane: usize, y: f32| Pos2::new(lane_x(lane) + sway(lane, y), y);
+
             let text_left = lanes_left + graph_w;
             let columns = Columns::for_width(text_left, rect.right());
 
@@ -351,12 +367,24 @@ pub fn show(
                     } else {
                         Stroke::new(LINE_W, theme::lane(link.color))
                     };
-                    let top = Pos2::new(lane_x(link.from), row_y(index));
-                    let bottom = Pos2::new(lane_x(link.to), row_y(index + 1));
+                    let top = lane_at(link.from, row_y(index));
+                    let bottom = lane_at(link.to, row_y(index + 1));
 
                     if dashed {
                         lanes_painter
                             .extend(Shape::dashed_line(&[top, bottom], stroke, DASH.0, DASH.1));
+                    } else if link.from == link.to && bending(link.from) {
+                        // The bend is sampled down the row instead of being
+                        // one segment: a snake drawn a row at a time is a
+                        // zigzag, because the swing between two rows is most
+                        // of a wave and the straight line cuts the corner.
+                        // The ends are the same points the rows above and
+                        // below start from, so it joins up.
+                        let joints = (0..=ripple::JOINTS).map(|joint| {
+                            let share = joint as f32 / ripple::JOINTS as f32;
+                            lane_at(link.from, top.y + (bottom.y - top.y) * share)
+                        });
+                        lanes_painter.add(Shape::line(joints.collect(), stroke));
                     } else if link.from == link.to {
                         lanes_painter.line_segment([top, bottom], stroke);
                     } else {
@@ -381,7 +409,9 @@ pub fn show(
                     (Some(age), Some(away)) => ripple::swell(age, away),
                     _ => 0.0,
                 };
-                let center = Pos2::new(lane_x(row.lane), row_y(index));
+                // The dot rides the bend: it is a bead on the string, not a
+                // mark pinned to the canvas behind it.
+                let center = lane_at(row.lane, row_y(index));
                 draw_commit(&lanes_painter, row, center, swell);
 
                 // The rings go out on the unclipped painter: the lane strip

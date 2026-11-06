@@ -4,10 +4,11 @@
 //! says only one thing: you are here. The graph can say more. A commit sits
 //! on a lane with its parents above it and its children below, and that is a
 //! line of connected things -- so the pointer landing on one is treated as a
-//! tap on a taut string: the dot it hits rings, and the ring travels a couple
-//! of rows up and down the history before it dies out.
+//! tap on a taut string. The lane bends and runs away up and down the
+//! history as a snake, smallest the further it gets from the hand; the dot
+//! it was struck at rings; and the dots the bend passes through ride it.
 //!
-//! Everything in here is over in under a second and then stops asking for
+//! Everything in here is over in a second and a bit and then stops asking for
 //! frames. An effect that keeps breathing for as long as the mouse rests
 //! somewhere stops being an answer to a movement and becomes a thing in the
 //! corner of the eye that has to be ignored, which is worse than no effect at
@@ -18,8 +19,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use crate::theme;
 
 /// How long the whole thing lasts. Past this nothing is moving any more, so
-/// it is also how long frames keep being asked for.
-pub const LIFE: f32 = 0.95;
+/// it is also how long frames keep being asked for. The snake is what sets
+/// it: it is the last thing still going.
+pub const LIFE: f32 = 1.5;
 
 // ── The rings going out ────────────────────────────────────────────────────
 
@@ -53,6 +55,36 @@ const CARRY: f32 = 0.45;
 /// How many rows away it is still worth drawing. Past the fourth what is
 /// left is under a tenth of a pixel.
 pub const CARRIES: usize = 4;
+
+// ── The snake running down the lane ───────────────────────────────────────
+
+/// How far sideways the lane is pushed where it was struck, in pixels. A
+/// lane is seventeen wide, so this is a bend of about a lane from side to
+/// side: as much as can be taken before the lane reads as having moved
+/// rather than as having been pushed.
+const SWAY: f32 = 8.0;
+/// How far up and down the history the snake runs, in rows. This is the
+/// "more to less": it stands tallest at the hand and tapers to nothing at
+/// the end of its reach, which is what makes it look like something being
+/// shaken from one end rather than a decoration laid over the lane.
+const LENGTH: f32 = 14.0;
+/// How long one bend is, in pixels. Four rows, so that three or four of them
+/// are in sight at once: fewer and it is a lane gone crooked, more and it is
+/// a vibration rather than a snake.
+const BEND: f32 = 115.0;
+/// How many times a second a point on the lane swings.
+const UNDULATION: f32 = 3.2;
+/// How fast the snake lays itself out from the dot, in pixels a second, and
+/// how soft its far end is while it does. It is not a pulse crawling away --
+/// the whole length is there inside a third of a second -- but it does not
+/// arrive everywhere in the same frame either, which would read as a switch
+/// being thrown rather than as something let loose.
+const ONSET: f32 = 1800.0;
+const ONSET_SOFT: f32 = 110.0;
+/// How many points a row's worth of lane is cut into while it is bending.
+/// A bend is four rows long, so this is near thirty points to a bend: past
+/// the number where another would show.
+pub const JOINTS: usize = 7;
 
 // ── The wash across the row ────────────────────────────────────────────────
 
@@ -116,6 +148,34 @@ pub fn swell(age: f32, away: usize) -> f32 {
     }
     let height = AMPLITUDE * CARRY.powi(away as i32) * (-age / DAMPING).exp();
     height * (std::f32::consts::TAU * TREMOR * age).sin()
+}
+
+/// How far sideways the lane is pushed, `along` pixels from where it was
+/// struck, at `age`.
+///
+/// Four things multiplied, and each of them is one sentence of the effect.
+/// The taper is the shape: tall at the hand, nothing at the far end. The
+/// laying-out is the snake arriving instead of being switched on. The
+/// fading is it giving up. And the sine is the snake itself -- its
+/// phase turns with time and lags with distance, which is the whole trick:
+/// every point swings the same way, each a little behind the one before it,
+/// and a line of swings out of step is a snake.
+pub fn sway(age: f32, along: f32) -> f32 {
+    let taper = 1.0 - along / (LENGTH * theme::ROW_H);
+    if taper <= 0.0 {
+        return 0.0;
+    }
+    let laid = ((age * ONSET - along) / ONSET_SOFT).clamp(0.0, 1.0);
+    let phase = std::f32::consts::TAU * (age * UNDULATION - along / BEND);
+
+    // Squared, and measured against the life rather than being an
+    // exponential's half-life, because this is the one thing that has to be
+    // exactly nothing by the time the last frame is asked for. An
+    // exponential is never quite zero, and a snake frozen mid-swing is just
+    // a lane drawn crooked.
+    let fading = (1.0 - age / LIFE).max(0.0);
+
+    SWAY * taper * laid * fading * fading * phase.sin()
 }
 
 /// The rings leaving a dot, which is the part that is actually a wave.
