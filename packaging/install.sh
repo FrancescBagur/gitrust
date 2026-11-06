@@ -53,3 +53,24 @@ case ":$PATH:" in
     *":$prefix/bin:"*) ;;
     *) echo "note: $prefix/bin is not on your PATH" ;;
 esac
+
+# The icon is on disk and correct, and the dock may still show the old one or
+# none at all. Panels read the icon theme once and keep what they found for
+# as long as they are running -- which, on a machine nobody reboots, is days.
+# The files above change nothing about that.
+#
+# Worth saying out loud because the alternative is somebody deciding the
+# package is broken. It is the last thing printed, so it is the thing still
+# on screen when they look at the dock and see nothing.
+cat <<'NOTE'
+
+If the icon does not appear, or the old one is still there, the desktop is
+showing you what it remembered. Restart its panel, or log out and back in:
+
+    GNOME on X11    Alt+F2, then r
+    COSMIC          pkill -x cosmic-panel
+    KDE             plasmashell --replace &
+    anything else   log out and back in
+
+Nothing is lost either way: a panel keeps no state worth keeping.
+NOTE
