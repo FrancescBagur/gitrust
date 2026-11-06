@@ -38,6 +38,19 @@ for yourself; nothing about how this was made is hidden.
 That is git's own history: five thousand commits across a thousand and
 fifteen references, drawn in nine hundred milliseconds.
 
+**The lanes answer the pointer.** A lane is a line held at both ends, and a
+line held at both ends is a string: touch a row and the lane it is on bends
+away from the touch and comes back, while rings go out from the commit under
+it. Two touches a few rows apart leave a lane carrying both, because a string
+does not forget the first one when it gets a second.
+
+![The graph answering the pointer](assets/screens/waves.gif)
+
+**Waves**, at the right-hand end of the bar beside Reload, turns it off --
+and off it the graph is drawn exactly the way it was before there was one:
+straight lanes, a flat band under the row, and not a frame asked for while
+nobody moves.
+
 ## What it looks like
 
 **The board is not stored anywhere.** The columns are worked out from the
@@ -156,7 +169,7 @@ crates/
     diff_view.rs    the shared painting of diff lines
 assets/             the art, and everything cut out of it
   source/           the three pictures as they were drawn
-  screens/          what it looks like running, for the pictures above
+  screens/          what it looks like running, and waves.gif of it in use
   make.py           how the cut-outs were made, so they can be made again
 packaging/          the desktop entry, and the scripts that put it in place
 ```
