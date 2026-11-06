@@ -5,3 +5,6 @@
 # Ours, not theirs: the plan for taking this public does not go public with
 # it. docs/launch.md stays on the machines of whoever is doing the work.
 /docs/launch.md
+
+# The drafts go with the plan: neither is the program.
+/docs/posts.md

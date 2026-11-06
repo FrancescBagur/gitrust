@@ -4,11 +4,34 @@
 
 > **Trust, protected. Code, eternal.**
 
-[![CI](https://github.com/Coffee-Software-SLU/gitrust/actions/workflows/ci.yml/badge.svg)](https://github.com/Coffee-Software-SLU/gitrust/actions/workflows/ci.yml)
+[![CI](https://github.com/FrancescBagur/gitrust/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancescBagur/gitrust/actions/workflows/ci.yml)
+[![Licence: AGPL v3](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
+
+> ### Your project board is already in your repository. gitrust just draws it.
+
+### [Download it](https://github.com/FrancescBagur/gitrust/releases/latest)
+
+A `.deb`, a Linux tarball, a Mac app and a Windows zip, built by the machine
+that runs the tests. [Which file, and what each one will
+warn you about.](#installing)
 
 A desktop Git client in Rust. The aim is to cover the day-to-day flow without
 depending on a commercial licence, starting with what is hardest to find free
-and well made: **the commit graph with every branch woven through it**.
+and well made: **the commit graph with every branch woven through it** -- and
+a board above it that is worked out from the branches rather than kept
+anywhere, so it travels with the repository and asks for no account, no
+server and nothing to sign up for.
+
+**Linux, for now.** It is built on macOS and on Windows by CI and has never
+been *run* on either, and there is no package for them yet. On Linux it is
+[three commands](#building), or one if you want it on the desktop with its
+icon.
+
+**It is written with Claude Code, deliberately and in the open.** The commit
+log is in prose, the comments say what the code gets wrong and cannot know,
+and [docs/assistant.md](docs/assistant.md) is the thinking about whether the
+assistant belongs *inside* gitrust as well. Read any of the three and judge
+for yourself; nothing about how this was made is hidden.
 
 ![The commit graph, reading git's own repository](assets/screens/graph.png)
 
@@ -291,15 +314,18 @@ With no argument it opens the repository in the current directory.
 
 ## Installing
 
-Every release carries a file for each of the three systems, built by the
-machine that runs the tests, from the tag and nothing else:
+Everything is on [the latest
+release](https://github.com/FrancescBagur/gitrust/releases/latest), built by
+the machine that runs the tests, from the tag and nothing else. Take one:
 
 | | |
 |---|---|
-| Debian, Ubuntu, Pop!_OS | the `.deb` |
+| Debian, Ubuntu, Pop!_OS | the `.deb`. Double-click it, or `sudo apt install ./gitrust_*.deb` |
 | Any other Linux | the `.tar.gz`, then `packaging/install.sh --no-build` from inside it |
 | macOS, Apple or Intel | the `.zip`: drag `Gitrust.app` to Applications |
-| Windows | the `.zip`: the `.exe` runs from wherever you put it |
+| Windows | the `.zip`: there is no installer, the `.exe` runs from wherever you put it |
+
+Whichever you took, `gitrust --version` says which one it is.
 
 **None of it is signed.** There is no paid certificate behind these files,
 so macOS will say the developer cannot be verified -- right-click, Open,
@@ -356,10 +382,41 @@ a disk path they walk the same road as a real remote — the refspecs, the fast
 forward, the branch that starts tracking another — without depending on there
 being a network or credentials.
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the long version. The short one: the
+most useful thing anybody can do right now is **run it on a Mac or on
+Windows**, because it is built on both and has never been opened on either.
+After that, the three-way conflict editor and the four holes at the bottom
+of the list above.
+
+Commits are signed off with `git commit -s` and the message is a sentence
+about what is now true, the way `git log` already reads. There is no CLA and
+there will not be one: nothing anybody sends here stops being theirs, and
+the consequence is that this cannot later be closed or sold, because a part
+of it would not be mine to sell.
+
 ## Licence
 
-GPL-3.0-only. The full text is in [LICENSE](LICENSE).
+AGPL-3.0-only. The full text is in [LICENSE](LICENSE).
 
-libgit2 is GPLv2 with a linking exception and the Rust crates are
-`MIT OR Apache-2.0`, so no dependency forced this choice: a tool made to stop
-paying for a licence should not be something anyone else can close.
+What that comes to in practice: use it for anything, at work or at home, and
+pay nothing. Change it and keep the change to yourself, and nothing is owed
+either. Hand the changed version to somebody else -- as a binary, as a
+package, or as a service they reach over a network -- and the source goes
+with it, under this same licence.
+
+That last one is why it is the Affero licence and not the plain GPL.
+`gitrust-core` is deliberately a library with no interface in it, so putting
+it behind a web page is the obvious way to make this closed again without
+ever distributing a thing. Section 13 says that counts as handing it over.
+
+Nobody is forbidden to sell it. Selling it *closed* is what is forbidden,
+and the two are not the same: a copy sold under this licence arrives with
+the source, and whoever paid for it may give that away to anybody. That is
+the whole of the protection, and it is enough.
+
+No dependency forced the choice. libgit2 is GPLv2 with a linking exception
+and the Rust crates are `MIT OR Apache-2.0`, so every licence was available:
+a tool made to stop paying for a licence should not be something anybody
+else can close.
