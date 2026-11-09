@@ -5,7 +5,7 @@
 > **Trust, protected. Code, eternal.**
 
 [![CI](https://github.com/FrancescBagur/gitrust/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancescBagur/gitrust/actions/workflows/ci.yml)
-[![Licence: AGPL v3](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
+[![Licence: GPL v3](https://img.shields.io/badge/licence-GPL--3.0-blue.svg)](LICENSE)
 
 > ### Your project board is already in your repository. gitrust just draws it.
 
@@ -413,18 +413,22 @@ of it would not be mine to sell.
 
 ## Licence
 
-AGPL-3.0-only. The full text is in [LICENSE](LICENSE).
+GPL-3.0-only. The full text is in [LICENSE](LICENSE).
 
 What that comes to in practice: use it for anything, at work or at home, and
 pay nothing. Change it and keep the change to yourself, and nothing is owed
-either. Hand the changed version to somebody else -- as a binary, as a
-package, or as a service they reach over a network -- and the source goes
-with it, under this same licence.
+either. Hand the changed version to somebody else, as a binary or as a
+package, and the source goes with it, under this same licence.
 
-That last one is why it is the Affero licence and not the plain GPL.
-`gitrust-core` is deliberately a library with no interface in it, so putting
-it behind a web page is the obvious way to make this closed again without
-ever distributing a thing. Section 13 says that counts as handing it over.
+It was the Affero licence for a day, on the argument that `gitrust-core` is a
+library with no interface in it and could therefore be put behind a web page
+without anything ever being distributed. True, and it protects less than it
+sounds: the part that makes this worth copying is about fifteen hundred lines
+and the idea behind them is explained at the top of this page, so anybody who
+wants that product will write it rather than fork it. What the Affero clause
+does reliably is keep the program off machines where somebody's policy bans
+those four letters -- and those are working developers, which is who this is
+for.
 
 Nobody is forbidden to sell it. Selling it *closed* is what is forbidden,
 and the two are not the same: a copy sold under this licence arrives with

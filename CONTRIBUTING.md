@@ -68,11 +68,15 @@ of it would no longer be mine to sell. That is the point.
 
 ## The licence, and what it means for a contribution
 
-AGPL-3.0-only. What you send goes out under it, same as everything else.
+GPL-3.0-only. What you send goes out under it, same as everything else.
 
-In practice that protects you more than it binds you: anybody who builds a
-business on top of this -- including a hosted one, which is what the Affero
-part is for -- hands the source back out, yours along with the rest.
+In practice that protects you more than it binds you: anybody who ships a
+changed version of this hands the source back out, yours along with the rest.
+
+There is no CLA, which has a consequence worth knowing before you send
+anything: you keep the copyright on what you wrote, and so the licence cannot
+be changed later without asking you. It is not ours to relicense out from
+under you, and that is the point.
 
 ## Commit messages
 
