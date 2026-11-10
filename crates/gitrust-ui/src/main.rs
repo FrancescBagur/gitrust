@@ -35,7 +35,7 @@ use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
     Join, Move, Oid, PullMode, PullRequests, Reader, RefEntry, RefKind, RemoteRepo, Repo, Settings,
-    StashEntry, Tracking, WorkingState, Worktree,
+    StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
 
 /// How wide the repository menu is, measured inside its frame.
@@ -1736,6 +1736,13 @@ impl Open {
         }
     }
 
+    fn run_remote(&mut self, op: impl FnOnce(&RemoteRepo) -> Result<()>) -> bool {
+        match self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(op) {
+            Ok(()) => { self.load(); true }
+            Err(err) => { self.note_error(format!("{err:#}")); false }
+        }
+    }
+
     /// Sends a slow operation off to a thread of its own.
     ///
     /// While it lasts the action bar goes dark altogether: queueing a push
@@ -2732,9 +2739,11 @@ impl Open {
                         .ok(),
                 };
             }
+            Action::Stage(path) if self.is_remote() => { self.run_remote(|repo| repo.stage(&path)); }
             Action::Stage(path) => {
                 self.run(|repo| repo.stage(&path));
             }
+            Action::Unstage(path) if self.is_remote() => { self.run_remote(|repo| repo.unstage(&path)); }
             Action::Unstage(path) => {
                 self.run(|repo| repo.unstage(&path));
             }
@@ -2780,10 +2789,18 @@ impl Open {
                     Deed::DiscardAll(paths),
                 );
             }
+            Action::StageAll if self.is_remote() => {
+                let paths: Vec<String> = self.work.unstaged.iter().map(|file| file.path.clone()).collect();
+                self.run_remote(|repo| repo.stage_all(&paths));
+            }
             Action::StageAll => {
                 let paths: Vec<String> =
                     self.work.unstaged.iter().map(|f| f.path.clone()).collect();
                 self.run(|repo| repo.stage_all(&paths));
+            }
+            Action::UnstageAll if self.is_remote() => {
+                let paths: Vec<String> = self.work.staged.iter().map(|file| file.path.clone()).collect();
+                self.run_remote(|repo| repo.unstage_all(&paths));
             }
             Action::UnstageAll => {
                 let paths: Vec<String> = self.work.staged.iter().map(|f| f.path.clone()).collect();
