@@ -2183,6 +2183,7 @@ impl Open {
         let discarded = match deed {
             Deed::Discard(path) if self.is_remote() => self.run_remote(|repo| repo.discard(&path)),
             Deed::Discard(path) => self.run(|repo| repo.discard(&path)),
+            Deed::DiscardHunk { path, hunk } if self.is_remote() => self.run_remote(|repo| repo.discard_hunk(&path, hunk)),
             Deed::DiscardHunk { path, hunk } => self.run(|repo| repo.discard_hunk(&path, hunk)),
             Deed::DiscardAll(paths) if self.is_remote() => self.run_remote(|repo| repo.discard_all(&paths)),
             Deed::DiscardAll(paths) => self.run(|repo| repo.discard_all(&paths)),
@@ -2749,14 +2750,14 @@ impl Open {
             Action::Unstage(path) => {
                 self.run(|repo| repo.unstage(&path));
             }
-            Action::StageHunk { .. } if self.is_remote() => {
-                self.note_error("remote hunk staging arrives next in this delivery".to_string());
+            Action::StageHunk { path, hunk } if self.is_remote() => {
+                self.run_remote(|repo| repo.stage_hunk(&path, hunk));
             }
             Action::StageHunk { path, hunk } => {
                 self.run(|repo| repo.stage_hunk(&path, hunk));
             }
-            Action::UnstageHunk { .. } if self.is_remote() => {
-                self.note_error("remote hunk unstaging arrives next in this delivery".to_string());
+            Action::UnstageHunk { path, hunk } if self.is_remote() => {
+                self.run_remote(|repo| repo.unstage_hunk(&path, hunk));
             }
             Action::UnstageHunk { path, hunk } => {
                 self.run(|repo| repo.unstage_hunk(&path, hunk));
