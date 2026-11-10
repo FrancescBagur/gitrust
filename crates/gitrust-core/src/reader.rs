@@ -16,6 +16,7 @@ pub trait Reader {
     fn references(&self) -> Result<Vec<RefEntry>>;
     fn status(&self) -> Result<WorkingState>;
     fn file_diff(&self, path: &str, staged: bool) -> Result<FileDiff>;
+    fn commit_file_diff(&self, oid: Oid, path: &str) -> Result<FileDiff>;
     fn commit_detail(&self, oid: Oid) -> Result<CommitDetail>;
 }
 
@@ -46,5 +47,9 @@ impl Reader for Repo {
 
     fn commit_detail(&self, oid: Oid) -> Result<CommitDetail> {
         Repo::commit_detail(self, oid)
+    }
+
+    fn commit_file_diff(&self, oid: Oid, path: &str) -> Result<FileDiff> {
+        Repo::commit_file_diff(self, oid, path)
     }
 }
