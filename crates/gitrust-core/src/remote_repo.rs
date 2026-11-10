@@ -82,6 +82,16 @@ impl RemoteRepo {
         self.session.command(&words)
     }
 
+    pub fn read_working_file(&self, path: &str) -> Result<Vec<u8>> {
+        anyhow::ensure!(!path.starts_with('/') && !path.split('/').any(|part| part == ".."), "remote file path escapes the checkout");
+        self.session.read_file(&format!("{}/{}", self.path.trim_end_matches('/'), path))
+    }
+
+    pub fn write_working_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        anyhow::ensure!(!path.starts_with('/') && !path.split('/').any(|part| part == ".."), "remote file path escapes the checkout");
+        self.session.write_file(&format!("{}/{}", self.path.trim_end_matches('/'), path), bytes)
+    }
+
     fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
         let mut labels = HashMap::new();
         let output = self.git(&["for-each-ref", "--format=%(objectname)%00%(refname)%00"])?;
