@@ -16,6 +16,11 @@ use crate::status::{staged_kind, unstaged_kind, ChangeKind, FileChange, WorkingS
 
 pub struct Repo {
     pub(crate) inner: Repository,
+    /// Who the window is working as, when somebody has said so. It is lent
+    /// to the repository on the way in and never read out of it: a profile
+    /// is about this machine, and a repository knows nothing about which of
+    /// its owner's several lives it belongs to.
+    pub(crate) profile: Option<crate::Profile>,
 }
 
 impl Repo {
@@ -25,7 +30,34 @@ impl Repo {
         let path = path.as_ref();
         let inner = Repository::discover(path)
             .with_context(|| format!("no Git repository at {}", path.display()))?;
-        Ok(Self { inner })
+        Ok(Self { inner, profile: None })
+    }
+
+    /// Works under a profile: its name on the commits it writes, its key on
+    /// the remotes it reaches, its accounts at the forges it asks.
+    ///
+    /// Said once, on the way in, rather than handed to each call that needs
+    /// it. A commit and the push a second later have to be the same person,
+    /// and an argument repeated on every call is an argument that one day
+    /// one of them is missing.
+    pub fn using(mut self, profile: Option<crate::Profile>) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    /// Who the commits are written as: the profile, or Git's own settings.
+    ///
+    /// The profile wins when it has both halves of a name, and otherwise
+    /// nothing changes -- which is what lets a profile exist for its key
+    /// alone and leave the name on the commits where it was.
+    pub(crate) fn who(&self) -> Result<git2::Signature<'static>> {
+        if let Some((name, email)) = self.profile.as_ref().and_then(crate::Profile::who) {
+            return git2::Signature::now(name, email)
+                .with_context(|| format!("'{name} <{email}>' is not a name Git will write"));
+        }
+        self.inner
+            .signature()
+            .context("set user.name and user.email in Git first, or work under a profile")
     }
 
     /// The path of the working tree, or of the repository itself if it is bare.
@@ -476,10 +508,7 @@ impl Repo {
         let message = message.trim();
         anyhow::ensure!(!message.is_empty(), "the commit message is empty");
 
-        let signature = self
-            .inner
-            .signature()
-            .context("set user.name and user.email in Git first")?;
+        let signature = self.who()?;
 
         let mut index = self.inner.index()?;
         let tree_id = index.write_tree()?;
@@ -517,10 +546,7 @@ impl Repo {
             .and_then(|head| head.peel_to_commit())
             .context("there is no commit to amend")?;
 
-        let committer = self
-            .inner
-            .signature()
-            .context("set user.name and user.email in Git first")?;
+        let committer = self.who()?;
 
         let mut index = self.inner.index()?;
         let tree = self.inner.find_tree(index.write_tree()?)?;

@@ -54,7 +54,7 @@ fn a_folder_with_anything_in_it_is_refused_and_left_alone() {
 fn a_clone_with_no_address_says_so_before_touching_the_disk() {
     let path = scratch("no-address");
 
-    let err = gitrust_core::start::clone("   ", &path).unwrap_err().to_string();
+    let err = gitrust_core::start::clone("   ", &path, None).unwrap_err().to_string();
     assert!(err.contains("no address"), "{err}");
     assert!(!path.exists(), "nothing was made");
 }
@@ -85,7 +85,7 @@ fn a_repository_cloned_from_a_folder_arrives_with_its_history() {
     repo.commit("feat: one").unwrap();
 
     let into = scratch("clone-into");
-    gitrust_core::start::clone(source.to_str().unwrap(), &into).unwrap();
+    gitrust_core::start::clone(source.to_str().unwrap(), &into, None).unwrap();
 
     let there = gitrust_core::Repo::open(into.to_str().unwrap()).expect("it opens");
     assert_eq!(there.commits(50).unwrap().len(), 1);

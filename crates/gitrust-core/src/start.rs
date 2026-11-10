@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use git2::{build::RepoBuilder, FetchOptions, RemoteCallbacks, Repository};
 
 use crate::remote::credentials;
+use crate::Profile;
 
 /// Makes an empty repository at a path.
 ///
@@ -38,17 +39,22 @@ pub fn init(path: &Path) -> Result<String> {
 ///
 /// It is the slowest thing in this crate by a wide margin, and the caller is
 /// expected to be running it somewhere that is not painting the window.
-pub fn clone(url: &str, into: &Path) -> Result<String> {
+///
+/// The profile is handed in rather than looked up, because this is the one
+/// thing here that happens before there is a repository to hang one on -- and
+/// the private repository of a client is exactly the kind that cannot be
+/// cloned without their key.
+pub fn clone(url: &str, into: &Path, profile: Option<Profile>) -> Result<String> {
     let url = url.trim();
     anyhow::ensure!(!url.is_empty(), "there is no address to clone from");
     guard(into)?;
 
     let mut callbacks = RemoteCallbacks::new();
-    // The same ladder as fetching and pushing: the agent first, then whatever
-    // the credential helper has. A clone over https from a public host asks
-    // for none of it and never calls this.
+    // The same ladder as fetching and pushing: the profile's key and token
+    // first, then the agent and whatever the credential helper has. A clone
+    // over https from a public host asks for none of it and never calls this.
     let config = git2::Config::open_default().context("could not read your Git configuration")?;
-    callbacks.credentials(credentials(config));
+    callbacks.credentials(credentials(config, profile));
 
     let mut fetch = FetchOptions::new();
     fetch.remote_callbacks(callbacks);

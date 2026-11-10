@@ -23,8 +23,29 @@ So the ones that matter are:
 - **Running something the user did not ask for.** gitrust shells out to `gh`
   for pull requests; anything that turns repository contents into a command
   is a hole.
-- **Writing outside the repository and `~/.local`**, which are the only two
-  places anything is ever written.
+- **Writing outside the repository, `~/.local` and `~/.config/gitrust`**,
+  which are the only places anything is ever written.
+
+## Where the tokens are
+
+A profile can hold a personal access token for GitHub or GitLab, and that
+token sits in `~/.config/gitrust/profiles` **in plain text**. The file is
+written `rw-------` before it is moved into place, so no other account on the
+machine can read it, and that is the whole of the protection: there is no
+keyring here, and encrypting it would only move the question to where the key
+to it is kept. It is the same bargain `~/.netrc` and `gh`'s own `hosts.yml`
+make, and it is written down here rather than left to be discovered. On
+Windows there is no mode to set and the file is protected by the permissions
+of the folder it is in and by nothing this program does.
+
+Leaving the token empty is a supported answer and not a half-configured one:
+then `gh` and `glab` are run as they are logged in, and an HTTPS remote gets
+its password from the credential helper, exactly as before profiles existed.
+
+An SSH key is never copied into that file -- only the path to it. A key with
+a passphrase cannot be opened from here at all, because there is nowhere to
+ask for the passphrase and nowhere safe to keep it; that key belongs in the
+SSH agent, which is what gitrust falls back to.
 
 ## What does not
 

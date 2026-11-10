@@ -218,7 +218,7 @@ impl Repo {
         let refused = std::cell::RefCell::new(None);
         {
             let mut callbacks = RemoteCallbacks::new();
-            callbacks.credentials(credentials(self.inner.config()?));
+            callbacks.credentials(credentials(self.inner.config()?, self.profile.clone()));
             callbacks.push_update_reference(|_, status| {
                 if let Some(reason) = status {
                     *refused.borrow_mut() = Some(reason.to_string());
@@ -365,7 +365,7 @@ impl Repo {
     /// What references the remote has right now.
     fn heads_of(&self, remote: &mut Remote<'_>) -> Result<HashMap<String, Oid>> {
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(credentials(self.inner.config()?));
+        callbacks.credentials(credentials(self.inner.config()?, self.profile.clone()));
 
         let connection = remote
             .connect_auth(Direction::Push, Some(callbacks), None)
@@ -385,7 +385,7 @@ impl Repo {
         let refused = std::cell::RefCell::new(None);
         {
             let mut callbacks = RemoteCallbacks::new();
-            callbacks.credentials(credentials(self.inner.config()?));
+            callbacks.credentials(credentials(self.inner.config()?, self.profile.clone()));
             callbacks.push_update_reference(|name, status| {
                 if let Some(reason) = status {
                     *refused.borrow_mut() = Some(format!("{name}: {reason}"));
@@ -432,7 +432,7 @@ impl Repo {
         let refused = std::cell::RefCell::new(None);
         {
             let mut callbacks = RemoteCallbacks::new();
-            callbacks.credentials(credentials(self.inner.config()?));
+            callbacks.credentials(credentials(self.inner.config()?, self.profile.clone()));
             callbacks.push_update_reference(|_, status| {
                 if let Some(reason) = status {
                     *refused.borrow_mut() = Some(reason.to_string());
@@ -492,7 +492,7 @@ impl Repo {
             .with_context(|| format!("no remote called '{name}'"))?;
 
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(credentials(self.inner.config()?));
+        callbacks.credentials(credentials(self.inner.config()?, self.profile.clone()));
 
         let mut options = FetchOptions::new();
         options.remote_callbacks(callbacks);
@@ -513,20 +513,61 @@ impl Repo {
     }
 }
 
-/// The credentials, in the same order `git` tries them: the SSH agent, whatever
-/// helper is configured, and the bare username for the SSH remotes that ask for
-/// it before anything else.
+/// The credentials, in the order `git` would try them, with the profile's own
+/// ahead of each: its key before the agent, its token for the host before the
+/// credential helper, and then the bare username for the SSH remotes that ask
+/// for one before anything else.
 ///
-/// Each route is tried once only. libgit2 calls back as long as it is not given
-/// something that works, so without keeping count this would go round for ever
-/// against a server that turns down the first key.
+/// The profile goes first and the usual route stays behind it, so a key that
+/// the server turns down -- the wrong client's key, on the right host -- falls
+/// through to the agent instead of ending the push. A profile that names
+/// neither key nor token changes nothing at all here.
+///
+/// Each route is tried once only. libgit2 calls back for as long as it is not
+/// given something that works, so without keeping count this would go round
+/// for ever against a server that says no.
 pub(crate) fn credentials(
     config: Config,
+    profile: Option<crate::Profile>,
 ) -> impl FnMut(&str, Option<&str>, CredentialType) -> Result<Cred, git2::Error> {
     let mut used = CredentialType::empty();
+    let mut key_tried = false;
+    let mut token_tried = false;
 
     move |url, username, allowed| {
         let user = username.unwrap_or("git");
+
+        // The profile's key, before the agent and only once. libgit2 wants
+        // the public half beside it when there is one; for the key types in
+        // use today it can work it out from the private half, so a missing
+        // `.pub` is not a missing key.
+        if allowed.contains(CredentialType::SSH_KEY) && !key_tried {
+            key_tried = true;
+            if let Some(key) = profile.as_ref().and_then(crate::Profile::key_file) {
+                let public = key.with_extension("pub");
+                let public = public.exists().then_some(public);
+                return Cred::ssh_key(user, public.as_deref(), &key, None);
+            }
+        }
+
+        // The profile's token for this host, before the helper and only
+        // once. An account with no token is an account whose forge tool is
+        // logged in on its own; there is nothing to hand over here.
+        if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) && !token_tried {
+            token_tried = true;
+            if let Some(account) = profile.as_ref().and_then(|profile| profile.account_for(url)) {
+                if !account.token.is_empty() {
+                    // With a token as the password the name beside it is not
+                    // checked by either forge, but it cannot be empty.
+                    let who = match account.user.trim().is_empty() {
+                        true => "oauth2",
+                        false => account.user.trim(),
+                    };
+                    return Cred::userpass_plaintext(who, &account.token);
+                }
+            }
+        }
+
         let mut once = |kind: CredentialType| {
             let first = allowed.contains(kind) && !used.contains(kind);
             if first {
@@ -549,7 +590,8 @@ pub(crate) fn credentials(
         }
 
         Err(git2::Error::from_str(
-            "no credentials for this remote: try loading your key into the SSH agent",
+            "no credentials for this remote: load your key into the SSH agent, \
+             or give this profile the key and the token for it",
         ))
     }
 }

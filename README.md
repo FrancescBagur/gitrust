@@ -97,7 +97,8 @@ cherry-pick and an undo all stop here instead of being thrown away.
 - [x] A column of branches and tags to the left of the graph
 - [x] Search the history by message, author or hash
 - [x] A board of columns, worked out from the graph and storing nothing
-- [x] In review means a pull request is open, asked of the forge through `gh`
+- [x] In review means a pull request is open, asked of the forge through
+      `gh`, or of GitLab through `glab`
 - [x] A branch cut from a branch is a subtask: go into a card and there it is
 - [x] Dragging a card runs the operation that would have moved it
 - [x] A backlog everyone with the repository shares, kept in a reference
@@ -120,6 +121,8 @@ cherry-pick and an undo all stop here instead of being thrown away.
 - [x] Undo one hunk of an old commit, into the working tree
 - [x] Rewrite a run of commits: squash, fixup, reword, drop, reorder
 - [x] An icon, a name on the dock, and one command that installs it
+- [x] A profile per client: the name on the commits, the SSH key, and the
+      GitHub and GitLab accounts, switched from the tab strip
 - [ ] Three-way editor with line-by-line picking
 - [ ] Submodules, bisect, LFS, signing
 
@@ -144,6 +147,7 @@ crates/
     worktree.rs     the same repository checked out in several places
     start.rs        cloning one down, or starting an empty one
     known.rs        the repositories this machine has opened
+    profile.rs      who you are working as: the name, the key, the accounts
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
@@ -158,6 +162,7 @@ crates/
     action_bar.rs   pull, push, branch and stash
     refs_view.rs    the sidebar of branches, tags and checkouts
     picker.rs       choosing a repository, cloning one, starting one
+    profiles_view.rs the profiles, and which one is in use
     chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
@@ -279,10 +284,28 @@ The folders go beside the repository, never inside it.
 
 **The forge:** Git stores nothing about pull requests, so a branch that is
 merely pushed and one somebody is reviewing look alike from inside the
-repository. The board asks `gh` instead of guessing, on its own thread, the
-first time it is opened. Without `gh`, without a login, or on a remote that is
-not GitHub, nothing breaks: the board goes back to reading the graph alone and
-the header says so, because a column that is guessing should admit it.
+repository. The board asks the forge's own tool instead of guessing -- `gh`
+for GitHub, `glab` for GitLab -- on its own thread, the first time it is
+opened. Which of the two, and as whom, comes from the profile in use: the
+account whose host matches the remote's decides it. Without the tool, without
+a login, or on a remote that is on neither forge, nothing breaks: the board
+goes back to reading the graph alone and the header says so, because a column
+that is guessing should admit it.
+
+**Profiles:** one machine is often several people -- an employee in the
+morning, a contractor in the afternoon, two hosts, two keys, two accounts.
+The usual way of living with that is a pile of `includeIf` blocks in
+`.gitconfig` and an `~/.ssh/config` nobody dares touch. A profile is that
+pile named: a name for the commits, a private key for the remote, and an
+account per forge, switched from the end of the tab strip. Every part of it
+is optional, and an empty part means the answer that was there before --
+Git's own settings, the SSH agent, whatever `gh` is logged in as -- so a
+profile can exist for its key alone. It writes nothing into `.gitconfig` or
+`~/.ssh/config`: a program that rewrites the files other programs read is a
+program that breaks them while you are not looking. **The tokens are on the
+disk in plain text**, in a file written `rw-------`, which is the same
+bargain `~/.netrc` and `gh`'s own `hosts.yml` make; whoever is not content
+with it leaves the token empty and lets the forge's tool answer as itself.
 
 **The folder dialog:** the one dependency that was not part of the plan.
 Opening a repository meant typing its path, and the obvious fix was to run
@@ -317,6 +340,12 @@ Optional, for the board's pull requests:
 
 ```bash
 sudo apt install -y gh && gh auth login
+```
+
+And for a repository on GitLab, `glab` in the same place:
+
+```bash
+sudo apt install -y glab && glab auth login
 ```
 
 Then:

@@ -481,11 +481,6 @@ impl Repo {
         names.first().map(|name| name.to_string())
     }
 
-    pub(crate) fn who(&self) -> Result<Signature<'_>> {
-        self.inner
-            .signature()
-            .context("set user.name and user.email in Git first")
-    }
 }
 
 #[cfg(test)]

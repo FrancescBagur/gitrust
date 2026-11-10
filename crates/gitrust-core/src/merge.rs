@@ -92,10 +92,7 @@ impl Repo {
 
         let tree = index.write_tree_to(&self.inner)?;
         let tree = self.inner.find_tree(tree)?;
-        let signature = self
-            .inner
-            .signature()
-            .context("set user.name and user.email in Git first")?;
+        let signature = self.who()?;
 
         self.inner.commit(
             Some(&refname),
@@ -301,10 +298,7 @@ impl Repo {
             .with_context(|| format!("no branch called '{upstream}'"))?;
         let onto = self.inner.reference_to_annotated_commit(&onto)?;
 
-        let signature = self
-            .inner
-            .signature()
-            .context("set user.name and user.email in Git first")?;
+        let signature = self.who()?;
 
         let mut rebase = self.inner.rebase(Some(&branch), Some(&onto), None, None)?;
         self.replay(&mut rebase, &signature, 0)
@@ -326,10 +320,7 @@ impl Repo {
 
         self.nothing_left_to_decide()?;
 
-        let signature = self
-            .inner
-            .signature()
-            .context("set user.name and user.email in Git first")?;
+        let signature = self.who()?;
 
         // Reopening is what makes this possible at all: the rebase is not
         // held in memory between one press and the next, it is on disk in
