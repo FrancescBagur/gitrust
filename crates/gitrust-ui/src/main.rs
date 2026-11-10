@@ -2749,8 +2749,14 @@ impl Open {
             Action::Unstage(path) => {
                 self.run(|repo| repo.unstage(&path));
             }
+            Action::StageHunk { .. } if self.is_remote() => {
+                self.note_error("remote hunk staging arrives next in this delivery".to_string());
+            }
             Action::StageHunk { path, hunk } => {
                 self.run(|repo| repo.stage_hunk(&path, hunk));
+            }
+            Action::UnstageHunk { .. } if self.is_remote() => {
+                self.note_error("remote hunk unstaging arrives next in this delivery".to_string());
             }
             Action::UnstageHunk { path, hunk } => {
                 self.run(|repo| repo.unstage_hunk(&path, hunk));
@@ -2824,6 +2830,14 @@ impl Open {
                     self.drop_amend();
                 }
             }
+            Action::Amend if self.is_remote() => {
+                let message = compose(&self.subject, &self.body);
+                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(|repo| repo.amend(&message));
+                match result {
+                    Ok(oid) => { self.saved = None; self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.detail_file = None; self.load(); self.said("last remote commit redone".to_string()); }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                }
+            }
             Action::Amend => {
                 let message = compose(&self.subject, &self.body);
                 match self.repo().and_then(|repo| repo.amend(&message)) {
@@ -2838,6 +2852,14 @@ impl Open {
                         self.load();
                         self.said("last commit redone".to_string());
                     }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                }
+            }
+            Action::Commit if self.is_remote() => {
+                let message = compose(&self.subject, &self.body);
+                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(|repo| repo.commit(&message));
+                match result {
+                    Ok(oid) => { self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.detail_file = None; self.load(); self.said(format!("commit created on {}", self.head)); }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
@@ -3178,8 +3200,12 @@ impl Open {
                     }
                 }
                 View::Changes => {
-                    let read_only = self.is_remote();
-                    let (amendable, pushed) = self.amend_state();
+                    let read_only = false;
+                    let (amendable, pushed) = if self.is_remote() {
+                        (!self.graph.rows.is_empty(), None)
+                    } else {
+                        self.amend_state()
+                    };
                     let selected = self
                         .selected
                         .as_ref()
