@@ -478,4 +478,22 @@ mod tests {
         assert_eq!(file.path, "new name.txt");
         assert_eq!(file.kind, ChangeKind::Renamed);
     }
+
+    #[test]
+    fn binary_patches_are_not_read_as_empty_text_diffs() {
+        let diff = parse_diff("logo.png", "diff --git a/logo.png b/logo.png\nGIT binary patch\nliteral 4\n")
+            .unwrap();
+        assert!(diff.binary);
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn detached_history_does_not_invent_a_head_label() {
+        let id = "0123456789012345678901234567890123456789";
+        let row = format!("{id}\x1f0123456\x1fAna\x1f42\x1f\x1fdetached commit");
+        let commit = remote_commit(&row, &HashMap::new(), "detached HEAD").unwrap();
+        assert_eq!(commit.id.to_string(), id);
+        assert!(commit.refs.is_empty());
+        assert_eq!(commit.summary, "detached commit");
+    }
 }
