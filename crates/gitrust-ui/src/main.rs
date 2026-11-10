@@ -916,10 +916,19 @@ enum Deed {
 
 impl Open {
     fn new(path: String, salt: u64) -> Self {
+        Self::with_backend(path, salt, None)
+    }
+
+    fn new_remote(remote: RemoteRepo, salt: u64) -> Self {
+        let path = remote.location();
+        Self::with_backend(path, salt, Some(remote))
+    }
+
+    fn with_backend(path: String, salt: u64, remote: Option<RemoteRepo>) -> Self {
         let mut app = Self {
             salt,
             path,
-            remote: None,
+            remote,
             elsewhere: None,
             head: String::new(),
             summary: String::new(),
@@ -976,18 +985,6 @@ impl Open {
         if let Ok(shot) = std::env::var("GITRUST_SHOT") {
             app.pose(&shot);
         }
-        app
-    }
-
-    fn new_remote(remote: RemoteRepo, salt: u64) -> Self {
-        // Build the ordinary per-tab UI state once, then replace its local
-        // backend before its first useful load.
-        let mut app = Self::new(".".to_string(), salt);
-        app.path = remote.location();
-        app.remote = Some(remote);
-        app.status.clear();
-        app.status_failed = false;
-        app.load();
         app
     }
 
