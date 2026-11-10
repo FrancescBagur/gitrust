@@ -7,13 +7,67 @@ use git2::Oid;
 
 use crate::{
     ssh::Session, ChangeKind, Commit, CommitDetail, CommitFile, DiffLine, FileChange, FileDiff,
-    Hunk, HunkId, Reader, RefEntry, RefKind, RefLabel, WorkingState,
+    Hunk, HunkId, Reader, RefEntry, RefKind, RefLabel, WorkingState, Writer,
 };
 
 /// A remote checkout. Its session remains open for as long as this value does.
 pub struct RemoteRepo {
     session: Session,
     path: String,
+}
+
+impl Writer for RemoteRepo {
+    fn stage(&self, path: &str) -> Result<()> {
+        self.git(&["add", "--", path]).map(|_| ())
+    }
+
+    fn unstage(&self, path: &str) -> Result<()> {
+        self.git(&["restore", "--staged", "--", path]).map(|_| ())
+    }
+
+    fn discard(&self, path: &str) -> Result<()> {
+        if self.git(&["ls-files", "-z", "--", path])?.is_empty() {
+            self.git(&["clean", "-f", "--", path]).map(|_| ())
+        } else {
+            self.git(&["restore", "--worktree", "--", path]).map(|_| ())
+        }
+    }
+
+    fn stage_all(&self, paths: &[String]) -> Result<()> {
+        for path in paths { self.stage(path)?; }
+        Ok(())
+    }
+
+    fn unstage_all(&self, paths: &[String]) -> Result<()> {
+        for path in paths { self.unstage(path)?; }
+        Ok(())
+    }
+
+    fn discard_all(&self, paths: &[String]) -> Result<()> {
+        for path in paths { self.discard(path)?; }
+        Ok(())
+    }
+
+    fn commit(&self, message: &str) -> Result<Oid> {
+        let message = message.trim();
+        anyhow::ensure!(!message.is_empty(), "the commit message is empty");
+        self.git(&["commit", "-m", message])?;
+        self.head_oid()
+    }
+
+    fn amend(&self, message: &str) -> Result<Oid> {
+        let message = message.trim();
+        anyhow::ensure!(!message.is_empty(), "the commit message is empty");
+        self.git(&["commit", "--amend", "-m", message])?;
+        self.head_oid()
+    }
+}
+
+impl RemoteRepo {
+    fn head_oid(&self) -> Result<Oid> {
+        Oid::from_str(self.git(&["rev-parse", "HEAD"] )?.trim())
+            .context("remote Git returned an invalid HEAD")
+    }
 }
 
 impl RemoteRepo {
