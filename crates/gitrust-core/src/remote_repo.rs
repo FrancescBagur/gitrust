@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{ssh::Session, ChangeKind, Commit, FileChange, Reader, RefEntry, RefKind, RefLabel, WorkingState};
+use crate::{ssh::Session, ChangeKind, Commit, DiffLine, FileChange, FileDiff, Hunk, HunkId, Reader, RefEntry, RefKind, RefLabel, WorkingState};
 
 /// A remote checkout. Its session remains open for as long as this value does.
 pub struct RemoteRepo {
@@ -85,6 +85,57 @@ impl Reader for RemoteRepo {
         let output = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
         Ok(remote_status(&output))
     }
+
+    fn file_diff(&self, path: &str, staged: bool) -> Result<FileDiff> {
+        let mut arguments = vec!["diff", "--no-ext-diff", "--unified=3"];
+        if staged { arguments.push("--cached"); }
+        arguments.extend(["--", path]);
+        parse_diff(path, &self.git(&arguments)?)
+    }
+}
+
+fn parse_diff(path: &str, text: &str) -> Result<FileDiff> {
+    let mut diff = FileDiff { path: path.to_string(), ..Default::default() };
+    if text.contains("Binary files ") { diff.binary = true; return Ok(diff) }
+    let mut current: Option<Hunk> = None;
+    let mut old = 0;
+    let mut new = 0;
+    for line in text.lines() {
+        if line.starts_with("@@ ") {
+            if let Some(hunk) = current.take() { diff.hunks.push(hunk); }
+            let id = hunk_id(line)?;
+            old = id.old_start;
+            new = id.new_start;
+            current = Some(Hunk { header: line.to_string(), id, lines: Vec::new() });
+            continue;
+        }
+        let Some(hunk) = current.as_mut() else { continue };
+        let Some(origin) = line.chars().next() else { continue };
+        if !matches!(origin, ' ' | '+' | '-') { continue }
+        let (old_lineno, new_lineno) = match origin {
+            ' ' => { let pair = (Some(old), Some(new)); old += 1; new += 1; pair }
+            '-' => { let number = Some(old); old += 1; (number, None) }
+            '+' => { let number = Some(new); new += 1; (None, number) }
+            _ => unreachable!(),
+        };
+        hunk.lines.push(DiffLine { origin, content: line[1..].to_string(), old_lineno, new_lineno });
+    }
+    if let Some(hunk) = current { diff.hunks.push(hunk); }
+    Ok(diff)
+}
+
+fn hunk_id(header: &str) -> Result<HunkId> {
+    let mut pieces = header.split_whitespace();
+    let old = pieces.nth(1).context("remote Git returned a malformed hunk")?;
+    let new = pieces.next().context("remote Git returned a malformed hunk")?;
+    let (old_start, old_lines) = hunk_range(old.trim_start_matches('-'))?;
+    let (new_start, new_lines) = hunk_range(new.trim_start_matches('+'))?;
+    Ok(HunkId { old_start, old_lines, new_start, new_lines })
+}
+
+fn hunk_range(range: &str) -> Result<(u32, u32)> {
+    let (start, lines) = range.split_once(',').unwrap_or((range, "1"));
+    Ok((start.parse().context("remote Git returned an invalid hunk range")?, lines.parse().context("remote Git returned an invalid hunk range")?))
 }
 
 fn remote_status(output: &str) -> WorkingState {
@@ -171,5 +222,13 @@ mod tests {
         assert!(state.unstaged.iter().any(|change| change.path == "renamed.rs"));
         assert!(state.unstaged.iter().any(|change| change.path == "unstaged.rs"));
         assert!(state.unstaged.iter().any(|change| change.path == "new file"));
+    }
+
+    #[test]
+    fn unified_diff_keeps_line_numbers() {
+        let diff = parse_diff("note.txt", "diff --git a/note.txt b/note.txt\n@@ -2,2 +2,3 @@\n old\n-gone\n+new\n+last\n").unwrap();
+        assert_eq!(diff.hunks[0].id, HunkId { old_start: 2, old_lines: 2, new_start: 2, new_lines: 3 });
+        assert_eq!(diff.hunks[0].lines[1].old_lineno, Some(3));
+        assert_eq!(diff.hunks[0].lines[2].new_lineno, Some(3));
     }
 }

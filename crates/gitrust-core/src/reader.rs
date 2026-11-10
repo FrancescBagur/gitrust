@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::{Commit, RefEntry, Repo, WorkingState};
+use crate::{Commit, FileDiff, RefEntry, Repo, WorkingState};
 
 /// The part of a checkout that the history and refs views may read.
 pub trait Reader {
@@ -15,6 +15,7 @@ pub trait Reader {
     fn commits(&self, limit: usize) -> Result<Vec<Commit>>;
     fn references(&self) -> Result<Vec<RefEntry>>;
     fn status(&self) -> Result<WorkingState>;
+    fn file_diff(&self, path: &str, staged: bool) -> Result<FileDiff>;
 }
 
 impl Reader for Repo {
@@ -36,5 +37,9 @@ impl Reader for Repo {
 
     fn status(&self) -> Result<WorkingState> {
         Repo::status(self)
+    }
+
+    fn file_diff(&self, path: &str, staged: bool) -> Result<FileDiff> {
+        Repo::file_diff(self, path, staged)
     }
 }
