@@ -171,18 +171,16 @@ fn install_fonts(ctx: &egui::Context) {
 
 /// Leaves the context with the whole theme: fonts, colors and spacing.
 pub fn install(ctx: &egui::Context) {
+    // This application has one deliberate appearance. Selecting it before
+    // building the style means `apply` starts from egui's complete dark base,
+    // including values it does not need to customise (cursor and shadows).
+    ctx.set_theme(egui::ThemePreference::Dark);
     install_fonts(ctx);
     apply(ctx);
 }
 
-/// Reapplies the application palette before a frame is painted.
-///
-/// eframe starts its native window from the system appearance. Keeping the
-/// palette here, rather than accepting that initial appearance for widgets,
-/// makes text boxes, disabled controls and selectors use the same dark theme
-/// as the panels on every platform.
+/// Installs the application palette over egui's known dark base.
 pub fn apply(ctx: &egui::Context) {
-
     let mut style = (*ctx.style()).clone();
 
     // A short, deliberate scale. Thirteen to read, eleven for the data.
