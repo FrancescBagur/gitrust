@@ -2821,9 +2821,11 @@ impl Open {
                     // written is kept: taking the switch off has to give it
                     // back, not have lost it along the way.
                     self.saved = Some((self.subject.clone(), self.body.clone()));
-                    if let Some((subject, body)) =
-                        self.repo().ok().and_then(|repo| repo.head_message())
-                    {
+                    let message = match self.remote.as_ref() {
+                        Some(repo) => repo.head_message().ok(),
+                        None => self.repo().ok().and_then(|repo| repo.head_message()),
+                    };
+                    if let Some((subject, body)) = message {
                         self.subject = subject;
                         self.body = body;
                     }

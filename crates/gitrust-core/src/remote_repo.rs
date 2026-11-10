@@ -121,6 +121,13 @@ impl RemoteRepo {
         self.session.write_file(&format!("{}/{}", self.path.trim_end_matches('/'), path), bytes)
     }
 
+    pub fn head_message(&self) -> Result<(String, String)> {
+        let output = self.git(&["show", "--no-patch", "--format=%s%x1f%b", "HEAD"])?;
+        let (subject, body) = output.trim_end_matches('\n').split_once('\x1f')
+            .context("remote Git returned an incomplete commit message")?;
+        Ok((subject.to_string(), body.to_string()))
+    }
+
     fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
         let mut labels = HashMap::new();
         let output = self.git(&["for-each-ref", "--format=%(objectname)%00%(refname)%00"])?;
