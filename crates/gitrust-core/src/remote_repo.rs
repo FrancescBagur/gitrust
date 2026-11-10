@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{ssh::Session, ChangeKind, Commit, DiffLine, FileChange, FileDiff, Hunk, HunkId, Reader, RefEntry, RefKind, RefLabel, WorkingState};
+use crate::{ssh::Session, ChangeKind, Commit, CommitDetail, CommitFile, DiffLine, FileChange, FileDiff, Hunk, HunkId, Reader, RefEntry, RefKind, RefLabel, WorkingState};
 
 /// A remote checkout. Its session remains open for as long as this value does.
 pub struct RemoteRepo {
@@ -92,6 +92,32 @@ impl Reader for RemoteRepo {
         arguments.extend(["--", path]);
         parse_diff(path, &self.git(&arguments)?)
     }
+
+    fn commit_detail(&self, oid: Oid) -> Result<CommitDetail> {
+        let id = oid.to_string();
+        let output = self.git(&["show", "--no-patch", "--format=%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%ae%x1f%at%x1f%P", &id])?;
+        let fields: Vec<&str> = output.trim_end_matches('\n').split('\x1f').collect();
+        anyhow::ensure!(fields.len() == 8, "remote Git returned an incomplete commit detail");
+        let files = self.git(&["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", &id])?
+            .lines()
+            .filter_map(commit_file)
+            .collect();
+        Ok(CommitDetail {
+            id: Oid::from_str(fields[0]).context("remote Git returned an invalid commit id")?,
+            short_id: fields[1].to_string(), summary: fields[2].to_string(), body: fields[3].to_string(),
+            author: fields[4].to_string(), email: fields[5].to_string(),
+            time: fields[6].parse().context("remote Git returned an invalid commit time")?,
+            parents: fields[7].split_whitespace().filter_map(|parent| Oid::from_str(parent).ok()).collect(), files,
+        })
+    }
+}
+
+fn commit_file(line: &str) -> Option<CommitFile> {
+    let mut fields = line.split('\t');
+    let code = fields.next()?.chars().next()?;
+    let kind = match code { 'A' => ChangeKind::Added, 'D' => ChangeKind::Deleted, 'R' => ChangeKind::Renamed, 'T' => ChangeKind::TypeChange, _ => ChangeKind::Modified };
+    let path = fields.last()?.to_string();
+    Some(CommitFile { path, kind })
 }
 
 fn parse_diff(path: &str, text: &str) -> Result<FileDiff> {
@@ -230,5 +256,12 @@ mod tests {
         assert_eq!(diff.hunks[0].id, HunkId { old_start: 2, old_lines: 2, new_start: 2, new_lines: 3 });
         assert_eq!(diff.hunks[0].lines[1].old_lineno, Some(3));
         assert_eq!(diff.hunks[0].lines[2].new_lineno, Some(3));
+    }
+
+    #[test]
+    fn commit_file_uses_the_new_name_after_a_rename() {
+        let file = commit_file("R100\told.txt\tnew.txt").unwrap();
+        assert_eq!(file.path, "new.txt");
+        assert_eq!(file.kind, ChangeKind::Renamed);
     }
 }
