@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{Clash, Contents, Half, PullMode, RemoteRepo, StashEntry};
+use crate::{Clash, Contents, Half, PullMode, RemoteRepo, StashEntry, Tracking};
 
 impl RemoteRepo {
     pub fn half_done(&self) -> Half {
@@ -101,6 +101,11 @@ impl RemoteRepo {
         Ok(format!("now on {name}"))
     }
 
+    pub fn branch_here(&self, name: &str) -> Result<String> {
+        self.git(&["switch", "-c", name])?;
+        Ok(format!("you are now on {name}"))
+    }
+
     pub fn checkout_commit(&self, oid: Oid) -> Result<String> {
         self.git(&["switch", "--detach", &oid.to_string()])?;
         Ok(format!("now at {}", &oid.to_string()[..7]))
@@ -129,9 +134,35 @@ impl RemoteRepo {
         Ok("pushed the current branch".to_string())
     }
 
+    pub fn push_force(&self) -> Result<String> {
+        self.git(&["push", "--force-with-lease"])?;
+        Ok("force-pushed the current branch".to_string())
+    }
+
+    pub fn push_tags(&self) -> Result<String> {
+        self.git(&["push", "--tags"])?;
+        Ok("sent tags".to_string())
+    }
+
     pub fn push_branch(&self, branch: &str) -> Result<String> {
         self.git(&["push", "-u", "origin", branch])?;
         Ok(format!("pushed {branch}"))
+    }
+
+    pub fn delete_remote_branch(&self, name: &str) -> Result<String> {
+        let (remote, branch) = name.split_once('/').context("a remote branch is named remote/branch")?;
+        self.git(&["push", remote, "--delete", branch])?;
+        Ok(format!("deleted {name}"))
+    }
+
+    pub fn tracking(&self) -> Option<Tracking> {
+        let remote = self.git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).ok()?;
+        let remote = remote.trim();
+        let counts = self.git(&["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).ok()?;
+        let mut counts = counts.split_whitespace();
+        let behind = counts.next()?.parse().ok()?;
+        let ahead = counts.next()?.parse().ok()?;
+        Some(Tracking { remote: remote.to_string(), ahead, behind })
     }
 
     pub fn set_upstream(&self, branch: &str, upstream: Option<&str>) -> Result<String> {

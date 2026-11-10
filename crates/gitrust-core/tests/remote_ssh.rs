@@ -13,7 +13,7 @@ use std::{
 
 use gitrust_core::{
     ssh::{Login, Session},
-    Half, RemoteRepo,
+    Half, PullMode, Reader, RemoteRepo,
 };
 
 fn command(program: &str, arguments: &[&str]) {
@@ -160,6 +160,36 @@ fn resolves_continues_and_aborts_a_remote_merge() {
     remote.continue_operation().unwrap();
     assert_eq!(remote.half_done(), Half::None);
 
+    // Branch, upstream, tag, push/fetch and stash all execute from the
+    // checkout at the other end of SSH.  The upstream is a local bare
+    // repository only to keep this isolated test off the network.
+    let upstream = sshd.root.join("upstream.git");
+    command("git", &["init", "--bare", upstream.to_str().unwrap()]);
+    git(&checkout, &["remote", "add", "origin", upstream.to_str().unwrap()]);
+    remote.branch_here("review").unwrap();
+    remote.push_branch("review").unwrap();
+    remote.delete_remote_branch("origin/review").unwrap();
+    remote.push_branch("review").unwrap();
+    remote.rename_branch("review", "review-renamed").unwrap();
+    remote.push_branch("review-renamed").unwrap();
+    remote.set_upstream("review-renamed", Some("origin/review-renamed")).unwrap();
+    assert_eq!(remote.tracking().unwrap().remote, "origin/review-renamed");
+    remote.fetch_all().unwrap();
+    remote.pull(PullMode::Merge).unwrap();
+    remote.push_force().unwrap();
+    let target = remote.commits(1).unwrap()[0].id;
+    remote.tag("review-tag", target, "remote tag").unwrap();
+    remote.push_tags().unwrap();
+    remote.delete_tag("review-tag").unwrap();
+    fs::write(checkout.join("note.txt"), "stash me\n").unwrap();
+    remote.stash_save("remote stash").unwrap();
+    assert_eq!(remote.stashes().unwrap().len(), 1);
+    remote.stash_apply(0).unwrap();
+    remote.stash_drop(0).unwrap();
+    git(&checkout, &["restore", "note.txt"]);
+    remote.checkout_branch("main").unwrap();
+    remote.delete_branch("review-renamed").unwrap();
+
     let merge = Command::new("git")
         .args([
             "-C",
@@ -177,6 +207,12 @@ fn resolves_continues_and_aborts_a_remote_merge() {
         .unwrap();
     assert!(!merge.status.success());
     assert_eq!(remote.half_done(), Half::Merge);
+    // Reconnecting does not lose the server-side operation state: a new
+    // SSH session discovers precisely the same pending merge and paths.
+    drop(remote);
+    let remote = RemoteRepo::new(sshd.connect(), checkout.display().to_string()).unwrap();
+    assert_eq!(remote.half_done(), Half::Merge);
+    assert_eq!(remote.clashes().unwrap().len(), 1);
     remote.abort_operation().unwrap();
     assert_eq!(remote.half_done(), Half::None);
 
