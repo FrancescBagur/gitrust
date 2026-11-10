@@ -30,9 +30,10 @@ cargo test
 ```
 
 The system libraries you need are in the [README](README.md#building).
-Two hundred and ninety-one tests, most of them against real repositories
-made in `/tmp`, so they are slow and they are honest. CI runs the same ones
-on every pull request and on Linux, macOS and Windows.
+Two hundred and ninety-six tests, most of them against real repositories
+made in `/tmp`, so they are slow and they are honest. CI runs them on Linux
+on every pull request; macOS and Windows are built there and not tested,
+which is a gap and not a decision.
 
 A change to the graph layout or to anything that writes -- index, stash,
 branches, remote -- comes with a test. Those are the parts that touch
@@ -125,6 +126,38 @@ by hand:
   wrong before.
 - Expect an answer within the day. If a week goes by, ping the thread: it
   was dropped, not ignored.
+
+### How a change actually lands
+
+`master` is closed. Nobody pushes to it -- not a contributor, not me -- and
+the server enforces that rather than the honour system: a direct push comes
+back rejected. Everything arrives as a pull request from a branch, and that
+is as true of a one-line typo as of a feature.
+
+What has to be true before the button works:
+
+- **The three CI jobs are green**: the tests on Linux, and a build on macOS
+  and on Windows. All three, every time.
+- **One approval, still current.** Pushing a new commit throws the old
+  approval away, because an approval of code that has since changed is an
+  approval of nothing.
+- **Every review thread resolved.** A question nobody answered is not a
+  question that went away.
+
+Then it goes in as a squash or a rebase. There is no merge commit: the
+history here is a line, on purpose, which matters more than usual in a
+program whose whole job is drawing one. Your branch is deleted once it has
+landed.
+
+One exception, said here rather than left to be discovered: with a single
+maintainer, a rule demanding a second pair of eyes would stop the project
+instead of protecting it, so I can merge my own pull request without one.
+I still cannot push to `master`, and yours still needs the approval. The
+asymmetry goes away the first time somebody else has the commit bit.
+
+None of this is folklore you are expected to already know -- it is all
+visible under
+[Settings -> Rules](https://github.com/FrancescBagur/gitrust/rules).
 
 ## Reporting a bug
 
