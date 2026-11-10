@@ -251,6 +251,80 @@ def banner():
     print(f"  assets/banner.jpg  1400 wide")
 
 
+def social():
+    """The picture a link to the repository turns into, in a chat or a feed.
+
+    GitHub draws one of these itself for any repository that has not been
+    given one, and it is worth knowing what is wrong with it rather than
+    leaving it there by default. It is generated on demand by a service
+    that counts requests and starts refusing them, so a link pasted into a
+    chat arrives as a broken image often enough to notice -- which is how
+    this came to be written. And what it sets in the largest type under
+    the name, on the day a project is first shown to anybody, is how few
+    stars it has.
+
+    A social preview is 1280x640 and the banner is 1792x592, so this takes
+    the banner's leftmost 1280 columns rather than squashing the whole
+    picture into a shape it was not drawn for. The word and the plaque are
+    both inside that; what falls off the right is background. The 48 rows
+    left over are split between the top and the bottom.
+
+    No words are added. The slogan was tried here and thrown away: a chat
+    draws this about four hundred pixels wide, where a line of text that
+    looks right at full size is a grey smudge -- and the title and the
+    description are already there beside the picture as text, in a font
+    the reader's own machine chose.
+
+    It is a JPEG because GitHub refuses a file over a megabyte and this is
+    a photograph: as a PNG the same pixels are 1.4M, and at -q:v 2 they are
+    210K and 47dB away from it, which is further than an eye reaches.
+    """
+    width, height = 1280, 640
+    fade = 18
+    ground = (1, 10, 22)    # the banner's own corners, measured off them
+
+    source_w, source_h, art = read(SOURCE / "banner.jpg")
+    if source_w < width:
+        sys.exit(f"source/banner.jpg is only {source_w} wide: a social "
+                 f"preview needs {width}")
+    lid = (height - source_h) // 2
+    if lid < 0:
+        sys.exit(f"source/banner.jpg is {source_h} tall: taller than the "
+                 f"{height} this has to fit inside")
+
+    card = bytearray(bytes(ground) * (width * height))
+    for y in range(source_h):
+        # The banner's own first and last rows are dark, but not as dark as
+        # the ground they would sit against, so butting the two together
+        # draws a line across the card at each end -- and because the
+        # banner is lighter down its middle than at its corners, that line
+        # shows in the centre and nowhere else, which reads as a mistake
+        # rather than as an edge. The outermost rows are mixed into the
+        # ground instead, leaving nothing to see.
+        near = min(y, source_h - 1 - y)
+        weight = 1.0 if near >= fade else near / fade
+        src = y * source_w * 3
+        dst = (y + lid) * width * 3
+        for i in range(width * 3):
+            card[dst + i] = int(art[src + i] * weight
+                                + ground[i % 3] * (1 - weight))
+
+    out = HERE / "social.jpg"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+         "-i", "-", "-q:v", "2", str(out)],
+        input=bytes(card), check=True)
+    print(f"  assets/social.jpg  {width}x{height}, "
+          f"{out.stat().st_size // 1024}K")
+
+    # GitHub will not take it over a megabyte, and silently having written
+    # a file nobody can upload is worse than stopping here.
+    if out.stat().st_size > 1000 * 1024:
+        sys.exit(f"{out.name} came out at {out.stat().st_size // 1024}K, "
+                 f"which GitHub will refuse")
+
+
 def ico():
     """The Windows one: every size in a single file.
 
@@ -305,5 +379,6 @@ if __name__ == "__main__":
     icon()
     mark()
     banner()
+    social()
     # After icon(), which writes the files this gathers up.
     ico()
