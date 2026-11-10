@@ -133,12 +133,11 @@ impl Reader for RemoteRepo {
                 "--root",
                 "--no-commit-id",
                 "--name-status",
+                "-z",
                 "-r",
                 &id,
-            ])?
-            .lines()
-            .filter_map(commit_file)
-            .collect();
+            ])?;
+        let files = commit_files(&files);
         Ok(CommitDetail {
             id: Oid::from_str(fields[0]).context("remote Git returned an invalid commit id")?,
             short_id: fields[1].to_string(),
@@ -174,18 +173,39 @@ impl Reader for RemoteRepo {
     }
 }
 
-fn commit_file(line: &str) -> Option<CommitFile> {
-    let mut fields = line.split('\t');
-    let code = fields.next()?.chars().next()?;
-    let kind = match code {
-        'A' => ChangeKind::Added,
-        'D' => ChangeKind::Deleted,
-        'R' => ChangeKind::Renamed,
-        'T' => ChangeKind::TypeChange,
-        _ => ChangeKind::Modified,
-    };
-    let path = fields.last()?.to_string();
-    Some(CommitFile { path, kind })
+fn commit_files(output: &str) -> Vec<CommitFile> {
+    let mut fields = output.split('\0');
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        if status.is_empty() {
+            continue;
+        }
+        let Some(code) = status.chars().next() else {
+            continue;
+        };
+        let path = match code {
+            'R' | 'C' => {
+                let _old = fields.next();
+                fields.next()
+            }
+            _ => fields.next(),
+        };
+        let Some(path) = path else {
+            break;
+        };
+        let kind = match code {
+            'A' => ChangeKind::Added,
+            'D' => ChangeKind::Deleted,
+            'R' => ChangeKind::Renamed,
+            'T' => ChangeKind::TypeChange,
+            _ => ChangeKind::Modified,
+        };
+        files.push(CommitFile {
+            path: path.to_string(),
+            kind,
+        });
+    }
+    files
 }
 
 fn parse_diff(path: &str, text: &str) -> Result<FileDiff> {
@@ -193,7 +213,7 @@ fn parse_diff(path: &str, text: &str) -> Result<FileDiff> {
         path: path.to_string(),
         ..Default::default()
     };
-    if text.contains("Binary files ") {
+    if text.contains("Binary files ") || text.contains("GIT binary patch") {
         diff.binary = true;
         return Ok(diff);
     }
@@ -453,9 +473,9 @@ mod tests {
     }
 
     #[test]
-    fn commit_file_uses_the_new_name_after_a_rename() {
-        let file = commit_file("R100\told.txt\tnew.txt").unwrap();
-        assert_eq!(file.path, "new.txt");
+    fn commit_files_use_nul_records_and_the_new_name_after_a_rename() {
+        let file = commit_files("R100\0old\tname.txt\0new name.txt\0").pop().unwrap();
+        assert_eq!(file.path, "new name.txt");
         assert_eq!(file.kind, ChangeKind::Renamed);
     }
 }
