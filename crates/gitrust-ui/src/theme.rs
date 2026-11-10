@@ -110,67 +110,42 @@ pub fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
-/// The paths where Fira usually lives on desktop distributions.
-fn find(names: &[&str]) -> Option<Vec<u8>> {
-    const DIRS: [&str; 4] = [
-        "/usr/share/fonts/opentype/fira",
-        "/usr/share/fonts/truetype/fira",
-        "/usr/share/fonts/truetype/firasans",
-        "/usr/share/fonts/TTF",
-    ];
-
-    for dir in DIRS {
-        for name in names {
-            for ext in ["otf", "ttf"] {
-                let path = format!("{dir}/{name}.{ext}");
-                if let Ok(bytes) = std::fs::read(&path) {
-                    return Some(bytes);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Installs Fira if it is on the system. If not, egui keeps its own and the
-/// app carries on working: the typeface is an improvement, not a
-/// requirement.
+/// Installs the same Fira faces on every platform.
+///
+/// Looking in the Linux font folders made the design depend on the machine
+/// that happened to run it: macOS and Windows silently used egui's fallback,
+/// whose smaller metrics changed the bars and buttons. These are bundled
+/// under the SIL Open Font License in `assets/fonts/LICENSE`, so a release
+/// always lays out with the typeface it was designed around.
 fn install_fonts(ctx: &egui::Context) {
     use std::sync::Arc;
 
     let mut fonts = egui::FontDefinitions::default();
-    let mut add = |key: &str, names: &[&str]| -> bool {
-        match find(names) {
-            Some(bytes) => {
-                fonts.font_data.insert(
-                    key.to_string(),
-                    Arc::new(egui::FontData::from_owned(bytes)),
-                );
-                true
-            }
-            None => false,
-        }
+    let mut add = |key: &str, bytes: &'static [u8]| {
+        fonts.font_data.insert(
+            key.to_string(),
+            Arc::new(egui::FontData::from_static(bytes)),
+        );
     };
 
-    let _book = add("fira-book", &["FiraSans-Book", "FiraSans-Regular"]);
-    let medium = add("fira-medium", &["FiraSans-Medium"]);
-    let semibold = add("fira-semibold", &["FiraSans-SemiBold"]);
-    let code = add("fira-mono", &["FiraMono-Regular", "FiraMono"]);
+    add("fira-book", include_bytes!("../../../assets/fonts/FiraSans-Regular.ttf"));
+    add("fira-medium", include_bytes!("../../../assets/fonts/FiraSans-Medium.ttf"));
+    add(
+        "fira-semibold",
+        include_bytes!("../../../assets/fonts/FiraSans-SemiBold.ttf"),
+    );
+    add("fira-mono", include_bytes!("../../../assets/fonts/FiraMono-Regular.ttf"));
 
-    if _book {
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, "fira-book".to_string());
-    }
-    if code {
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .insert(0, "fira-mono".to_string());
-    }
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "fira-book".to_string());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "fira-mono".to_string());
 
     // The weights go in families of their own because egui cannot synthesise
     // them, and a real SemiBold reads far better than the lighter grey with
@@ -185,14 +160,9 @@ fn install_fonts(ctx: &egui::Context) {
         .cloned()
         .unwrap_or_default();
 
-    for (family, key, present) in [
-        ("medium", "fira-medium", medium),
-        ("strong", "fira-semibold", semibold),
-    ] {
+    for (family, key) in [("medium", "fira-medium"), ("strong", "fira-semibold")] {
         let mut list = fallback.clone();
-        if present {
-            list.insert(0, key.to_string());
-        }
+        list.insert(0, key.to_string());
         fonts.families.insert(FontFamily::Name(family.into()), list);
     }
 
@@ -202,6 +172,16 @@ fn install_fonts(ctx: &egui::Context) {
 /// Leaves the context with the whole theme: fonts, colors and spacing.
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
+    apply(ctx);
+}
+
+/// Reapplies the application palette before a frame is painted.
+///
+/// eframe starts its native window from the system appearance. Keeping the
+/// palette here, rather than accepting that initial appearance for widgets,
+/// makes text boxes, disabled controls and selectors use the same dark theme
+/// as the panels on every platform.
+pub fn apply(ctx: &egui::Context) {
 
     let mut style = (*ctx.style()).clone();
 

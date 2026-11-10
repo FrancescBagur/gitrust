@@ -590,6 +590,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Widgets draw from egui's global visuals, unlike the panels whose
+        // fills are given explicitly below. Reassert the application's palette
+        // each frame so a native system-theme update cannot leave controls in
+        // the light appearance while the rest of the window is dark.
+        theme::apply(ctx);
+
         // Every tab is polled, not only the one on top. An operation left
         // running in another one has to finish whether or not you are looking
         // at it; otherwise coming back to it would find it still saying
