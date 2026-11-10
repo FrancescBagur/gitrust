@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{ssh::Session, Commit, Reader, RefEntry, RefKind, RefLabel};
+use crate::{ssh::Session, ChangeKind, Commit, FileChange, Reader, RefEntry, RefKind, RefLabel, WorkingState};
 
 /// A remote checkout. Its session remains open for as long as this value does.
 pub struct RemoteRepo {
@@ -80,6 +80,51 @@ impl Reader for RemoteRepo {
         refs.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(refs)
     }
+
+    fn status(&self) -> Result<WorkingState> {
+        let output = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        Ok(remote_status(&output))
+    }
+}
+
+fn remote_status(output: &str) -> WorkingState {
+    let mut state = WorkingState::default();
+    let mut records = output.split('\0');
+    while let Some(record) = records.next() {
+        if record.len() < 4 { continue }
+        let bytes = record.as_bytes();
+        let staged = (bytes[0] as char != '?').then(|| change_kind(bytes[0] as char, bytes[1] as char)).flatten();
+        let unstaged = (bytes[1] as char != '?').then(|| change_kind(bytes[1] as char, bytes[0] as char)).flatten()
+            .or_else(|| (bytes[0] as char == '?' && bytes[1] as char == '?').then_some(ChangeKind::Untracked));
+        let path = record[3..].to_string();
+        if let Some(kind) = staged {
+            state.staged.push(FileChange { path: path.clone(), kind, staged: true });
+        }
+        if let Some(kind) = unstaged {
+            state.unstaged.push(FileChange { path: path.clone(), kind, staged: false });
+        }
+        // `-z` puts the source name of a rename/copy in the following record.
+        if matches!(bytes[0] as char, 'R' | 'C') || matches!(bytes[1] as char, 'R' | 'C') {
+            let _ = records.next();
+        }
+    }
+    state.staged.sort_by(|a, b| a.path.cmp(&b.path));
+    state.unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+    state
+}
+
+fn change_kind(code: char, other: char) -> Option<ChangeKind> {
+    Some(match code {
+        ' ' => return None,
+        '?' => ChangeKind::Untracked,
+        'A' => ChangeKind::Added,
+        'M' => ChangeKind::Modified,
+        'D' => ChangeKind::Deleted,
+        'R' => ChangeKind::Renamed,
+        'C' | 'T' => ChangeKind::TypeChange,
+        'U' | _ if other == 'U' => ChangeKind::Conflicted,
+        _ => return None,
+    })
 }
 
 fn remote_commit(row: &str, labels: &HashMap<Oid, Vec<RefLabel>>, head: &str) -> Result<Commit> {
@@ -116,5 +161,15 @@ mod tests {
         assert!(matches!(label("refs/heads/main"), Some((RefKind::LocalBranch, _))));
         assert!(matches!(label("refs/remotes/origin/main"), Some((RefKind::RemoteBranch, _))));
         assert!(matches!(label("refs/tags/v1"), Some((RefKind::Tag, _))));
+    }
+
+    #[test]
+    fn status_keeps_staged_unstaged_and_renamed_files_apart() {
+        let state = remote_status("M  staged.rs\0 M unstaged.rs\0RM renamed.rs\0before.rs\0?? new file\0");
+        assert_eq!(state.staged.len(), 2);
+        assert_eq!(state.unstaged.len(), 3);
+        assert!(state.unstaged.iter().any(|change| change.path == "renamed.rs"));
+        assert!(state.unstaged.iter().any(|change| change.path == "unstaged.rs"));
+        assert!(state.unstaged.iter().any(|change| change.path == "new file"));
     }
 }
