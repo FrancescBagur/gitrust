@@ -116,6 +116,10 @@ impl Session {
         Ok(())
     }
 
+    pub fn exists(&self, path: &str) -> bool {
+        self.raw.sftp().and_then(|sftp| sftp.stat(Path::new(path))).is_ok()
+    }
+
     pub(crate) fn command(&self, words: &[&str]) -> Result<String> {
         let command = words
             .iter()

@@ -12,7 +12,7 @@ use crate::{
 
 /// A remote checkout. Its session remains open for as long as this value does.
 pub struct RemoteRepo {
-    session: Session,
+    pub(crate) session: Session,
     path: String,
 }
 

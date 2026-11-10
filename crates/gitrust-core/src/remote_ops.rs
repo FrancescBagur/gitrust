@@ -3,9 +3,53 @@
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{PullMode, RemoteRepo, StashEntry};
+use crate::{Half, PullMode, RemoteRepo, StashEntry};
 
 impl RemoteRepo {
+    pub fn half_done(&self) -> Half {
+        for (file, half) in [("MERGE_HEAD", Half::Merge), ("CHERRY_PICK_HEAD", Half::CherryPick), ("REVERT_HEAD", Half::Revert)] {
+            if self.git_path_exists(file) { return half; }
+        }
+        if self.git_path_exists("rebase-merge") || self.git_path_exists("rebase-apply") { Half::Rebase } else { Half::None }
+    }
+
+    pub fn clashes(&self) -> Result<Vec<String>> {
+        let status = self.git(&["status", "--porcelain=v1", "-z"])?;
+        Ok(status.split('\0').filter_map(|row| {
+            let bytes = row.as_bytes();
+            (bytes.len() >= 4 && (bytes[0] == b'U' || bytes[1] == b'U')).then(|| row[3..].to_string())
+        }).collect())
+    }
+
+    pub fn take_conflict_side(&self, path: &str, theirs: bool) -> Result<()> {
+        self.git(&["checkout", if theirs { "--theirs" } else { "--ours" }, "--", path])?;
+        self.git(&["add", "--", path]).map(|_| ())
+    }
+
+    pub fn continue_operation(&self) -> Result<String> {
+        match self.half_done() {
+            Half::Merge => { self.git(&["merge", "--continue"])?; Ok("merge completed".to_string()) }
+            Half::Rebase => { self.git(&["rebase", "--continue"])?; Ok("rebase continued".to_string()) }
+            Half::CherryPick => { self.git(&["cherry-pick", "--continue"])?; Ok("cherry-pick continued".to_string()) }
+            Half::Revert => { self.git(&["revert", "--continue"])?; Ok("revert continued".to_string()) }
+            Half::None | Half::Other => anyhow::bail!("there is no remote operation to continue"),
+        }
+    }
+
+    pub fn abort_operation(&self) -> Result<String> {
+        match self.half_done() {
+            Half::Merge => { self.git(&["merge", "--abort"])?; Ok("merge aborted".to_string()) }
+            Half::Rebase => { self.git(&["rebase", "--abort"])?; Ok("rebase aborted".to_string()) }
+            Half::CherryPick => { self.git(&["cherry-pick", "--abort"])?; Ok("cherry-pick aborted".to_string()) }
+            Half::Revert => { self.git(&["revert", "--abort"])?; Ok("revert aborted".to_string()) }
+            Half::None | Half::Other => anyhow::bail!("there is no remote operation to abort"),
+        }
+    }
+
+    fn git_path_exists(&self, path: &str) -> bool {
+        self.git(&["rev-parse", "--path-format=absolute", "--git-path", path])
+            .ok().is_some_and(|path| self.session.exists(path.trim()))
+    }
     pub fn branch_at(&self, name: &str, oid: Oid) -> Result<String> {
         self.git(&["branch", name, &oid.to_string()])?;
         Ok(format!("{name} created"))
