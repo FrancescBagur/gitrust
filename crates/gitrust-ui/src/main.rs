@@ -2181,8 +2181,10 @@ impl Open {
     /// Does what has already been answered yes to.
     fn commit_deed(&mut self, deed: Deed) {
         let discarded = match deed {
+            Deed::Discard(path) if self.is_remote() => self.run_remote(|repo| repo.discard(&path)),
             Deed::Discard(path) => self.run(|repo| repo.discard(&path)),
             Deed::DiscardHunk { path, hunk } => self.run(|repo| repo.discard_hunk(&path, hunk)),
+            Deed::DiscardAll(paths) if self.is_remote() => self.run_remote(|repo| repo.discard_all(&paths)),
             Deed::DiscardAll(paths) => self.run(|repo| repo.discard_all(&paths)),
 
             // The remote one goes out on the network; the one here is instant.
