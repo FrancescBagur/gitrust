@@ -105,7 +105,7 @@ impl RemoteRepo {
         Ok(Self { session, path })
     }
 
-    fn git(&self, arguments: &[&str]) -> Result<String> {
+    pub(crate) fn git(&self, arguments: &[&str]) -> Result<String> {
         let mut words = vec!["git", "-C", &self.path];
         words.extend(arguments);
         self.session.command(&words)
