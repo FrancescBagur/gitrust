@@ -3497,13 +3497,22 @@ impl Open {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Remote checkout · read-only")
+                        egui::RichText::new("Remote checkout")
                             .font(theme::medium(12.5))
                             .color(theme::HEAD),
                     );
                     theme::vrule(ui);
                     ui.selectable_value(&mut self.view, View::History, "History");
                     ui.selectable_value(&mut self.view, View::Changes, "Changes");
+                    theme::vrule(ui);
+                    let action = action_bar::show(
+                        ui,
+                        self.tracking.as_ref(),
+                        &self.stashes,
+                        &mut self.pull_mode,
+                        self.job.is_some(),
+                        &mut self.draft,
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("↻")
@@ -3513,6 +3522,9 @@ impl Open {
                             self.load();
                         }
                     });
+                    if let Some(action) = action {
+                        self.act(action);
+                    }
                 })
             });
     }
