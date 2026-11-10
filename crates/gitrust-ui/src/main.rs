@@ -1403,6 +1403,8 @@ impl Open {
             how: file_view::Look::Diff,
             read: file_view::Read::default(),
             trouble: None,
+            editing: false,
+            draft: String::new(),
         });
         self.read_file();
     }
@@ -1430,6 +1432,13 @@ impl Open {
             return;
         }
 
+        if let Some(remote) = self.remote.as_ref() {
+            if how == file_view::Look::Whole {
+                let read = remote.read_working_file(&path).map(|bytes| match String::from_utf8(bytes) { Ok(text) => gitrust_core::Contents::Text(text), Err(err) => gitrust_core::Contents::Binary(err.into_bytes().len()) });
+                if let Some(looking) = &mut self.looking { match read { Ok(whole) => looking.read.whole = Some(whole), Err(err) => looking.trouble = Some(format!("{err:#}")) } }
+            }
+            return;
+        }
         let Ok(repo) = self.repo() else {
             return;
         };
@@ -1718,6 +1727,13 @@ impl Open {
                 };
                 let (path, at) = (looking.path.clone(), looking.at);
                 self.note_down(move |repo| repo.revert_hunk(at, &path, hunk));
+            }
+            file_view::Act::Save(text) => {
+                let Some(path) = self.looking.as_ref().map(|looking| looking.path.clone()) else { return };
+                match self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("not a remote checkout")).and_then(|repo| repo.write_working_file(&path, text.as_bytes())) {
+                    Ok(()) => { if let Some(looking) = &mut self.looking { looking.editing = false; looking.read.whole = Some(gitrust_core::Contents::Text(text)); } self.load(); self.said(format!("{path} saved remotely")); }
+                    Err(err) => self.note_error(format!("{err:#}")),
+                }
             }
         }
     }
@@ -3008,6 +3024,8 @@ impl Open {
         // taking them away would leave only the Back button.
         if self.looking.is_some() {
             let mut act = None;
+            let busy = self.job.is_some();
+            let editable = self.is_remote();
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::NONE
@@ -3016,8 +3034,8 @@ impl Open {
                 )
                 .show(ctx, |ui| {
                     ui.push_id(self.salt, |ui| {
-                        if let Some(looking) = &self.looking {
-                            act = file_view::show(ui, looking, self.job.is_some());
+                        if let Some(looking) = &mut self.looking {
+                            act = file_view::show(ui, looking, busy, editable);
                         }
                     });
                 });
