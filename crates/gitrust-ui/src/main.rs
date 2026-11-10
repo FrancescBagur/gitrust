@@ -3596,7 +3596,7 @@ impl Open {
                     .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ctx, |ui| {
-                ui.add_enabled_ui(!self.is_remote(), |ui| {
+                ui.add_enabled_ui(true, |ui| {
                     picked = refs_view::show(
                         ui,
                         &self.refs,
@@ -3621,6 +3621,24 @@ impl Open {
     /// same place: anything added here is in both at once, which is the point
     /// of them sharing it.
     fn act_on_ref(&mut self, picked: refs_view::Pick, ctx: &egui::Context) {
+        if self.is_remote() {
+            let result = match picked {
+                refs_view::Pick::Show(oid) => { self.reveal_commit(oid); self.view = View::History; return; }
+                refs_view::Pick::Switch { name, remote: true } => self.remote.as_ref().map(|repo| repo.checkout_remote(&name)),
+                refs_view::Pick::Switch { name, remote: false } => self.remote.as_ref().map(|repo| repo.checkout_branch(&name)),
+                refs_view::Pick::Merge(name) => self.remote.as_ref().map(|repo| repo.merge(&name)),
+                refs_view::Pick::Rebase(name) => self.remote.as_ref().map(|repo| repo.rebase_onto(&name)),
+                refs_view::Pick::Pull => self.remote.as_ref().map(|repo| repo.pull(PullMode::Merge)),
+                refs_view::Pick::Push(_) => self.remote.as_ref().map(|repo| repo.push()),
+                refs_view::Pick::GoTo(oid) => self.remote.as_ref().map(|repo| repo.checkout_commit(oid)),
+                refs_view::Pick::CherryPick(oid) => self.remote.as_ref().map(|repo| repo.cherry_pick(oid)),
+                refs_view::Pick::Revert(oid) => self.remote.as_ref().map(|repo| repo.revert(oid)),
+                refs_view::Pick::Copy(text) => { ctx.copy_text(text.clone()); self.said(format!("{text} copied")); return; }
+                _ => { self.note_error("that remote operation arrives later in delivery 4".to_string()); return; }
+            };
+            match result { Some(Ok(note)) => { self.load(); self.said(note); }, Some(Err(err)) => self.note_error(format!("{err:#}")), None => self.note_error("no remote checkout".to_string()) }
+            return;
+        }
         match picked {
             refs_view::Pick::Show(oid) => {
                 self.reveal_commit(oid);
