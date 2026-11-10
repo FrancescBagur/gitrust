@@ -1092,8 +1092,14 @@ impl Open {
         };
         self.head = repo.head_name();
         self.path = repo.location();
-        self.half = gitrust_core::Half::None;
-        self.clashes.clear();
+        self.half = repo.half_done();
+        self.clashes = match repo.clashes() {
+            Ok(value) => value,
+            Err(err) => return self.fail(err),
+        };
+        if self.half == gitrust_core::Half::None {
+            self.deciding = None;
+        }
         self.tracking = None;
         self.worktrees.clear();
         self.stashes.clear();
@@ -1613,7 +1619,13 @@ impl Open {
                 }
             }
             conflict_view::Act::Edit(path) => {
-                let read = self.repo().and_then(|repo| repo.clashing_text(&path));
+                let read = if let Some(remote) = self.remote.as_ref() {
+                    remote.read_working_file(&path).and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("{path} is a binary file and cannot be edited here"))
+                    })
+                } else {
+                    self.repo().and_then(|repo| repo.clashing_text(&path))
+                };
                 match read {
                     Ok(text) => {
                         if let Some(state) = &mut self.deciding {
@@ -1624,11 +1636,23 @@ impl Open {
                 }
             }
             conflict_view::Act::Take { path, side } => {
-                self.note_down(move |repo| repo.take_side(&path, side));
+                if self.is_remote() {
+                    let theirs = side == gitrust_core::Side::Theirs;
+                    self.run_remote(|repo| repo.take_conflict_side(&path, theirs));
+                } else {
+                    self.note_down(move |repo| repo.take_side(&path, side));
+                }
                 self.after_deciding();
             }
             conflict_view::Act::Write { path, text } => {
-                self.note_down(move |repo| repo.take_text(&path, &text));
+                if self.is_remote() {
+                    self.run_remote(|repo| {
+                        repo.write_working_file(&path, text.as_bytes())?;
+                        repo.stage(&path)
+                    });
+                } else {
+                    self.note_down(move |repo| repo.take_text(&path, &text));
+                }
                 if let Some(state) = &mut self.deciding {
                     state.draft = None;
                 }
@@ -1640,7 +1664,11 @@ impl Open {
                 // the core picks. A rebase writes one commit and walks on
                 // into the next, which is why the screen is pointed at
                 // whatever is clashing now rather than put away.
-                self.note_down(|repo| repo.see_it_through());
+                if self.is_remote() {
+                    self.run_remote(|repo| repo.continue_operation().map(|_| ()));
+                } else {
+                    self.note_down(|repo| repo.see_it_through());
+                }
                 self.after_deciding();
             }
             conflict_view::Act::Abandon => self.ask_abandon(),
@@ -2214,6 +2242,10 @@ impl Open {
                 return self.spawn(&doing, move |repo| repo.move_branch(oid, how));
             }
             Deed::Abandon => {
+                if self.is_remote() {
+                    self.run_remote(|repo| repo.abort_operation().map(|_| ()));
+                    return;
+                }
                 return self.spawn("throwing it away", |repo| repo.abandon());
             }
             Deed::CloseWorktree { name } => {

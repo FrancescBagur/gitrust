@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{Half, PullMode, RemoteRepo, StashEntry};
+use crate::{Clash, Contents, Half, PullMode, RemoteRepo, StashEntry};
 
 impl RemoteRepo {
     pub fn half_done(&self) -> Half {
@@ -13,15 +13,47 @@ impl RemoteRepo {
         if self.git_path_exists("rebase-merge") || self.git_path_exists("rebase-apply") { Half::Rebase } else { Half::None }
     }
 
-    pub fn clashes(&self) -> Result<Vec<String>> {
+    /// Every unmerged path plus Git's three index stages, in the same shape
+    /// as a local conflict so the UI remains transport-agnostic.
+    pub fn clashes(&self) -> Result<Vec<Clash>> {
         let status = self.git(&["status", "--porcelain=v1", "-z"])?;
-        Ok(status.split('\0').filter_map(|row| {
+        let mut clashes = status.split('\0').filter_map(|row| {
             let bytes = row.as_bytes();
             (bytes.len() >= 4 && (bytes[0] == b'U' || bytes[1] == b'U')).then(|| row[3..].to_string())
-        }).collect())
+        }).map(|path| {
+            Ok(Clash {
+                base: self.conflict_version(1, &path)?,
+                ours: self.conflict_version(2, &path)?,
+                theirs: self.conflict_version(3, &path)?,
+                path,
+            })
+        }).collect::<Result<Vec<_>>>()?;
+        clashes.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(clashes)
+    }
+
+    fn conflict_version(&self, stage: u8, path: &str) -> Result<Contents> {
+        let spec = format!(":{stage}:{path}");
+        let size = match self.git(&["cat-file", "-s", &spec]) {
+            Ok(size) => size.trim().parse::<usize>().context("remote Git returned an invalid blob size")?,
+            Err(_) => return Ok(Contents::Absent),
+        };
+        match self.git(&["show", &spec]) {
+            Ok(text) => Ok(Contents::Text(text)),
+            // Channels are text based: preserve access to the paused state
+            // even when an index stage is binary.
+            Err(_) => Ok(Contents::Binary(size)),
+        }
     }
 
     pub fn take_conflict_side(&self, path: &str, theirs: bool) -> Result<()> {
+        let stage = if theirs { 3 } else { 2 };
+        let spec = format!(":{stage}:{path}");
+        if self.git(&["cat-file", "-e", &spec]).is_err() {
+            // Taking a deleted side resolves the path by deleting it, rather
+            // than asking `checkout --ours` for a blob that does not exist.
+            return self.git(&["rm", "--", path]).map(|_| ());
+        }
         self.git(&["checkout", if theirs { "--theirs" } else { "--ours" }, "--", path])?;
         self.git(&["add", "--", path]).map(|_| ())
     }
