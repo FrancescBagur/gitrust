@@ -22,6 +22,7 @@ pub mod remote;
 pub mod repo;
 pub mod rewrite;
 pub mod settings;
+pub mod ssh;
 pub mod stash;
 pub mod start;
 pub mod status;
