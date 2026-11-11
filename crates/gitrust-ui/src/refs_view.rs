@@ -99,7 +99,7 @@ pub fn show(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 5.0))
             .font(theme::body(12.5))
-            .hint_text(RichText::new("Find a branch").color(theme::FAINT)),
+            .hint_text(RichText::new("Find a branch").color(theme::faint())),
     );
     ui.add_space(8.0);
 
@@ -190,21 +190,21 @@ fn carried_chip(ui: &egui::Ui) {
         egui::Order::Tooltip,
         egui::Id::new("carried-branch"),
     ));
-    let text = painter.layout_no_wrap(carried.name.clone(), theme::body(12.0), theme::TEXT);
+    let text = painter.layout_no_wrap(carried.name.clone(), theme::body(12.0), theme::text());
 
     // Below and to the right of the pointer, so the chip never covers the row
     // being aimed at.
     let corner = pointer + egui::vec2(14.0, 10.0);
     let rect = egui::Rect::from_min_size(corner, text.size() + egui::vec2(14.0, 7.0));
     let radius = egui::CornerRadius::same(theme::RADIUS);
-    painter.rect_filled(rect, radius, theme::PANEL);
+    painter.rect_filled(rect, radius, theme::panel());
     painter.rect_stroke(
         rect,
         radius,
-        egui::Stroke::new(1.0, theme::HEAD),
+        egui::Stroke::new(1.0, theme::head()),
         egui::StrokeKind::Inside,
     );
-    painter.galley(corner + egui::vec2(7.0, 3.5), text, theme::TEXT);
+    painter.galley(corner + egui::vec2(7.0, 3.5), text, theme::text());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,7 +237,7 @@ fn section(
                 ui.label(
                     RichText::new("Double-click to switch branch")
                         .font(theme::body(10.5))
-                        .color(theme::FAINT),
+                        .color(theme::faint()),
                 );
             });
         }
@@ -302,9 +302,9 @@ fn checkouts(
         for tree in trees {
             let current = tree.path == here;
             let color = match (current, tree.missing) {
-                (_, true) => theme::REMOVED,
-                (true, _) => theme::HEAD,
-                _ => theme::TEXT,
+                (_, true) => theme::removed(),
+                (true, _) => theme::head(),
+                _ => theme::text(),
             };
 
             let label = match tree.main {
@@ -405,19 +405,19 @@ fn leaf(
     entry: &RefEntry,
     remote_branches: &[&RefEntry],
     local_branches: &[&RefEntry],
-    selected: Option<Oid>,
+    _selected: Option<Oid>,
     head: Option<&str>,
     busy: bool,
     remote_checkout: bool,
     picked: &mut Option<Pick>,
 ) {
-    // The color says what kind of reference it is: locals in the graph's
-    // azure, remotes muted because they usually duplicate a local one, and
-    // tags in the violet of their chip.
+    // A branch list is primarily names. Keeping every local branch blue made
+    // it look as though all of them were selected; colour is reserved for
+    // HEAD, tags, and the small glyph beside the name.
     let color = match (entry.is_head, entry.kind) {
-        (true, _) | (_, RefKind::Head) => theme::HEAD,
-        (_, RefKind::LocalBranch) => theme::lane(0),
-        (_, RefKind::RemoteBranch) => theme::MUTED,
+        (true, _) | (_, RefKind::Head) => theme::head(),
+        (_, RefKind::LocalBranch) => theme::text(),
+        (_, RefKind::RemoteBranch) => theme::muted(),
         (_, RefKind::Tag) => theme::lane(6),
     };
 
@@ -443,7 +443,10 @@ fn leaf(
     // The glyph and the name are one row, and the name alone is the thing you
     // press: a hit area that swallowed the glyph would start a drag from a
     // drawing, which is a strange place for a branch to come from.
-    let is_selected = selected == Some(entry.target);
+    // Several branch tips can name the same commit. Selecting by object id
+    // therefore marked every one of those rows; HEAD already says the only
+    // branch that is currently active, so it is the one mark kept here.
+    let is_selected = entry.is_head;
     let response = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
@@ -493,7 +496,7 @@ fn leaf(
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
             egui::CornerRadius::same(theme::RADIUS),
-            egui::Stroke::new(1.0, theme::HEAD),
+            egui::Stroke::new(1.0, theme::head()),
             egui::StrokeKind::Outside,
         );
     }
@@ -746,7 +749,7 @@ pub fn menu(
                         Move::Discard => "Throw away what is not committed",
                     };
                     let text = match how {
-                        Move::Discard => RichText::new(label).color(theme::REMOVED),
+                        Move::Discard => RichText::new(label).color(theme::removed()),
                         _ => RichText::new(label),
                     };
                     if ui.button(text).clicked() {
@@ -777,7 +780,7 @@ pub fn menu(
                 ),
             };
             if ui
-                .button(RichText::new(label).color(theme::REMOVED))
+                .button(RichText::new(label).color(theme::removed()))
                 .on_hover_text(hint)
                 .clicked()
             {
@@ -787,7 +790,7 @@ pub fn menu(
         }
         if removable
             && ui
-                .button(RichText::new("Delete the tag").color(theme::REMOVED))
+                .button(RichText::new("Delete the tag").color(theme::removed()))
                 .on_hover_text("only the one here; the remote's stays put")
                 .clicked()
         {

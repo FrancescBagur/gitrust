@@ -138,7 +138,7 @@ fn transition(dragged: &Dragged, to: Lane, asked: bool) -> Option<Act> {
 /// already wears it on its card.
 fn column(lane: Lane) -> (&'static str, Color32) {
     match lane {
-        Lane::Todo => ("To do", theme::MUTED),
+        Lane::Todo => ("To do", theme::muted()),
         Lane::InProgress => ("In progress", theme::lane(0)),
         Lane::InReview => ("In review", theme::lane(6)),
         Lane::Done => ("Done", theme::lane(1)),
@@ -268,7 +268,7 @@ pub fn show(
                                 ui.label(
                                     RichText::new("Nothing here")
                                         .font(theme::body(11.5))
-                                        .color(theme::FAINT),
+                                        .color(theme::faint()),
                                 );
                                 return;
                             }
@@ -316,7 +316,7 @@ fn trail_line(
     ui.horizontal(|ui| {
         ui.add_space(2.0);
         ui.spacing_mut().item_spacing.x = 5.0;
-        ui.label(RichText::new("Measured against").font(theme::body(11.5)).color(theme::FAINT));
+        ui.label(RichText::new("Measured against").font(theme::body(11.5)).color(theme::faint()));
 
         // Every step but the last is a board that is already there, so it is a
         // link and not a button: clicking one does nothing to the repository,
@@ -325,17 +325,17 @@ fn trail_line(
         ui.spacing_mut().item_spacing.x = 3.0;
         for (depth, name) in trail.iter().enumerate() {
             if depth > 0 {
-                ui.label(RichText::new("›").font(theme::body(11.5)).color(theme::FAINT));
+                ui.label(RichText::new("›").font(theme::body(11.5)).color(theme::faint()));
             }
 
             let leaf = name.rsplit_once('/').map_or(name.as_str(), |(_, leaf)| leaf);
             if depth == last {
-                ui.label(RichText::new(leaf).font(theme::medium(11.5)).color(theme::TEXT));
+                ui.label(RichText::new(leaf).font(theme::medium(11.5)).color(theme::text()));
                 continue;
             }
 
             let label = egui::Label::new(
-                RichText::new(leaf).font(theme::body(11.5)).color(theme::MUTED),
+                RichText::new(leaf).font(theme::body(11.5)).color(theme::muted()),
             );
             if ui
                 .add(label.sense(egui::Sense::click()))
@@ -366,7 +366,7 @@ fn trail_line(
             return;
         }
 
-        let label = egui::Label::new(RichText::new(said).font(theme::body(11.5)).color(theme::FAINT));
+        let label = egui::Label::new(RichText::new(said).font(theme::body(11.5)).color(theme::faint()));
         let response = match hint {
             Some(hint) => {
                 let response = ui.add(label.sense(egui::Sense::click()));
@@ -383,7 +383,7 @@ fn trail_line(
 fn chip(text: &str, on: bool) -> RichText {
     RichText::new(text)
         .font(theme::body(11.5))
-        .color(if on { theme::TEXT } else { theme::MUTED })
+        .color(if on { theme::text() } else { theme::muted() })
 }
 
 /// A column's label, with its count and its rule of color.
@@ -392,7 +392,7 @@ fn header(ui: &mut egui::Ui, title: &str, color: Color32, count: usize) {
         ui.add_space(2.0);
         ui.label(RichText::new(title).font(theme::medium(12.0)).color(color));
         ui.label(
-            RichText::new(count.to_string()).font(theme::mono(10.5)).color(theme::FAINT),
+            RichText::new(count.to_string()).font(theme::mono(10.5)).color(theme::faint()),
         );
     });
     ui.add_space(4.0);
@@ -432,9 +432,9 @@ fn backlog_column(
 
     ui.horizontal(|ui| {
         ui.add_space(2.0);
-        ui.label(RichText::new("Backlog").font(theme::medium(12.0)).color(theme::FAINT));
+        ui.label(RichText::new("Backlog").font(theme::medium(12.0)).color(theme::faint()));
         ui.label(
-            RichText::new(items.len().to_string()).font(theme::mono(10.5)).color(theme::FAINT),
+            RichText::new(items.len().to_string()).font(theme::mono(10.5)).color(theme::faint()),
         );
 
         // What has not gone out yet is said here rather than left to be
@@ -445,7 +445,7 @@ fn backlog_column(
             let label = egui::Label::new(
                 RichText::new(format!("· {} not shared", backlog.unshared))
                     .font(theme::body(11.0))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
             let response = ui
                 .add(label.sense(egui::Sense::click()))
@@ -461,7 +461,7 @@ fn backlog_column(
         }
     });
     ui.add_space(4.0);
-    rule_of(ui, theme::FAINT);
+    rule_of(ui, theme::faint());
 
     // With a project picked, what is written down belongs to it: the chip is
     // already saying which job this is, so saying it twice would be a field
@@ -472,7 +472,7 @@ fn backlog_column(
     };
     let typing = ui.add(
         egui::TextEdit::singleline(draft)
-            .hint_text(RichText::new(hint).font(theme::body(11.5)).color(theme::FAINT))
+            .hint_text(RichText::new(hint).font(theme::body(11.5)).color(theme::faint()))
             .font(theme::body(12.0))
             .desired_width(f32::INFINITY),
     );
@@ -491,7 +491,7 @@ fn backlog_column(
             if items.is_empty() {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Nothing waiting").font(theme::body(11.5)).color(theme::FAINT),
+                    RichText::new("Nothing waiting").font(theme::body(11.5)).color(theme::faint()),
                 );
                 return;
             }
@@ -514,10 +514,10 @@ fn backlog_column(
 /// what somebody will read.
 fn draw_item(ui: &mut egui::Ui, item: &Item) -> Option<Act> {
     let frame = egui::Frame::NONE
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(egui::Margin::symmetric(10, 8))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-        .stroke(Stroke::new(1.0, theme::HAIRLINE));
+        .stroke(Stroke::new(1.0, theme::hairline()));
 
     let id = egui::Id::new(("item", &item.id));
     let dragging = ui.ctx().is_being_dragged(id);
@@ -526,8 +526,8 @@ fn draw_item(ui: &mut egui::Ui, item: &Item) -> Option<Act> {
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 3.0;
-            ui.label(RichText::new(&item.title).font(theme::medium(12.5)).color(theme::TEXT));
-            ui.label(RichText::new(item.branch()).font(theme::mono(10.5)).color(theme::FAINT));
+            ui.label(RichText::new(&item.title).font(theme::medium(12.5)).color(theme::text()));
+            ui.label(RichText::new(item.branch()).font(theme::mono(10.5)).color(theme::faint()));
         });
     });
 
@@ -540,7 +540,7 @@ fn draw_item(ui: &mut egui::Ui, item: &Item) -> Option<Act> {
         ui.painter().rect_stroke(
             response.rect,
             egui::CornerRadius::same(theme::RADIUS),
-            Stroke::new(1.0, theme::EDGE),
+            Stroke::new(1.0, theme::edge()),
             egui::StrokeKind::Inside,
         );
     }
@@ -598,10 +598,10 @@ fn draw_card(
 ) -> Option<Act> {
     let open_at = open_at(trees, &card.branch);
     let frame = egui::Frame::NONE
-        .fill(theme::PANEL)
+        .fill(theme::panel())
         .inner_margin(egui::Margin::symmetric(10, 8))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-        .stroke(Stroke::new(1.0, theme::HAIRLINE));
+        .stroke(Stroke::new(1.0, theme::hairline()));
 
     let id = egui::Id::new(("card", &card.branch));
     let dragging = ui.ctx().is_being_dragged(id);
@@ -648,8 +648,8 @@ fn draw_card(
                                 RichText::new(heading)
                                     .font(theme::medium(12.5))
                                     .color(match card.current {
-                                        true => theme::HEAD,
-                                        false => theme::TEXT,
+                                        true => theme::head(),
+                                        false => theme::text(),
                                     }),
                             )
                             .truncate(),
@@ -657,7 +657,7 @@ fn draw_card(
                     });
                 });
             });
-            ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::MUTED));
+            ui.label(RichText::new(note(card)).font(theme::body(11.0)).color(theme::muted()));
         });
     });
 
@@ -683,7 +683,7 @@ fn draw_card(
         ui.painter().rect_stroke(
             response.rect,
             egui::CornerRadius::same(theme::RADIUS),
-            Stroke::new(1.0, theme::EDGE),
+            Stroke::new(1.0, theme::edge()),
             egui::StrokeKind::Inside,
         );
     }
@@ -692,7 +692,7 @@ fn draw_card(
             response.rect.min,
             egui::vec2(2.0, response.rect.height()),
         );
-        ui.painter().rect_filled(bar, 0.0, theme::HEAD);
+        ui.painter().rect_filled(bar, 0.0, theme::head());
     }
 
     // What it can be done to lives here rather than on the card, because a
@@ -883,7 +883,7 @@ fn folder_badge(ui: &mut egui::Ui, tree: &Worktree) -> egui::Rect {
     };
 
     let label = egui::Label::new(
-        RichText::new(name).font(theme::mono(10.5)).color(theme::FAINT),
+        RichText::new(name).font(theme::mono(10.5)).color(theme::faint()),
     );
     ui.add(label).rect
 }
@@ -898,12 +898,12 @@ fn subtask_badge(ui: &mut egui::Ui, count: usize) -> egui::Rect {
     // anything. A label and not a button: a button would fight the drag for
     // the same press, which is why nothing on a card is one.
     let label = egui::Label::new(
-        RichText::new(format!("{count} ›")).font(theme::mono(10.5)).color(theme::TEXT),
+        RichText::new(format!("{count} ›")).font(theme::mono(10.5)).color(theme::text()),
     );
 
     egui::Frame::NONE
-        .fill(theme::RAISED)
-        .stroke(Stroke::new(1.0, theme::EDGE))
+        .fill(theme::raised())
+        .stroke(Stroke::new(1.0, theme::edge()))
         .corner_radius(egui::CornerRadius::same(theme::RADIUS))
         .inner_margin(egui::Margin::symmetric(5, 1))
         .show(ui, |ui| ui.add(label))
@@ -920,8 +920,8 @@ fn review_badge(ui: &mut egui::Ui, pull: &gitrust_core::PullRequest) -> Option<e
     let (color, _says) = match (pull.state, pull.draft) {
         (PullRequestState::Merged, _) => (theme::lane(1), "merged"),
         (PullRequestState::Open, false) => (theme::lane(6), "open"),
-        (PullRequestState::Open, true) => (theme::MUTED, "a draft"),
-        (PullRequestState::Closed, _) => (theme::MUTED, "closed, not merged"),
+        (PullRequestState::Open, true) => (theme::muted(), "a draft"),
+        (PullRequestState::Closed, _) => (theme::muted(), "closed, not merged"),
     };
 
     let label = egui::Label::new(

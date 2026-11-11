@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use crate::{Clash, Contents, Half, PullMode, RemoteRepo, StashEntry, Tracking};
+use crate::{remote_repo::unmerged_status, Clash, Contents, Half, PullMode, RemoteRepo, StashEntry, Tracking};
 
 impl RemoteRepo {
     pub fn half_done(&self) -> Half {
@@ -17,10 +17,7 @@ impl RemoteRepo {
     /// as a local conflict so the UI remains transport-agnostic.
     pub fn clashes(&self) -> Result<Vec<Clash>> {
         let status = self.git(&["status", "--porcelain=v1", "-z"])?;
-        let mut clashes = status.split('\0').filter_map(|row| {
-            let bytes = row.as_bytes();
-            (bytes.len() >= 4 && (bytes[0] == b'U' || bytes[1] == b'U')).then(|| row[3..].to_string())
-        }).map(|path| {
+        let mut clashes = unmerged_paths(&status).into_iter().map(|path| {
             Ok(Clash {
                 base: self.conflict_version(1, &path)?,
                 ours: self.conflict_version(2, &path)?,
@@ -214,5 +211,32 @@ impl RemoteRepo {
     pub fn revert(&self, oid: Oid) -> Result<String> {
         self.git(&["revert", "--no-edit", &oid.to_string()])?;
         Ok(format!("undid {}", &oid.to_string()[..7]))
+    }
+}
+
+fn unmerged_paths(status: &str) -> Vec<String> {
+    status
+        .split('\0')
+        .filter_map(|row| {
+            let bytes = row.as_bytes();
+            (bytes.len() >= 4 && unmerged_status(bytes[0] as char, bytes[1] as char))
+                .then(|| row[3..].to_string())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_unmerged_porcelain_pair_reaches_the_conflict_screen() {
+        for code in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            assert_eq!(
+                unmerged_paths(&format!("{code} conflict.txt\0")),
+                vec!["conflict.txt".to_string()],
+                "{code}"
+            );
+        }
     }
 }

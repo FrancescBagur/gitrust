@@ -139,22 +139,8 @@ impl RemoteRepo {
     }
 
     fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
-        let mut labels = HashMap::new();
         let output = self.git(&["for-each-ref", "--format=%(objectname)%00%(refname)%00"])?;
-        let fields: Vec<&str> = output.split('\0').collect();
-        for pair in fields.chunks_exact(2) {
-            let Ok(target) = Oid::from_str(pair[0]) else {
-                continue;
-            };
-            let Some((kind, name)) = label(pair[1]) else {
-                continue;
-            };
-            labels
-                .entry(target)
-                .or_insert_with(Vec::new)
-                .push(RefLabel { name, kind });
-        }
-        Ok(labels)
+        Ok(parse_ref_labels(&output))
     }
 }
 
@@ -446,17 +432,32 @@ fn remote_status(output: &str) -> WorkingState {
             continue;
         }
         let bytes = record.as_bytes();
+        let first = bytes[0] as char;
+        let second = bytes[1] as char;
+        let path = record[3..].to_string();
+
+        // Porcelain reports every unmerged state in two columns, but it is
+        // one unresolved working-tree path. Keep it out of the index list,
+        // exactly like the local backend, so the conflict screen is the only
+        // place that claims it can be resolved.
+        if unmerged_status(first, second) {
+            state.unstaged.push(FileChange {
+                path,
+                kind: ChangeKind::Conflicted,
+                staged: false,
+            });
+            continue;
+        }
         let staged = (bytes[0] as char != '?')
-            .then(|| change_kind(bytes[0] as char, bytes[1] as char))
+            .then(|| change_kind(first))
             .flatten();
         let unstaged = (bytes[1] as char != '?')
-            .then(|| change_kind(bytes[1] as char, bytes[0] as char))
+            .then(|| change_kind(second))
             .flatten()
             .or_else(|| {
                 (bytes[0] as char == '?' && bytes[1] as char == '?')
                     .then_some(ChangeKind::Untracked)
             });
-        let path = record[3..].to_string();
         if let Some(kind) = staged {
             state.staged.push(FileChange {
                 path: path.clone(),
@@ -481,7 +482,16 @@ fn remote_status(output: &str) -> WorkingState {
     state
 }
 
-fn change_kind(code: char, other: char) -> Option<ChangeKind> {
+/// The complete set of unmerged XY pairs from `git status --porcelain=v1`.
+/// A `U` is not present in every case (`AA` and `DD` are also conflicts).
+pub(crate) fn unmerged_status(first: char, second: char) -> bool {
+    matches!(
+        (first, second),
+        ('D', 'D') | ('A', 'U') | ('U', 'D') | ('U', 'A') | ('D', 'U') | ('A', 'A') | ('U', 'U')
+    )
+}
+
+fn change_kind(code: char) -> Option<ChangeKind> {
     Some(match code {
         ' ' => return None,
         '?' => ChangeKind::Untracked,
@@ -490,7 +500,7 @@ fn change_kind(code: char, other: char) -> Option<ChangeKind> {
         'D' => ChangeKind::Deleted,
         'R' => ChangeKind::Renamed,
         'C' | 'T' => ChangeKind::TypeChange,
-        'U' | _ if other == 'U' => ChangeKind::Conflicted,
+        'U' => ChangeKind::Conflicted,
         _ => return None,
     })
 }
@@ -550,6 +560,27 @@ fn label(reference: &str) -> Option<(RefKind, String)> {
         })
 }
 
+fn parse_ref_labels(output: &str) -> HashMap<Oid, Vec<RefLabel>> {
+    let mut labels = HashMap::new();
+    let fields: Vec<&str> = output.split('\0').collect();
+    for pair in fields.chunks_exact(2) {
+        // Git terminates every formatted ref with a newline. The NUL fields
+        // make the names unambiguous, but that newline becomes the first
+        // character of the next object id unless it is removed.
+        let Ok(target) = Oid::from_str(pair[0].trim_start_matches('\n')) else {
+            continue;
+        };
+        let Some((kind, name)) = label(pair[1]) else {
+            continue;
+        };
+        labels
+            .entry(target)
+            .or_insert_with(Vec::new)
+            .push(RefLabel { name, kind });
+    }
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +596,18 @@ mod tests {
             Some((RefKind::RemoteBranch, _))
         ));
         assert!(matches!(label("refs/tags/v1"), Some((RefKind::Tag, _))));
+    }
+
+    #[test]
+    fn nul_separated_ref_output_keeps_every_ref() {
+        let output = concat!(
+            "1111111111111111111111111111111111111111\0refs/heads/main\0\n",
+            "2222222222222222222222222222222222222222\0refs/heads/topic\0\n",
+        );
+        let labels = parse_ref_labels(output);
+        assert_eq!(labels.len(), 2);
+        assert!(labels.values().flatten().any(|label| label.name == "main"));
+        assert!(labels.values().flatten().any(|label| label.name == "topic"));
     }
 
     #[test]
@@ -585,6 +628,16 @@ mod tests {
             .unstaged
             .iter()
             .any(|change| change.path == "new file"));
+    }
+
+    #[test]
+    fn every_unmerged_porcelain_pair_is_one_unstaged_conflict() {
+        for code in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            let state = remote_status(&format!("{code} conflict.txt\0"));
+            assert!(state.staged.is_empty(), "{code} is not staged work");
+            assert_eq!(state.unstaged.len(), 1, "{code} appears once");
+            assert_eq!(state.unstaged[0].kind, ChangeKind::Conflicted, "{code}");
+        }
     }
 
     #[test]

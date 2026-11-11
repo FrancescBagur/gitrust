@@ -5,7 +5,10 @@
 //! else is grey with a steady cold cast, and only HEAD is allowed an amber.
 //! If something new needs color, it comes from here or it does not come.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke};
+use gitrust_core::Appearance;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
@@ -15,43 +18,49 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 // A blue-green slate, not black. The graph's canvas is the deepest, so that
 // the lanes stand out against it.
 
-/// The graph's background.
-pub const CANVAS: Color32 = rgb(0x0F, 0x14, 0x16);
-/// Side bars.
-pub const PANEL: Color32 = rgb(0x14, 0x1A, 0x1C);
-/// The top bar and headers.
-pub const RAISED: Color32 = rgb(0x1B, 0x23, 0x26);
-/// Text boxes, which read as sunken.
-pub const SUNKEN: Color32 = rgb(0x0A, 0x0E, 0x10);
-/// The background of the row under the cursor.
-pub const HOVER: Color32 = rgb(0x1A, 0x22, 0x26);
-/// The background of the chosen row.
-pub const CHOSEN: Color32 = rgb(0x23, 0x2E, 0x33);
+static LIGHT: AtomicBool = AtomicBool::new(false);
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Dividing lines: only where they are really needed.
-pub const HAIRLINE: Color32 = rgb(0x22, 0x2C, 0x30);
-/// The border of what can be pressed.
-pub const EDGE: Color32 = rgb(0x30, 0x3C, 0x41);
+fn choose(dark: Color32, light: Color32) -> Color32 {
+    if LIGHT.load(Ordering::Relaxed) { light } else { dark }
+}
 
-// ── Text ───────────────────────────────────────────────────────────────────
-// Three levels. What is secondary steps back by contrast, not by size.
+/// Whether the currently installed palette is the light one.
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
 
-pub const TEXT: Color32 = rgb(0xDC, 0xE4, 0xE6);
-pub const MUTED: Color32 = rgb(0x8D, 0x9D, 0xA2);
-pub const FAINT: Color32 = rgb(0x5F, 0x70, 0x76);
+/// Syntax colours stay more vivid than the surrounding chrome in light mode:
+/// code is where the eye needs hue to distinguish meaning quickly.
+pub fn code_keyword() -> Color32 { choose(lane(6), rgb(0xC2, 0x00, 0xC2)) }
+pub fn code_declaration() -> Color32 { choose(lane(5), rgb(0xE5, 0x14, 0x14)) }
+pub fn code_type() -> Color32 { choose(lane(4), rgb(0x7B, 0x3F, 0xF2)) }
+pub fn code_call() -> Color32 { choose(lane(0), rgb(0x7B, 0x3F, 0xF2)) }
+pub fn code_quoted() -> Color32 { choose(lane(7), rgb(0x00, 0x2B, 0x72)) }
+pub fn code_number() -> Color32 { choose(lane(3), rgb(0x00, 0x8A, 0x4A)) }
 
-/// HEAD's amber. It is the only mark of this color in the whole window.
-pub const HEAD: Color32 = rgb(0xF0, 0xB4, 0x29);
-
-// ── Diff ───────────────────────────────────────────────────────────────────
-
-pub const ADDED: Color32 = rgb(0x72, 0xC9, 0x8A);
-pub const REMOVED: Color32 = rgb(0xE7, 0x67, 0x5E);
-pub const CHANGED: Color32 = rgb(0xE8, 0xA3, 0x3D);
-pub const ADDED_BG: Color32 = rgb(0x12, 0x24, 0x1A);
-pub const REMOVED_BG: Color32 = rgb(0x2A, 0x16, 0x16);
-pub const ADDED_FG: Color32 = rgb(0xB6, 0xE2, 0xC2);
-pub const REMOVED_FG: Color32 = rgb(0xF2, 0xB4, 0xAF);
+pub fn canvas() -> Color32 { choose(rgb(0x0F, 0x14, 0x16), rgb(0xFF, 0xFF, 0xFF)) }
+/// File and code surfaces stay white in Sol, separate from the surrounding
+/// tool chrome, just as an editor does.
+pub fn file_surface() -> Color32 { choose(panel(), rgb(0xFF, 0xFF, 0xFF)) }
+pub fn panel() -> Color32 { choose(rgb(0x14, 0x1A, 0x1C), rgb(0xF5, 0xF5, 0xF5)) }
+pub fn raised() -> Color32 { choose(rgb(0x1B, 0x23, 0x26), rgb(0xF5, 0xF5, 0xF5)) }
+pub fn sunken() -> Color32 { choose(rgb(0x0A, 0x0E, 0x10), rgb(0xE7, 0xE8, 0xEC)) }
+pub fn hover() -> Color32 { choose(rgb(0x1A, 0x22, 0x26), rgb(0xC9, 0xDE, 0xF5)) }
+pub fn chosen() -> Color32 { choose(rgb(0x23, 0x2E, 0x33), rgb(0xE7, 0xE8, 0xEC)) }
+pub fn hairline() -> Color32 { choose(rgb(0x22, 0x2C, 0x30), rgb(0xEE, 0xEE, 0xF2)) }
+pub fn edge() -> Color32 { choose(rgb(0x30, 0x3C, 0x41), rgb(0xCC, 0xCE, 0xDB)) }
+pub fn text() -> Color32 { choose(rgb(0xDC, 0xE4, 0xE6), rgb(0x1E, 0x1E, 0x1E)) }
+pub fn muted() -> Color32 { choose(rgb(0x8D, 0x9D, 0xA2), rgb(0x6B, 0x6B, 0x6B)) }
+pub fn faint() -> Color32 { choose(rgb(0x5F, 0x70, 0x76), rgb(0x6F, 0x6F, 0x6F)) }
+pub fn head() -> Color32 { choose(rgb(0xF0, 0xB4, 0x29), rgb(0x9A, 0x61, 0x00)) }
+pub fn added() -> Color32 { choose(rgb(0x72, 0xC9, 0x8A), rgb(0x28, 0x7A, 0x45)) }
+pub fn removed() -> Color32 { choose(rgb(0xE7, 0x67, 0x5E), rgb(0xB5, 0x35, 0x2B)) }
+pub fn changed() -> Color32 { choose(rgb(0xE8, 0xA3, 0x3D), rgb(0xA4, 0x63, 0x00)) }
+pub fn added_bg() -> Color32 { choose(rgb(0x12, 0x24, 0x1A), rgb(0xE7, 0xF5, 0xEB)) }
+pub fn removed_bg() -> Color32 { choose(rgb(0x2A, 0x16, 0x16), rgb(0xFC, 0xE8, 0xE7)) }
+pub fn added_fg() -> Color32 { choose(rgb(0xB6, 0xE2, 0xC2), rgb(0x1E, 0x63, 0x37)) }
+pub fn removed_fg() -> Color32 { choose(rgb(0xF2, 0xB4, 0xAF), rgb(0x9B, 0x2B, 0x23)) }
 
 // ── Lanes ──────────────────────────────────────────────────────────────────
 // Eight tones of even lightness, so that no lane shouts louder than another,
@@ -169,18 +178,28 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Leaves the context with the whole theme: fonts, colors and spacing.
-pub fn install(ctx: &egui::Context) {
-    // This application has one deliberate appearance. Selecting it before
-    // building the style means `apply` starts from egui's complete dark base,
-    // including values it does not need to customise (cursor and shadows).
-    ctx.set_theme(egui::ThemePreference::Dark);
+/// Installs the fonts and the initial appearance.
+pub fn install(ctx: &egui::Context, appearance: Appearance) {
     install_fonts(ctx);
-    apply(ctx);
+    sync(ctx, appearance);
 }
 
-/// Installs the application palette over egui's known dark base.
-pub fn apply(ctx: &egui::Context) {
+/// Updates the palette when the selection, or the system preference behind
+/// Auto, changes.
+pub fn sync(ctx: &egui::Context, appearance: Appearance) {
+    let light = match appearance {
+        Appearance::Light => true,
+        Appearance::Dark => false,
+        Appearance::Auto => matches!(ctx.system_theme(), Some(egui::Theme::Light)),
+    };
+    if LIGHT.swap(light, Ordering::Relaxed) != light || !INSTALLED.swap(true, Ordering::Relaxed) {
+        ctx.set_theme(if light { egui::ThemePreference::Light } else { egui::ThemePreference::Dark });
+    }
+    apply(ctx, light);
+}
+
+/// Installs the application palette over egui's matching base theme.
+fn apply(ctx: &egui::Context, light: bool) {
     let mut style = (*ctx.style()).clone();
 
     // A short, deliberate scale. Thirteen to read, eleven for the data.
@@ -195,56 +214,57 @@ pub fn apply(ctx: &egui::Context) {
     .into();
 
     let v = &mut style.visuals;
-    v.dark_mode = true;
-    v.panel_fill = PANEL;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = SUNKEN;
-    v.faint_bg_color = HOVER;
-    v.code_bg_color = SUNKEN;
-    v.window_stroke = Stroke::new(1.0, HAIRLINE);
+    v.dark_mode = !light;
+    v.panel_fill = panel();
+    v.window_fill = panel();
+    v.extreme_bg_color = sunken();
+    v.faint_bg_color = hover();
+    v.code_bg_color = sunken();
+    v.window_stroke = Stroke::new(1.0, hairline());
     v.window_corner_radius = CornerRadius::same(RADIUS);
     v.menu_corner_radius = CornerRadius::same(RADIUS);
-    v.warn_fg_color = CHANGED;
-    v.error_fg_color = REMOVED;
+    v.warn_fg_color = changed();
+    v.error_fg_color = removed();
     v.hyperlink_color = lane(0);
 
-    // The selection takes the first lane's azure: the same blue already on
-    // screen, instead of a new one brought in from outside.
-    v.selection.bg_fill = tint(lane(0), 56);
-    v.selection.stroke = Stroke::new(1.0, lane(0));
+    // Selection is the one quiet colour in the light theme: Visual Studio's
+    // pale-blue mark lets the current view, row, or toggle stand out while
+    // all controls at rest remain neutral.
+    v.selection.bg_fill = choose(tint(lane(0), 56), rgb(0xC9, 0xDE, 0xF5));
+    v.selection.stroke = Stroke::new(1.0, choose(lane(0), rgb(0x00, 0x7A, 0xCC)));
 
     let w = &mut v.widgets;
-    w.noninteractive.bg_fill = PANEL;
-    w.noninteractive.weak_bg_fill = PANEL;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
+    w.noninteractive.bg_fill = panel();
+    w.noninteractive.weak_bg_fill = panel();
+    w.noninteractive.bg_stroke = Stroke::new(1.0, hairline());
+    w.noninteractive.fg_stroke = Stroke::new(1.0, muted());
     w.noninteractive.corner_radius = CornerRadius::same(RADIUS);
 
-    w.inactive.bg_fill = RAISED;
-    w.inactive.weak_bg_fill = RAISED;
-    w.inactive.bg_stroke = Stroke::new(1.0, HAIRLINE);
-    w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.inactive.bg_fill = raised();
+    w.inactive.weak_bg_fill = raised();
+    w.inactive.bg_stroke = Stroke::new(1.0, hairline());
+    w.inactive.fg_stroke = Stroke::new(1.0, text());
     w.inactive.corner_radius = CornerRadius::same(RADIUS);
     w.inactive.expansion = 0.0;
 
-    w.hovered.bg_fill = rgb(0x24, 0x2F, 0x33);
-    w.hovered.weak_bg_fill = rgb(0x24, 0x2F, 0x33);
-    w.hovered.bg_stroke = Stroke::new(1.0, EDGE);
-    w.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    w.hovered.bg_fill = choose(rgb(0x24, 0x2F, 0x33), hover());
+    w.hovered.weak_bg_fill = w.hovered.bg_fill;
+    w.hovered.bg_stroke = Stroke::new(1.0, choose(edge(), rgb(0x00, 0x7A, 0xCC)));
+    w.hovered.fg_stroke = Stroke::new(1.0, text());
     w.hovered.corner_radius = CornerRadius::same(RADIUS);
     w.hovered.expansion = 0.0;
 
-    w.active.bg_fill = rgb(0x2C, 0x39, 0x3E);
-    w.active.weak_bg_fill = rgb(0x2C, 0x39, 0x3E);
-    w.active.bg_stroke = Stroke::new(1.0, lane(0));
-    w.active.fg_stroke = Stroke::new(1.0, TEXT);
+    w.active.bg_fill = choose(rgb(0x2C, 0x39, 0x3E), rgb(0x00, 0x7A, 0xCC));
+    w.active.weak_bg_fill = w.active.bg_fill;
+    w.active.bg_stroke = Stroke::new(1.0, choose(lane(0), rgb(0x00, 0x7A, 0xCC)));
+    w.active.fg_stroke = Stroke::new(1.0, choose(text(), rgb(0xFF, 0xFF, 0xFF)));
     w.active.corner_radius = CornerRadius::same(RADIUS);
     w.active.expansion = 0.0;
 
-    w.open.bg_fill = RAISED;
-    w.open.weak_bg_fill = RAISED;
-    w.open.bg_stroke = Stroke::new(1.0, EDGE);
-    w.open.fg_stroke = Stroke::new(1.0, TEXT);
+    w.open.bg_fill = choose(raised(), rgb(0xC9, 0xDE, 0xF5));
+    w.open.weak_bg_fill = w.open.bg_fill;
+    w.open.bg_stroke = Stroke::new(1.0, choose(edge(), rgb(0x00, 0x7A, 0xCC)));
+    w.open.fg_stroke = Stroke::new(1.0, text());
     w.open.corner_radius = CornerRadius::same(RADIUS);
 
     let s = &mut style.spacing;
@@ -253,7 +273,8 @@ pub fn apply(ctx: &egui::Context) {
     s.indent = 14.0;
     s.interact_size.y = 24.0;
     s.scroll.bar_width = 9.0;
-    s.scroll.floating = false;
+    // Overlay bars do not make the code jump sideways as they appear.
+    s.scroll.floating = true;
 
     ctx.set_style(style);
 }
@@ -330,7 +351,7 @@ pub fn glyph_at(ui: &egui::Ui, which: Glyph, color: Color32, rect: egui::Rect) {
                     egui::pos2(right + 1.0, bottom + 2.0),
                 ),
                 0,
-                PANEL,
+                panel(),
             );
             painter.line_segment([egui::pos2(left + 0.6, y), egui::pos2(right - 0.6, y)], thin);
         }
@@ -354,7 +375,7 @@ pub fn glyph_at(ui: &egui::Ui, which: Glyph, color: Color32, rect: egui::Rect) {
                 egui::pos2(right, bottom),
             );
             painter.rect_stroke(back, 1, thin, egui::StrokeKind::Inside);
-            painter.rect_filled(front, 1, PANEL);
+            painter.rect_filled(front, 1, panel());
             painter.rect_stroke(front, 1, thin, egui::StrokeKind::Inside);
         }
         Glyph::Branch => {
@@ -388,9 +409,9 @@ pub fn group(ui: &mut egui::Ui, name: &str, forced: bool, inside: impl FnOnce(&m
 
     state
         .show_header(ui, |ui| {
-            glyph(ui, Glyph::Group, MUTED);
+            glyph(ui, Glyph::Group, muted());
             ui.add_space(2.0);
-            ui.label(egui::RichText::new(name).font(body(12.0)).color(MUTED));
+            ui.label(egui::RichText::new(name).font(body(12.0)).color(muted()));
         })
         .body(inside);
 }
@@ -423,19 +444,19 @@ pub fn section(
     rule(ui);
     state
         .show_header(ui, |ui| {
-            glyph(ui, mark, MUTED);
+            glyph(ui, mark, muted());
             ui.add_space(2.0);
             ui.label(
                 egui::RichText::new(title)
                     .font(medium(11.5))
-                    .color(MUTED),
+                    .color(muted()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new(count.to_string())
                         .font(mono(10.5))
-                        .color(FAINT),
+                        .color(faint()),
                 );
             });
         })
@@ -452,7 +473,7 @@ pub fn rule(ui: &mut egui::Ui) {
     ui.painter().hline(
         rect.left()..=rect.right(),
         rect.center().y,
-        Stroke::new(1.0, HAIRLINE),
+        Stroke::new(1.0, hairline()),
     );
     ui.add_space(6.0);
 }
@@ -483,8 +504,8 @@ pub fn grip(ui: &mut egui::Ui, name: &'static str) -> f32 {
         rect.left()..=rect.right(),
         rect.center().y,
         match live {
-            true => Stroke::new(2.0, CHOSEN),
-            false => Stroke::new(1.0, HAIRLINE),
+            true => Stroke::new(2.0, chosen()),
+            false => Stroke::new(1.0, hairline()),
         },
     );
 
@@ -499,7 +520,7 @@ pub fn vrule(ui: &mut egui::Ui) {
     ui.add_space(6.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 19.0), egui::Sense::hover());
     ui.painter()
-        .vline(rect.center().x, rect.top()..=rect.bottom(), Stroke::new(1.0, EDGE));
+        .vline(rect.center().x, rect.top()..=rect.bottom(), Stroke::new(1.0, edge()));
     ui.add_space(6.0);
 }
 
@@ -517,7 +538,7 @@ pub fn caret(ui: &egui::Ui, response: &egui::Response) {
             egui::pos2(x + 3.6, y - 2.0),
             egui::pos2(x, y + 2.4),
         ],
-        MUTED,
+        muted(),
         Stroke::NONE,
     ));
 }
@@ -527,7 +548,7 @@ pub fn caret(ui: &egui::Ui, response: &egui::Response) {
 pub fn empty(ui: &mut egui::Ui, text: &str) {
     ui.vertical_centered(|ui| {
         ui.add_space(56.0);
-        ui.label(egui::RichText::new(text).font(body(12.5)).color(FAINT));
+        ui.label(egui::RichText::new(text).font(body(12.5)).color(faint()));
     });
 }
 
@@ -544,11 +565,11 @@ pub fn path_text(path: &str, size: f32, selected: bool) -> egui::text::LayoutJob
         None => (String::new(), path),
     };
 
-    let dim = if selected { MUTED } else { FAINT };
+    let dim = if selected { muted() } else { faint() };
     if !folder.is_empty() {
         job.append(&folder, 0.0, egui::TextFormat::simple(body(size), dim));
     }
-    job.append(name, 0.0, egui::TextFormat::simple(body(size), TEXT));
+    job.append(name, 0.0, egui::TextFormat::simple(body(size), text()));
     job
 }
 

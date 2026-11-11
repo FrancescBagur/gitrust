@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            pkg-config libssl-dev zlib1g-dev \
+            pkg-config libssl-dev zlib1g-dev openssh-server \
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libgl1-mesa-dev
@@ -52,6 +52,11 @@ jobs:
       # will pass on a desk and fail here, and none of these needs one.
       - name: Test
         run: cargo test --workspace --locked
+
+      # This test starts its own daemon and checkout, so it verifies remote
+      # reads and writes without using a host, key, or repository from CI.
+      - name: Test remote SSH operations
+        run: GITRUST_SSHD_INTEGRATION=1 cargo test -p gitrust-core --test remote_ssh -- --ignored
 
   # Neither of these runs the tests, and neither has ever been tried: the
   # program has only ever been built on Linux. They are here to find out

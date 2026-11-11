@@ -29,9 +29,6 @@ use gitrust_core::Hunk;
 
 use crate::{syntax, theme};
 
-pub const ADDED: Color32 = theme::ADDED;
-pub const REMOVED: Color32 = theme::REMOVED;
-
 const LINE_H: f32 = 17.0;
 const NUM_W: f32 = 34.0;
 const GUTTER: f32 = NUM_W * 2.0 + 10.0;
@@ -43,7 +40,7 @@ pub fn header(ui: &mut egui::Ui, hunk: &Hunk) {
         ui.label(
             egui::RichText::new(hunk.header.trim())
                 .font(theme::mono(11.0))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             counts(ui, added, removed);
@@ -92,9 +89,12 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
         }
 
         let (foreground, background) = match line.origin {
-            '+' => (theme::ADDED_FG, theme::ADDED_BG),
-            '-' => (theme::REMOVED_FG, theme::REMOVED_BG),
-            _ => (theme::MUTED, Color32::TRANSPARENT),
+            '+' => (theme::added_fg(), theme::added_bg()),
+            '-' => (theme::removed_fg(), theme::removed_bg()),
+            _ => (
+                if theme::is_light() { theme::text() } else { theme::muted() },
+                Color32::TRANSPARENT,
+            ),
         };
 
         if background != Color32::TRANSPARENT {
@@ -104,7 +104,7 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
             painter.rect_filled(
                 Rect::from_min_size(band.min, egui::vec2(2.0, LINE_H)),
                 0.0,
-                if line.origin == '+' { ADDED } else { REMOVED },
+                if line.origin == '+' { theme::added() } else { theme::removed() },
             );
         }
 
@@ -115,7 +115,7 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
                     Align2::RIGHT_CENTER,
                     value.to_string(),
                     theme::mono(10.5),
-                    theme::tint(theme::FAINT, 190),
+                    theme::tint(theme::faint(), 190),
                 );
             }
         };
@@ -157,7 +157,7 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
     painter.vline(
         rect.left() + GUTTER - 6.0,
         rect.top()..=rect.bottom(),
-        Stroke::new(1.0, theme::HAIRLINE),
+        Stroke::new(1.0, theme::hairline()),
     );
 }
 
@@ -167,6 +167,9 @@ pub fn lines(ui: &mut egui::Ui, hunk: &Hunk, path: &str) {
 /// around a change are there to place it, and a diff where every line is as
 /// loud as every other is a diff you have to search rather than read.
 fn shade(color: Color32, origin: char) -> Color32 {
+    if theme::is_light() {
+        return color;
+    }
     match origin {
         '+' | '-' => color,
         _ => theme::tint(color, 170),
@@ -179,14 +182,14 @@ pub fn counts(ui: &mut egui::Ui, added: usize, removed: usize) {
         ui.label(
             egui::RichText::new(format!("−{removed}"))
                 .font(theme::mono(10.5))
-                .color(REMOVED),
+                .color(theme::removed()),
         );
     }
     if added > 0 {
         ui.label(
             egui::RichText::new(format!("+{added}"))
                 .font(theme::mono(10.5))
-                .color(ADDED),
+                .color(theme::added()),
         );
     }
 }

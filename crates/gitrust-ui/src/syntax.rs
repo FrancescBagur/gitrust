@@ -34,6 +34,8 @@ pub enum Kind {
     Plain,
     /// A word the language owns.
     Keyword,
+    /// A declaration keyword such as `const` or `function`.
+    Declaration,
     /// A word that starts with a capital, which in nearly every language
     /// means a type, a class or something else somebody declared.
     Type,
@@ -51,14 +53,15 @@ pub enum Kind {
 impl Kind {
     pub fn color(self) -> Color32 {
         match self {
-            Kind::Plain => theme::TEXT,
-            Kind::Keyword => theme::lane(6),
-            Kind::Type => theme::lane(4),
-            Kind::Call => theme::lane(0),
-            Kind::Quoted => theme::lane(7),
-            Kind::Number => theme::lane(3),
-            Kind::Comment => theme::FAINT,
-            Kind::Mark => theme::MUTED,
+            Kind::Plain => theme::text(),
+            Kind::Keyword => theme::code_keyword(),
+            Kind::Declaration => theme::code_declaration(),
+            Kind::Type => theme::code_type(),
+            Kind::Call => theme::code_call(),
+            Kind::Quoted => theme::code_quoted(),
+            Kind::Number => theme::code_number(),
+            Kind::Comment => theme::faint(),
+            Kind::Mark => theme::muted(),
         }
     }
 }
@@ -243,6 +246,9 @@ fn cut(line: &str, tongue: Tongue, carry: &mut Carry) -> Vec<Piece> {
 /// What a bare word is: a keyword, a name somebody declared, something being
 /// called, or none of those.
 fn word_kind(word: &str, chars: &[char], after: usize) -> Kind {
+    if declaration(word) {
+        return Kind::Declaration;
+    }
     if keyword(word) {
         return Kind::Keyword;
     }
@@ -258,6 +264,14 @@ fn word_kind(word: &str, chars: &[char], after: usize) -> Kind {
         true => Kind::Call,
         false => Kind::Plain,
     }
+}
+
+fn declaration(word: &str) -> bool {
+    matches!(
+        word,
+        "const" | "let" | "var" | "function" | "class" | "interface" | "struct" | "enum"
+            | "type" | "trait" | "fn" | "def" | "func"
+    )
 }
 
 /// A single quote is a string in most languages and a lifetime in Rust. The
@@ -448,7 +462,7 @@ mod tests {
     #[test]
     fn a_keyword_a_type_and_a_call_are_told_apart() {
         let line = only("let thing = Repo::open(path);", "a.rs");
-        assert!(line.iter().any(|(t, k)| t == "let" && *k == Kind::Keyword));
+        assert!(line.iter().any(|(t, k)| t == "let" && *k == Kind::Declaration));
         assert!(line.iter().any(|(t, k)| t == "Repo" && *k == Kind::Type));
         assert!(line.iter().any(|(t, k)| t == "open" && *k == Kind::Call));
         assert!(line.iter().any(|(t, k)| t.contains("thing") && *k == Kind::Plain));
@@ -464,7 +478,7 @@ mod tests {
             .collect();
         assert_eq!(comment, "// let y = 2;");
         // And the keyword inside it is not one any more.
-        assert_eq!(line.iter().filter(|(t, k)| t == "let" && *k == Kind::Keyword).count(), 1);
+        assert_eq!(line.iter().filter(|(t, k)| t == "let" && *k == Kind::Declaration).count(), 1);
     }
 
     #[test]
@@ -570,7 +584,9 @@ mod tests {
     fn a_fragment_does_not_know_about_a_comment_that_opened_above_it() {
         let inside = read_lines(&["still inside the comment", "*/ let x = 1;"], "a.rs");
         assert_ne!(inside[0][0].kind, Kind::Comment, "it cannot know: {inside:?}");
-        assert!(inside[1].iter().any(|p| p.text == "let" && p.kind == Kind::Keyword));
+        assert!(inside[1]
+            .iter()
+            .any(|p| p.text == "let" && p.kind == Kind::Declaration));
     }
 
     #[test]

@@ -57,13 +57,13 @@ pub struct Draft<'a> {
 
 fn kind_color(kind: ChangeKind) -> Color32 {
     match kind {
-        ChangeKind::Added => theme::ADDED,
-        ChangeKind::Modified => theme::CHANGED,
-        ChangeKind::Deleted => theme::REMOVED,
+        ChangeKind::Added => theme::added(),
+        ChangeKind::Modified => theme::changed(),
+        ChangeKind::Deleted => theme::removed(),
         ChangeKind::Renamed => theme::lane(0),
         ChangeKind::TypeChange => theme::lane(6),
-        ChangeKind::Untracked => theme::MUTED,
-        ChangeKind::Conflicted => theme::REMOVED,
+        ChangeKind::Untracked => theme::muted(),
+        ChangeKind::Conflicted => theme::removed(),
     }
 }
 
@@ -82,7 +82,7 @@ pub fn show(
         .default_width(330.0)
         .frame(
             egui::Frame::NONE
-                .fill(theme::PANEL)
+                .fill(theme::file_surface())
                 .inner_margin(egui::Margin::symmetric(10, 0)),
         )
         .show_inside(ui, |ui| {
@@ -91,7 +91,7 @@ pub fn show(
                 .resizable(false)
                 .frame(
                     egui::Frame::NONE
-                        .fill(theme::PANEL)
+                        .fill(theme::file_surface())
                         .inner_margin(egui::Margin::symmetric(0, 10)),
                 )
                 .show_inside(ui, |ui| {
@@ -129,7 +129,7 @@ pub fn show(
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
-                .fill(theme::CANVAS)
+                .fill(theme::canvas())
                 .inner_margin(egui::Margin::symmetric(12, 8)),
         )
         .show_inside(ui, |ui| {
@@ -157,7 +157,7 @@ pub fn compact(
     ui.label(
         RichText::new("Uncommitted changes")
             .font(theme::strong(15.0))
-            .color(theme::TEXT),
+            .color(theme::text()),
     );
     ui.add_space(3.0);
     let note = theme::pending_label(state.staged.len(), state.unstaged.len());
@@ -168,7 +168,7 @@ pub fn compact(
             note
         })
         .font(theme::body(11.5))
-        .color(theme::MUTED),
+        .color(theme::muted()),
     );
 
     theme::rule(ui);
@@ -223,14 +223,14 @@ fn commit_box(
         ui.label(
             RichText::new("Title")
                 .font(theme::medium(11.5))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let length = draft.subject.chars().count();
             let color = if length > SUBJECT_LIMIT {
-                theme::CHANGED
+                theme::changed()
             } else {
-                theme::FAINT
+                theme::faint()
             };
             ui.label(
                 RichText::new(format!("{length}/{SUBJECT_LIMIT}"))
@@ -245,14 +245,14 @@ fn commit_box(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
             .font(theme::body(12.5))
-            .hint_text(RichText::new("feat: one-line summary").color(theme::FAINT)),
+            .hint_text(RichText::new("feat: one-line summary").color(theme::faint())),
     );
 
     ui.add_space(8.0);
     ui.label(
         RichText::new("Description")
             .font(theme::medium(11.5))
-            .color(theme::MUTED),
+            .color(theme::muted()),
     );
     ui.add_space(3.0);
     ui.add(
@@ -261,7 +261,7 @@ fn commit_box(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 6.0))
             .font(theme::mono(11.5))
-            .hint_text(RichText::new("What changes, and why").color(theme::FAINT)),
+            .hint_text(RichText::new("What changes, and why").color(theme::faint())),
     );
     ui.add_space(8.0);
 
@@ -277,7 +277,7 @@ fn commit_box(
             .fill(if ready {
                 theme::tint(theme::lane(0), 54)
             } else {
-                theme::RAISED
+                theme::raised()
             })
             .min_size(egui::vec2(88.0, 28.0));
 
@@ -308,14 +308,14 @@ fn commit_box(
         ui.label(
             RichText::new(note)
                 .font(theme::body(11.5))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
 
         if draft.amendable {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let text = RichText::new("Amend the last one")
                     .font(theme::body(11.5))
-                    .color(if amending { theme::TEXT } else { theme::MUTED });
+                    .color(if amending { theme::text() } else { theme::muted() });
 
                 if ui
                     .checkbox(draft.amend, text)
@@ -337,7 +337,7 @@ fn commit_box(
                 "That commit is already on {remote}: the next push will have to be forced"
             ))
             .font(theme::body(11.0))
-            .color(theme::CHANGED),
+            .color(theme::changed()),
         );
     }
 }
@@ -356,12 +356,12 @@ fn section(
         ui.label(
             RichText::new(title)
                 .font(theme::medium(11.5))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
         ui.label(
             RichText::new(files.len().to_string())
                 .font(theme::mono(10.5))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
 
         if !files.is_empty() {
@@ -373,7 +373,7 @@ fn section(
                         egui::Button::new(
                             RichText::new(label)
                                 .font(theme::body(11.0))
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                         ),
                     )
                     .clicked()
@@ -394,7 +394,7 @@ fn section(
                             egui::Button::new(
                                 RichText::new("Discard all")
                                     .font(theme::body(11.0))
-                                    .color(theme::REMOVED),
+                                    .color(theme::removed()),
                             ),
                         )
                         .clicked()
@@ -417,7 +417,7 @@ fn section(
             ui.label(
                 RichText::new(note)
                     .font(theme::body(11.5))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
         });
         return;
@@ -474,7 +474,7 @@ fn section(
                             egui::Button::new(
                                 RichText::new("×")
                                     .font(theme::mono(12.0))
-                                    .color(theme::MUTED),
+                                    .color(theme::muted()),
                             )
                             .min_size(egui::vec2(20.0, 20.0)),
                         )
@@ -513,7 +513,7 @@ fn show_diff(
                 "in the working tree"
             })
             .font(theme::body(11.0))
-            .color(theme::FAINT),
+            .color(theme::faint()),
         );
         if let Some(diff) = diff {
             let (added, removed) = diff.counts();
@@ -578,7 +578,7 @@ fn show_diff(
                     ui.label(
                         RichText::new(hunk.header.trim())
                             .font(theme::mono(11.0))
-                            .color(theme::FAINT),
+                            .color(theme::faint()),
                     );
 
                     let (added, removed) = hunk.counts();
@@ -592,7 +592,7 @@ fn show_diff(
                                     egui::Button::new(
                                         RichText::new("Discard")
                                             .font(theme::body(11.0))
-                                            .color(theme::REMOVED),
+                                            .color(theme::removed()),
                                     ),
                                 )
                                 .on_hover_text("Undo just this hunk in the working tree")

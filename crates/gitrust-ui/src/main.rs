@@ -33,7 +33,7 @@ mod toast;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
+    compose, layout, layout_with_working, Appearance, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
     Join, Move, Oid, PullMode, PullRequests, Reader, RefEntry, RefKind, RemoteRepo, Repo, Settings,
     StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
@@ -75,6 +75,84 @@ const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
 /// here to let somebody see it rather than take it on faith. The README
 /// says the same at the length a README has.
 const SLOGAN: &str = "Trust, protected. Code, eternal.";
+
+/// A compact three-state appearance control with icons drawn by us rather
+/// than borrowed from whatever glyphs the platform happens to provide.
+fn appearance_control(ui: &mut egui::Ui, settings: &mut Settings) -> bool {
+    let before = settings.appearance;
+    ui.allocate_ui_with_layout(
+        egui::vec2(82.0, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::Frame::NONE
+                .fill(theme::sunken())
+                .stroke(egui::Stroke::new(1.0, theme::edge()))
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(2, 2))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if appearance_icon(ui, Appearance::Light, settings.appearance == Appearance::Light)
+                        .on_hover_text("Sol — tema claro")
+                        .clicked()
+                    {
+                        settings.appearance = Appearance::Light;
+                    }
+                    if appearance_icon(ui, Appearance::Dark, settings.appearance == Appearance::Dark)
+                        .on_hover_text("Luna — tema oscuro")
+                        .clicked()
+                    {
+                        settings.appearance = Appearance::Dark;
+                    }
+                    if appearance_icon(ui, Appearance::Auto, settings.appearance == Appearance::Auto)
+                        .on_hover_text("Auto — seguir el sistema")
+                        .clicked()
+                    {
+                        settings.appearance = Appearance::Auto;
+                    }
+                });
+        },
+    );
+    settings.appearance != before
+}
+
+fn appearance_icon(ui: &mut egui::Ui, appearance: Appearance, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 18.0), egui::Sense::click());
+    let painter = ui.painter();
+    let selected_fill = ui.visuals().selection.bg_fill;
+    let background = if selected { selected_fill } else { theme::sunken() };
+    if selected || response.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(3), if selected { selected_fill } else { theme::hover() });
+    }
+
+    let center = rect.center();
+    let ink = theme::text();
+    let stroke = egui::Stroke::new(1.35, ink);
+    match appearance {
+        Appearance::Light => {
+            painter.circle_stroke(center, 3.3, stroke);
+            for step in 0..8 {
+                let angle = std::f32::consts::TAU * step as f32 / 8.0;
+                let direction = egui::vec2(angle.cos(), angle.sin());
+                painter.line_segment([center + direction * 5.2, center + direction * 7.0], stroke);
+            }
+        }
+        Appearance::Dark => {
+            painter.circle_filled(center, 5.3, ink);
+            painter.circle_filled(center + egui::vec2(2.4, -1.7), 5.3, background);
+        }
+        Appearance::Auto => {
+            let radius = 5.3;
+            let mut half = vec![center];
+            for step in 0..=10 {
+                let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * step as f32 / 10.0;
+                half.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
+            }
+            painter.add(egui::Shape::convex_polygon(half, ink, egui::Stroke::NONE));
+            painter.circle_stroke(center, radius, stroke);
+        }
+    }
+    response
+}
 
 /// What `--help` prints, and what `--version` prints the first line of. A
 /// graphical program still gets run from a terminal once -- by whoever is
@@ -129,6 +207,19 @@ fn main() -> eframe::Result<()> {
         // is for X11 and for Windows, and this line is what gets an icon on
         // the dock everywhere else.
         .with_app_id("gitrust");
+
+    // On macOS the native traffic lights stay in place, while the content
+    // continues behind the transparent title bar. That gives them the same
+    // application colour as the tab strip instead of a separate white band.
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
+            // The native title would be painted above our tab strip. The app
+            // id still identifies the window in the switcher and dock.
+            .with_title("")
+            .with_titlebar_shown(false)
+            .with_fullsize_content_view(true);
+    }
 
     // Reading it costs no new dependency: the decoder is already in here,
     // pulled in by eframe. If it ever fails to read, the window goes up
@@ -196,7 +287,8 @@ struct Cloning {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
-        theme::install(&cc.egui_ctx);
+        let settings = Settings::load();
+        theme::install(&cc.egui_ctx, settings.appearance);
         let mut app = Self {
             open: vec![Open::new(path, 0)],
             at: 0,
@@ -206,7 +298,7 @@ impl App {
             glance: std::collections::HashMap::new(),
             cloning: None,
             browsing: None,
-            settings: Settings::load(),
+            settings,
         };
         app.remember(0);
         app
@@ -451,19 +543,32 @@ impl App {
     fn strip(&mut self, ctx: &egui::Context) {
         let mut go = None;
         let mut shut = None;
+        let mut toggle_maximized = false;
 
         egui::TopBottomPanel::top("tabs")
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::CANVAS)
+                    .fill(theme::canvas())
                     .inner_margin(egui::Margin {
-                        left: 8,
+                        // Full-size macOS content sits behind the traffic
+                        // lights. Leave their hit area empty while retaining
+                        // the tab strip's background behind them.
+                        left: if cfg!(target_os = "macos") { 76 } else { 8 },
                         right: 8,
                         top: 5,
                         bottom: 0,
                     }),
             )
             .show(ctx, |ui| {
+                // The transparent macOS titlebar belongs to this strip. Keep
+                // the native double-click gesture even though it is our
+                // content that is visible there now.
+                let titlebar = ui.interact(
+                    ui.max_rect(),
+                    ui.id().with("titlebar-double-click"),
+                    egui::Sense::click(),
+                );
+                toggle_maximized = titlebar.double_clicked();
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -485,8 +590,8 @@ impl App {
                                         false => theme::body(12.5),
                                     })
                                     .color(match here {
-                                        true => theme::TEXT,
-                                        false => theme::MUTED,
+                                        true => theme::text(),
+                                        false => theme::muted(),
                                     }),
                             )
                             .on_hover_text(&open.path);
@@ -503,7 +608,7 @@ impl App {
                                 egui::Button::new(
                                     egui::RichText::new("\u{00d7}")
                                         .font(theme::body(13.0))
-                                        .color(theme::FAINT),
+                                        .color(theme::faint()),
                                 )
                                 .frame(false)
                                 .min_size(egui::vec2(16.0, 16.0)),
@@ -520,6 +625,11 @@ impl App {
                 ui.add_space(4.0);
             });
 
+        if toggle_maximized {
+            let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+
         if let Some(which) = shut {
             self.close(which);
             return;
@@ -535,7 +645,7 @@ impl App {
             egui::Button::new(
                 egui::RichText::new("+")
                     .font(theme::body(14.0))
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             )
             .frame(false)
             .min_size(egui::vec2(22.0, 20.0)),
@@ -603,7 +713,7 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::CANVAS)
+                    .fill(theme::canvas())
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {
@@ -636,6 +746,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::sync(ctx, self.settings.appearance);
         // Every tab is polled, not only the one on top. An operation left
         // running in another one has to finish whether or not you are looking
         // at it; otherwise coming back to it would find it still saying
@@ -2363,24 +2474,24 @@ impl Open {
         let modal = egui::Modal::new(egui::Id::new("confirm"))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::same(18))
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+                    .stroke(egui::Stroke::new(1.0, theme::edge())),
             )
             .show(ctx, |ui| {
                 ui.set_max_width(372.0);
                 ui.label(
                     egui::RichText::new(&title)
                         .font(theme::strong(14.0))
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 ui.add_space(8.0);
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(&detail)
                             .font(theme::body(12.0))
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                     )
                     .wrap(),
                 );
@@ -2397,9 +2508,9 @@ impl Open {
                         let button = egui::Button::new(
                             egui::RichText::new(&verb)
                                 .font(theme::medium(13.0))
-                                .color(theme::REMOVED),
+                                .color(theme::removed()),
                         )
-                        .fill(theme::tint(theme::REMOVED, 38))
+                        .fill(theme::tint(theme::removed(), 38))
                         .min_size(egui::vec2(104.0, 28.0));
 
                         if ui.add(button).clicked() {
@@ -2460,23 +2571,23 @@ impl Open {
         let modal = egui::Modal::new(egui::Id::new("note"))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::same(18))
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+                    .stroke(egui::Stroke::new(1.0, theme::edge())),
             )
             .show(ctx, |ui| {
                 ui.set_width(452.0);
                 ui.label(
                     egui::RichText::new("What is this branch for?")
                         .font(theme::strong(14.0))
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new(&branch)
                         .font(theme::mono(11.0))
-                        .color(theme::MUTED),
+                        .color(theme::muted()),
                 );
                 ui.add_space(12.0);
 
@@ -2487,7 +2598,7 @@ impl Open {
                         .font(theme::body(12.5))
                         .hint_text(
                             egui::RichText::new("in the words you would use out loud")
-                                .color(theme::FAINT),
+                                .color(theme::faint()),
                         ),
                 );
                 ui.add_space(6.0);
@@ -2499,7 +2610,7 @@ impl Open {
                         .font(theme::body(12.0))
                         .hint_text(
                             egui::RichText::new("anything else worth saying, or nothing")
-                                .color(theme::FAINT),
+                                .color(theme::faint()),
                         ),
                 );
                 ui.add_space(16.0);
@@ -2517,7 +2628,7 @@ impl Open {
                         && ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("Take it away").color(theme::MUTED),
+                                    egui::RichText::new("Take it away").color(theme::muted()),
                                 )
                                 .min_size(egui::vec2(104.0, 28.0)),
                             )
@@ -2533,9 +2644,9 @@ impl Open {
                         let button = egui::Button::new(
                             egui::RichText::new("Save")
                                 .font(theme::medium(13.0))
-                                .color(theme::TEXT),
+                                .color(theme::text()),
                         )
-                        .fill(theme::CHOSEN)
+                        .fill(theme::chosen())
                         .min_size(egui::vec2(104.0, 28.0));
 
                         if ui.add(button).clicked() {
@@ -2731,17 +2842,17 @@ impl Open {
         let modal = egui::Modal::new(egui::Id::new("naming"))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::same(18))
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                    .stroke(egui::Stroke::new(1.0, theme::EDGE)),
+                    .stroke(egui::Stroke::new(1.0, theme::edge())),
             )
             .show(ctx, |ui| {
                 ui.set_width(372.0);
                 ui.label(
                     egui::RichText::new(&title)
                         .font(theme::strong(14.0))
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
                 ui.add_space(10.0);
 
@@ -2750,7 +2861,7 @@ impl Open {
                         .desired_width(f32::INFINITY)
                         .margin(egui::vec2(8.0, 6.0))
                         .font(theme::mono(12.0))
-                        .hint_text(egui::RichText::new(&hint).color(theme::FAINT)),
+                        .hint_text(egui::RichText::new(&hint).color(theme::faint())),
                 );
                 entry.request_focus();
                 if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2769,9 +2880,9 @@ impl Open {
                         let button = egui::Button::new(
                             egui::RichText::new(&verb)
                                 .font(theme::medium(13.0))
-                                .color(theme::TEXT),
+                                .color(theme::text()),
                         )
-                        .fill(theme::CHOSEN)
+                        .fill(theme::chosen())
                         .min_size(egui::vec2(104.0, 28.0));
                         if ui.add(button).clicked() {
                             go = true;
@@ -3089,7 +3200,7 @@ impl Open {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::NONE
-                        .fill(theme::CANVAS)
+                        .fill(theme::canvas())
                         .inner_margin(egui::Margin::symmetric(14, 0)),
                 )
                 .show(ctx, |ui| {
@@ -3119,7 +3230,7 @@ impl Open {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::NONE
-                        .fill(theme::CANVAS)
+                        .fill(theme::canvas())
                         .inner_margin(egui::Margin::symmetric(14, 0)),
                 )
                 .show(ctx, |ui| {
@@ -3146,7 +3257,7 @@ impl Open {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::NONE
-                        .fill(theme::CANVAS)
+                        .fill(theme::canvas())
                         .inner_margin(egui::Margin::symmetric(14, 0)),
                 )
                 .show(ctx, |ui| {
@@ -3166,12 +3277,12 @@ impl Open {
         let frame = match self.view {
             // The graph is painted on the deepest background in the window so
             // that the lanes are the brightest thing on screen.
-            View::History => egui::Frame::NONE.fill(theme::CANVAS),
-            View::Changes => egui::Frame::NONE.fill(theme::PANEL),
+            View::History => egui::Frame::NONE.fill(theme::canvas()),
+            View::Changes => egui::Frame::NONE.fill(theme::panel()),
             // The board is painted on the canvas so that the cards, which wear
             // the panels' color, lift off the background.
             View::Board => egui::Frame::NONE
-                .fill(theme::CANVAS)
+                .fill(theme::canvas())
                 .inner_margin(egui::Margin::symmetric(12, 0)),
         };
 
@@ -3355,7 +3466,7 @@ impl Open {
                             egui::RichText::new(
                                 "Remote checkout — staging and commits arrive in deliverable 3.",
                             )
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                         );
                     }
                     let action = changes_view::show(
@@ -3395,7 +3506,7 @@ impl Open {
         egui::TopBottomPanel::top(egui::Id::new(("half", self.salt)))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::symmetric(12, 7)),
             )
             .show(ctx, |ui| {
@@ -3412,7 +3523,7 @@ impl Open {
                             }
                         ))
                         .font(theme::medium(12.5))
-                        .color(theme::HEAD),
+                        .color(theme::head()),
                     );
                     ui.label(
                         egui::RichText::new(match self.clashes.len() {
@@ -3421,7 +3532,7 @@ impl Open {
                             n => format!("{n} files still have both answers in them."),
                         })
                         .font(theme::body(12.0))
-                        .color(theme::MUTED),
+                        .color(theme::muted()),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3430,7 +3541,7 @@ impl Open {
                                 egui::Button::new(
                                     egui::RichText::new("See it through").font(theme::medium(12.0)),
                                 )
-                                .fill(theme::CHOSEN),
+                                .fill(theme::chosen()),
                             )
                             .clicked()
                         {
@@ -3460,19 +3571,19 @@ impl Open {
 impl Open {
     fn top_bar(&mut self, ctx: &egui::Context, settings: &mut Settings) {
         if self.is_remote() {
-            return self.remote_top_bar(ctx);
+            return self.remote_top_bar(ctx, settings);
         }
         egui::TopBottomPanel::top(egui::Id::new(("bar", self.salt)))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::symmetric(12, 8)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     self.repo_menu(ui);
                     theme::vrule(ui);
-                    self.views(ui);
+                    self.views(ui, true);
                     theme::vrule(ui);
 
                     // Where HEAD is, in the window's one and only amber. It
@@ -3481,8 +3592,8 @@ impl Open {
                         ui.label(
                             egui::RichText::new(&self.head)
                                 .font(theme::medium(12.0))
-                                .color(theme::HEAD)
-                                .background_color(theme::tint(theme::HEAD, 28)),
+                                .color(theme::head())
+                                .background_color(theme::tint(theme::head(), 28)),
                         );
                         // A breath before the actions: HEAD's amber and the
                         // counts' amber are almost the same, and side by side
@@ -3503,17 +3614,20 @@ impl Open {
                     // Taken out and put back rather than lent to the closure:
                     // the closure already holds the rest of us.
                     let mut waves = settings.waves;
+                    let mut appearance_changed = false;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         reload = ui
                             .add_enabled(self.job.is_none(), egui::Button::new("↻"))
                             .on_hover_text("Reload")
                             .clicked();
                         ui.add_space(6.0);
+                        appearance_changed = appearance_control(ui, settings);
+                        ui.add_space(6.0);
                         ui.toggle_value(&mut waves, "Waves")
                             .on_hover_text("The wave the pointer leaves in the graph");
                     });
 
-                    if waves != settings.waves {
+                    if waves != settings.waves || appearance_changed {
                         settings.waves = waves;
                         // Said out loud only when it fails. A preference that
                         // cannot be written down is one that will be back on
@@ -3533,28 +3647,34 @@ impl Open {
             });
     }
 
-    fn remote_top_bar(&mut self, ctx: &egui::Context) {
+    fn remote_top_bar(&mut self, ctx: &egui::Context, settings: &mut Settings) {
         egui::TopBottomPanel::top(egui::Id::new(("bar", self.salt)))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::symmetric(12, 8)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Remote checkout")
+                        egui::RichText::new(self.remote_project_name())
                             .font(theme::medium(12.5))
-                            .color(theme::HEAD),
+                            .color(theme::head()),
                     );
+                    ui.label(
+                        egui::RichText::new("REMOTE")
+                            .font(theme::medium(9.5))
+                            .color(theme::text())
+                            .background_color(theme::tint(theme::head(), 48)),
+                    )
+                    .on_hover_text("Remote checkout");
                     theme::vrule(ui);
-                    ui.selectable_value(&mut self.view, View::History, "History");
-                    ui.selectable_value(&mut self.view, View::Changes, "Changes");
+                    self.views(ui, false);
                     theme::vrule(ui);
                     if self.remote_disconnected.is_some() {
-                        ui.label(egui::RichText::new("Connection lost").color(theme::REMOVED));
+                        ui.label(egui::RichText::new("Connection lost").color(theme::removed()));
                     } else {
-                        ui.label(egui::RichText::new("Connected").color(theme::ADDED));
+                        ui.label(egui::RichText::new("Connected").color(theme::added()));
                     }
                     if ui
                         .button("Reconnect")
@@ -3571,6 +3691,7 @@ impl Open {
                         self.job.is_some(),
                         &mut self.draft,
                     );
+                    let mut appearance_changed = false;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("↻")
@@ -3579,12 +3700,34 @@ impl Open {
                         {
                             self.load();
                         }
+                        ui.add_space(6.0);
+                        appearance_changed = appearance_control(ui, settings);
                     });
+                    if appearance_changed {
+                        if let Err(err) = settings.save() {
+                            self.note_error(format!("could not remember that: {err:#}"));
+                        }
+                    }
                     if let Some(action) = action {
                         self.act(action);
                     }
                 })
             });
+    }
+
+    /// The remote's directory name is the project name; the connection
+    /// address is useful context, but it is not the name people look for in
+    /// the tab bar.
+    fn remote_project_name(&self) -> String {
+        self.remote_descriptor
+            .as_ref()
+            .and_then(|remote| {
+                std::path::Path::new(remote.path.trim_end_matches('/'))
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "remote repository".to_string())
     }
 
     /// Which repository is open, and how to change it.
@@ -3625,7 +3768,7 @@ impl Open {
                             .margin(egui::vec2(8.0, 5.0))
                             .font(theme::mono(11.5))
                             .hint_text(
-                                egui::RichText::new("path to a repository").color(theme::FAINT),
+                                egui::RichText::new("path to a repository").color(theme::faint()),
                             ),
                     );
                     go = ui.button("Open").clicked()
@@ -3658,36 +3801,42 @@ impl Open {
         }
     }
 
-    /// The two views, flush together like a two-position control.
-    fn views(&mut self, ui: &mut egui::Ui) {
+    /// The views share a single outlined control, so they read as a mode
+    /// switch instead of three unrelated buttons.
+    fn views(&mut self, ui: &mut egui::Ui, board: bool) {
         let pending = self.work.staged.len() + self.work.unstaged.len();
 
-        ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.selectable_value(&mut self.view, View::History, "History");
+        egui::Frame::NONE
+            .fill(theme::sunken())
+            .stroke(egui::Stroke::new(1.0, theme::edge()))
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::symmetric(2, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.selectable_value(&mut self.view, View::History, "History");
 
-            let changes = ui.selectable_value(&mut self.view, View::Changes, "Changes");
-            ui.add_space(2.0);
-            ui.selectable_value(&mut self.view, View::Board, "Board");
-            ui.add_space(2.0);
-            if pending > 0 {
-                ui.label(
-                    egui::RichText::new(pending.to_string())
-                        .font(theme::mono(10.5))
-                        .color(theme::CHANGED)
-                        .background_color(theme::tint(theme::CHANGED, 32)),
-                )
-                .on_hover_text("changes not committed");
-            }
-            let _ = changes;
-        });
+                let changes = ui.selectable_value(&mut self.view, View::Changes, "Changes");
+                if board {
+                    ui.selectable_value(&mut self.view, View::Board, "Board");
+                }
+                if pending > 0 {
+                    ui.label(
+                        egui::RichText::new(pending.to_string())
+                            .font(theme::mono(10.5))
+                            .color(theme::changed())
+                            .background_color(theme::tint(theme::changed(), 32)),
+                    )
+                    .on_hover_text("changes not committed");
+                }
+                let _ = changes;
+            });
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom(egui::Id::new(("status", self.salt)))
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::RAISED)
+                    .fill(theme::raised())
                     .inner_margin(egui::Margin::symmetric(12, 5)),
             )
             .show(ctx, |ui| {
@@ -3695,13 +3844,13 @@ impl Open {
                     ui.label(
                         egui::RichText::new(&self.summary)
                             .font(theme::body(11.5))
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let color = if self.status_failed {
-                            theme::REMOVED
+                            theme::removed()
                         } else {
-                            theme::FAINT
+                            theme::faint()
                         };
                         ui.label(
                             egui::RichText::new(&self.status)
@@ -3727,7 +3876,7 @@ impl Open {
             .width_range(170.0..=360.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::PANEL)
+                    .fill(theme::panel())
                     .inner_margin(egui::Margin::symmetric(10, 0)),
             )
             .show(ctx, |ui| {
@@ -3923,7 +4072,9 @@ impl Open {
             .width_range(300.0..=widest)
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::PANEL)
+                    // This panel is primarily a file list and diff. In Sol
+                    // it is an editor surface, not surrounding chrome.
+                    .fill(theme::file_surface())
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {

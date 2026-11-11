@@ -28,6 +28,37 @@ use std::path::PathBuf;
 use crate::ssh::{Login, RemoteDescriptor};
 use anyhow::{Context, Result};
 
+/// The appearance chosen for the application.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Appearance {
+    /// Follow macOS, Windows, or Linux's current appearance.
+    #[default]
+    Auto,
+    /// The original dark graphite palette.
+    Dark,
+    /// A white and light-grey palette.
+    Light,
+}
+
+impl Appearance {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" => Some(Self::Auto),
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
 /// Everything that is remembered between runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -37,6 +68,8 @@ pub struct Settings {
     /// somebody who has never seen it cannot ask for it. Whoever does not
     /// want it turns it off once and it stays off.
     pub waves: bool,
+    /// The application's light, dark, or system appearance.
+    pub appearance: Appearance,
     /// Remote checkouts previously selected by the user.  This is strictly
     /// connection metadata; authentication remains with SSH agent/password.
     pub remotes: Vec<RemoteDescriptor>,
@@ -44,7 +77,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { waves: true, remotes: Vec::new() }
+        Self { waves: true, appearance: Appearance::Auto, remotes: Vec::new() }
     }
 }
 
@@ -68,6 +101,11 @@ impl Settings {
         for line in text.lines() {
             match line.split_once(' ') {
                 Some(("waves", value)) => settings.waves = value.trim() == "on",
+                Some(("appearance", value)) => {
+                    if let Some(appearance) = Appearance::parse(value) {
+                        settings.appearance = appearance;
+                    }
+                }
                 Some(("remote", value)) => {
                     let fields: Vec<_> = value.split('\t').collect();
                     if let [host, user, port, path] = fields.as_slice() {
@@ -91,10 +129,10 @@ impl Settings {
     }
 
     fn render(&self) -> String {
-        let mut text = format!("waves {}\n", match self.waves {
+        let mut text = format!("waves {}\nappearance {}\n", match self.waves {
             true => "on",
             false => "off",
-        });
+        }, self.appearance.as_str());
         for remote in &self.remotes {
             text.push_str(&format!(
                 "remote {}\t{}\t{}\t{}\n",
@@ -146,8 +184,8 @@ mod tests {
 
     #[test]
     fn a_setting_survives_the_trip_to_the_file_and_back() {
-        for waves in [true, false] {
-            let settings = Settings { waves, ..Settings::default() };
+        for (waves, appearance) in [(true, Appearance::Auto), (false, Appearance::Dark), (true, Appearance::Light)] {
+            let settings = Settings { waves, appearance, ..Settings::default() };
             assert_eq!(Settings::parse(&settings.render()), settings);
         }
     }

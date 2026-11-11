@@ -77,7 +77,7 @@ pub fn show(
         ui.label(
             RichText::new(format!("{} is half-done", capitalise(half.says())))
                 .font(theme::medium(13.5))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.label(
             RichText::new(match clashes.len() {
@@ -87,8 +87,8 @@ pub fn show(
             })
             .font(theme::body(12.0))
             .color(match clashes.is_empty() {
-                true => theme::ADDED,
-                false => theme::HEAD,
+                true => theme::added(),
+                false => theme::head(),
             }),
         );
 
@@ -117,7 +117,7 @@ pub fn show(
                 let write = ui.add_enabled(
                     ready,
                     egui::Button::new(RichText::new(half.onward()).font(theme::medium(12.5)))
-                        .fill(theme::CHOSEN),
+                        .fill(theme::chosen()),
                 );
                 let write = match clashes.is_empty() {
                     true => write.on_hover_text(match half {
@@ -148,7 +148,7 @@ pub fn show(
                  Throwing it away works, or carry on at the command line.",
             )
             .font(theme::body(12.0))
-            .color(theme::MUTED),
+            .color(theme::muted()),
         );
     }
 
@@ -222,7 +222,7 @@ fn row(ui: &mut egui::Ui, clash: &Clash, state: &Deciding) -> Option<Act> {
 
     let response = ui.selectable_label(
         here,
-        RichText::new(&clash.path).font(theme::mono(11.5)).color(theme::TEXT),
+        RichText::new(&clash.path).font(theme::mono(11.5)).color(theme::text()),
     );
     if response.on_hover_text(clash.shape()).clicked() {
         act = Some(Act::Pick(clash.path.clone()));
@@ -232,7 +232,7 @@ fn row(ui: &mut egui::Ui, clash: &Clash, state: &Deciding) -> Option<Act> {
         ui.label(
             RichText::new(clash.shape())
                 .font(theme::body(10.5))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
     });
     ui.add_space(4.0);
@@ -247,7 +247,7 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
         ui.label(
             RichText::new(&clash.path)
                 .font(theme::medium(12.5))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.label(
             RichText::new(match &clash.base {
@@ -255,7 +255,7 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
                 _ => "both sides changed what was here",
             })
             .font(theme::body(11.0))
-            .color(theme::FAINT),
+            .color(theme::faint()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -303,7 +303,7 @@ fn sides(ui: &mut egui::Ui, half: Half, clash: &Clash, busy: bool, act: &mut Opt
                         RichText::new(capitalise(label))
                             .font(theme::medium(12.0))
                             .color(match side {
-                                Side::Ours => theme::HEAD,
+                                Side::Ours => theme::head(),
                                 Side::Theirs => theme::lane(0),
                             }),
                     );
@@ -340,14 +340,14 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
             ui.label(
                 RichText::new(format!("Deleted in {label}"))
                     .font(theme::body(12.0))
-                    .color(theme::REMOVED),
+                    .color(theme::removed()),
             );
         }
         Contents::Binary(size) => {
             ui.label(
                 RichText::new(format!("Not text: {size} bytes"))
                     .font(theme::body(12.0))
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             );
         }
         Contents::Text(text) => {
@@ -386,7 +386,7 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
                                 egui::Label::new(
                                     RichText::new((index + 1).to_string())
                                         .font(theme::mono(10.5))
-                                        .color(theme::FAINT),
+                                        .color(theme::faint()),
                                 ),
                             );
                             match painted.get(index) {
@@ -397,7 +397,7 @@ fn version(ui: &mut egui::Ui, contents: &Contents, label: &str, path: &str) {
                                     ui.label(
                                         RichText::new(line)
                                             .font(theme::mono(11.0))
-                                            .color(theme::TEXT),
+                                            .color(theme::text()),
                                     );
                                 }
                             }
@@ -421,12 +421,12 @@ fn by_hand(
         ui.label(
             RichText::new(&clash.path)
                 .font(theme::medium(12.5))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.label(
             RichText::new("take the markers out and say when it is right")
                 .font(theme::body(11.0))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
     });
     ui.add_space(8.0);
@@ -467,7 +467,7 @@ fn by_hand(
             let done = ui.add_enabled(
                 !left && !busy,
                 egui::Button::new(RichText::new("That is right").font(theme::medium(12.5)))
-                    .fill(theme::CHOSEN),
+                    .fill(theme::chosen()),
             );
             let done = match left {
                 false => done,
