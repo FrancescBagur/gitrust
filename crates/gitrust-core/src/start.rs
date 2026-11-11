@@ -23,13 +23,50 @@ use crate::Profile;
 ///
 /// The folder is made if it is not there. If it is there and has anything in
 /// it, nothing happens: see the note above about what gets typed by mistake.
-pub fn init(path: &Path) -> Result<String> {
+///
+/// `branch` is what its first branch is called, when the preferences name
+/// one. With none it is whatever Git would have called it: `init.defaultBranch`
+/// if that is set, and Git's own answer if it is not.
+pub fn init(path: &Path, branch: Option<&str>) -> Result<String> {
+    let branch = branch.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = branch {
+        anyhow::ensure!(is_branch_name(name), "'{name}' is not a name a branch can have");
+    }
     guard(path)?;
     std::fs::create_dir_all(path)
         .with_context(|| format!("could not make {}", path.display()))?;
 
-    Repository::init(path).with_context(|| format!("could not start a repository at {}", path.display()))?;
+    let mut options = git2::RepositoryInitOptions::new();
+    if let Some(name) = branch {
+        options.initial_head(name);
+    }
+    Repository::init_opts(path, &options)
+        .with_context(|| format!("could not start a repository at {}", path.display()))?;
     Ok(format!("{} is a repository now", name_of(path)))
+}
+
+/// Whether Git would take this as the name of a branch.
+///
+/// Asked of Git rather than worked out here: its rules are longer than they
+/// look -- no `..`, no trailing dot, no `@{`, nothing ending in `.lock` --
+/// and a second copy of them would be a copy that disagrees one day.
+pub fn is_branch_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains(char::is_whitespace)
+        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+}
+
+/// What Git would call the first branch of a new repository on this machine.
+///
+/// For the box in the preferences to show when it is empty, so that "empty"
+/// reads as a name and not as nothing.
+pub fn git_default_branch() -> String {
+    git2::Config::open_default()
+        .ok()
+        .and_then(|config| config.get_string("init.defaultBranch").ok())
+        .filter(|name| is_branch_name(name))
+        .unwrap_or_else(|| "master".to_string())
 }
 
 /// Brings a repository down into a folder of its own.

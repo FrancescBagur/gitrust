@@ -69,6 +69,44 @@ here ever writes over a key that already exists: being asked twice gets a
 refusal, not a new pair, because the public half of the old one is on a server
 somewhere and overwriting it locks you out of it.
 
+The preferences screen has a row that forgets every token at once. It
+empties the token of every account in every profile and writes the file
+again; the accounts, the keys and whatever Git's credential helper holds are
+not touched. It asks before it does it and it cannot be undone from here: a
+token is written down nowhere else.
+
+## What the window does by itself
+
+Three things happen without being asked for, and each can be turned off on
+the preferences screen.
+
+**It fetches**, every minute by default, from every remote of the repository
+in front. That is a connection to those servers at that interval, with the
+same credentials a fetch you asked for would use -- the profile's key and
+token, the agent, the credential helper. gitrust itself never asks for
+anything: a key that needs a passphrase the agent does not have fails, and
+is tried again at the next interval. But what it asks can ask you. An agent
+holding a key that wants a touch or a confirmation wants one each time, and
+a credential helper that opens a window when it has nothing stored opens it
+each time; with either of those, set the interval to nought or to something
+you can live with. A checkout on another machine is never fetched this
+way.
+
+**It moves submodules** to the commit the repository records for them after
+a pull, a switch or a clone made here, cloning one that was never brought
+down. That is a fetch against the submodule's own address, which a
+`.gitmodules` file in the repository names -- so it is never done for a
+repository having merely been opened, only after something you asked for
+has moved it. Nothing is checked out over work that is in the way; that
+submodule is left and named.
+
+**It tries the merge** into the target branch in memory. That reads the
+repository and writes nothing: no file, no index, no reference.
+
+The tabs that were open are written into `~/.config/gitrust/settings` as
+paths, and remote checkouts as `ssh://user@host:port/path`. No password is
+among them, and a remote tab that comes back does not connect until asked.
+
 ## What does not
 
 - Losing uncommitted work through a destructive operation the program warned

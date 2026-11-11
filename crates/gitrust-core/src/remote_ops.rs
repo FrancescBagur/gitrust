@@ -115,8 +115,37 @@ impl RemoteRepo {
     }
 
     pub fn fetch_all(&self) -> Result<String> {
-        self.git(&["fetch", "--all", "--prune"])?;
+        // It used to prune always. Now it prunes when the preferences say
+        // so, which they do unless somebody has unticked it.
+        match self.prune {
+            true => self.git(&["fetch", "--all", "--prune"])?,
+            false => self.git(&["fetch", "--all"])?,
+        };
         Ok("fetched every remote".to_string())
+    }
+
+    /// Takes away the `.orig` copy a merge tool left beside a file, on the
+    /// same terms as [`Repo::drop_orig`]: only when Git does not know it.
+    ///
+    /// [`Repo::drop_orig`]: crate::Repo::drop_orig
+    pub fn drop_orig(&self, path: &str) -> Result<bool> {
+        anyhow::ensure!(
+            !path.starts_with('/') && !path.split('/').any(|part| part == ".."),
+            "remote file path escapes the checkout"
+        );
+        let orig = format!("{path}.orig");
+        if !self.session.exists(&format!("{}/{orig}", self.path().trim_end_matches('/'))) {
+            return Ok(false);
+        }
+        // Literally, both times: a file with a star in its name is a file,
+        // and to `git clean` a star is every file there is.
+        if !self.git(&["--literal-pathspecs", "ls-files", "-z", "--", &orig])?.is_empty() {
+            return Ok(false);
+        }
+        // `-x` because `*.orig` is in a good many ignore files, and an
+        // ignored copy is still the copy that was asked to go.
+        self.git(&["--literal-pathspecs", "clean", "-f", "-x", "-q", "--", &orig])?;
+        Ok(true)
     }
 
     pub fn pull(&self, mode: PullMode) -> Result<String> {

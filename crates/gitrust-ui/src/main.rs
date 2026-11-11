@@ -23,6 +23,7 @@ mod diff_view;
 mod file_view;
 mod graph_view;
 mod picker;
+mod prefs_view;
 mod profiles_view;
 mod refs_view;
 mod rewrite_view;
@@ -34,9 +35,9 @@ mod toast;
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
-    compose, layout, layout_with_working, Appearance, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
-    Join, Move, Oid, Profile, Profiles, PullMode, PullRequests, Reader, RefEntry, RefKind, RemoteRepo, Repo,
-    Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
+    compose, layout, layout_with_working, likely_target, Appearance, Backlog, Board, CommitDetail, FileDiff,
+    Foreseen, General, Graph, HunkId, Join, Move, Oid, Profile, Profiles, PullMode, PullRequests, Reader,
+    RefEntry, RefKind, RemoteRepo, Repo, Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
 
 /// How wide the repository menu is, measured inside its frame.
@@ -51,6 +52,13 @@ const REPO_MENU: f32 = 520.0;
 /// for, for the reason the repository menu above is: a menu that works its
 /// own width out drifts a notch wider every time it is opened.
 const PROFILE_MENU: f32 = 240.0;
+
+/// How wide the activity log opens.
+const LOG_MENU: f32 = 560.0;
+
+/// How many lines the activity log keeps. It is a memory of this sitting
+/// and not a file, and past a few hundred lines nobody scrolls back.
+const LOG_LINES: usize = 400;
 
 /// How wide the menu a drop opens is.
 ///
@@ -175,8 +183,9 @@ fn tell_and_stop(arg: &str) -> bool {
             println!(
                 "gitrust {} \u{2014} {}\n\n\
                  Usage: gitrust [REPOSITORY]\n\n\
-                 With no argument it opens the repository in the current\n\
-                 directory. A folder dragged onto the window opens too.\n\n\
+                 With no argument it opens the tabs that were open last time,\n\
+                 and the repository in the current directory if there is one.\n\
+                 A folder dragged onto the window opens too.\n\n\
                  \x20 -V, --version   print the version and stop\n\
                  \x20 -h, --help      print this and stop\n\n\
                  {}\n",
@@ -191,9 +200,12 @@ fn tell_and_stop(arg: &str) -> bool {
 }
 
 fn main() -> eframe::Result<()> {
-    let path = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    // Kept as "none was given" rather than turned into the current folder
+    // here: with the tabs remembered, a window started from an icon has
+    // somewhere better to open than wherever the desktop happened to be.
+    let path = std::env::args().nth(1);
 
-    if tell_and_stop(&path) {
+    if path.as_deref().is_some_and(tell_and_stop) {
         return Ok(());
     }
 
@@ -282,6 +294,13 @@ struct App {
     profiles: Profiles,
     /// The screen for the profiles, while it is up.
     managing: Option<profiles_view::Managing>,
+    /// The screen for the preferences, while it is up.
+    preferring: Option<prefs_view::Preferring>,
+    /// When the window last fetched without being asked. The next one is
+    /// counted from here, so it starts at "just now": a window that fetched
+    /// the moment it opened would be a window that asks for a passphrase
+    /// before it has drawn anything.
+    fetched: std::time::Instant,
     /// What one of the screens that is not a repository has to say. A tab's
     /// own bottom bar cannot say it: the tab is not on screen.
     note: Option<Note>,
@@ -289,6 +308,28 @@ struct App {
     /// about a repository, so it is held here and lent to whichever tab is
     /// on top rather than being a copy per tab that would drift apart.
     settings: Settings,
+}
+
+/// Waits for a repository's turn, and gives up waiting after a while.
+///
+/// What comes back is the turn itself, held until it is dropped, or nothing
+/// when the wait ran out -- and the caller goes ahead either way. A lock
+/// somebody panicked under is still a lock nobody holds.
+fn wait_for(
+    turn: &std::sync::Mutex<()>,
+    longest: std::time::Duration,
+) -> Option<std::sync::MutexGuard<'_, ()>> {
+    let started = std::time::Instant::now();
+    loop {
+        match turn.try_lock() {
+            Ok(held) => return Some(held),
+            Err(std::sync::TryLockError::Poisoned(held)) => return Some(held.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if started.elapsed() >= longest => return None,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 /// Whether two profiles are the same person, whatever is filed under them.
@@ -345,13 +386,13 @@ struct Cloning {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, asked: Option<String>) -> Self {
         let settings = Settings::load();
         theme::install(&cc.egui_ctx, settings.appearance);
         let mut app = Self {
-            open: vec![Open::new(path, 0)],
+            open: Vec::new(),
             at: 0,
-            opened: 1,
+            opened: 0,
             picking: None,
             known: Vec::new(),
             glance: std::collections::HashMap::new(),
@@ -360,11 +401,152 @@ impl App {
             settings,
             profiles: Profiles::load(),
             managing: None,
+            preferring: None,
+            fetched: std::time::Instant::now(),
             note: None,
         };
-        app.remember(0);
-        app.file_under_profile();
+        app.come_back(asked);
         app
+    }
+
+    /// Opens what was open last time, and then what was asked for.
+    ///
+    /// What was asked for on the command line goes in front, in a tab of
+    /// its own if it was not one of them. With nothing asked for, the
+    /// repository in the current folder does the same when there is one --
+    /// `gitrust` typed in a terminal still opens where it was typed -- and
+    /// when there is not, the tabs come back as they were left. Only a
+    /// window with nothing at all to show falls back to opening the current
+    /// folder and saying what is wrong with it, which is what it always did.
+    fn come_back(&mut self, asked: Option<String>) {
+        if self.settings.general.remember_tabs {
+            for place in self.settings.tabs.clone() {
+                self.reopen(&place);
+            }
+            // Found again by what it was, not by its position: a folder that
+            // has gone since is left out, and every tab after it has moved
+            // one to the left.
+            let front = self.settings.tabs.get(self.settings.front);
+            self.at = self
+                .open
+                .iter()
+                .position(|open| open.place.as_ref() == front)
+                .unwrap_or(0);
+        }
+
+        match asked {
+            Some(path) => self.open_asked(path),
+            None if self.open.is_empty() => self.add(".".to_string()),
+            None => {
+                if let Ok(here) = Repo::open(".") {
+                    self.open_asked(here.workdir().display().to_string());
+                }
+            }
+        }
+    }
+
+    /// Puts back one tab that was open last time.
+    ///
+    /// Quietly, both ways. A folder that is no longer a repository is left
+    /// out rather than brought back as a tab that says so: it was deleted
+    /// on purpose, by somebody who does not need telling at every start.
+    /// And one that is still there is not written down as opened just now,
+    /// nor filed under whichever profile is in use: nobody opened it.
+    fn reopen(&mut self, place: &str) {
+        let open = match self.settings.remote_at(place) {
+            // Not connected, and not connecting: that is a wait of up to
+            // fifteen seconds for each one, with the window not yet drawn.
+            Some(remote) => Some(Open::waiting(remote.clone(), self.opened, &self.settings.general)),
+            None if place.starts_with("ssh://") => None,
+            None => Repo::open(place)
+                .ok()
+                .map(|_| Open::new(place.to_string(), self.opened, &self.settings.general)),
+        };
+        if let Some(open) = open {
+            self.open.push(open);
+            self.opened += 1;
+        }
+    }
+
+    /// Opens a path given on the command line, or goes to its tab.
+    fn open_asked(&mut self, path: String) {
+        let place = gitrust_core::place_of(std::path::Path::new(&path));
+        let already = place.as_ref().and_then(|place| {
+            self.open
+                .iter()
+                .position(|open| open.place.as_ref() == Some(place))
+        });
+        match already {
+            Some(which) => self.at = which,
+            None => self.add(path),
+        }
+    }
+
+    /// Writes down which tabs are open, when that has changed.
+    ///
+    /// Asked every frame and answered almost never: the list is compared
+    /// with the one already kept and the file is touched only when they
+    /// differ. With the preference off the list is emptied once, so that
+    /// what was open the day it was turned off is not what comes back the
+    /// day it is turned on again.
+    fn note_tabs(&mut self) {
+        let (tabs, front) = match self.settings.general.remember_tabs {
+            true => {
+                let front = self.open[..self.at.min(self.open.len())]
+                    .iter()
+                    .filter(|open| open.place.is_some())
+                    .count();
+                let tabs: Vec<String> =
+                    self.open.iter().filter_map(|open| open.place.clone()).collect();
+                (tabs, front)
+            }
+            false => (Vec::new(), 0),
+        };
+        if self.settings.note_tabs(tabs, front) {
+            // Not said when it fails. It is tried again at the next change,
+            // and a line about a list of tabs is not worth a toast over
+            // whatever somebody is in the middle of.
+            let _ = self.settings.save();
+        }
+    }
+
+    /// Fetches the repository in front, when it has been long enough.
+    ///
+    /// The one in front and not all of them: it is the one being looked at,
+    /// and a window with a dozen tabs would otherwise be a dozen connections
+    /// a minute to keep up to date what nobody is reading.
+    fn auto_fetch(&mut self, ctx: &egui::Context) {
+        let minutes = u64::from(self.settings.general.auto_fetch);
+        if minutes == 0 {
+            return;
+        }
+        let every = std::time::Duration::from_secs(60 * minutes);
+        let waited = self.fetched.elapsed();
+        if waited < every {
+            // egui sleeps when nothing moves. Without this the minute would
+            // be up whenever somebody next touched the mouse.
+            ctx.request_repaint_after(every - waited);
+            return;
+        }
+        self.fetched = std::time::Instant::now();
+        if let Some(open) = self.open.get_mut(self.at) {
+            open.fetch_quietly();
+        }
+        ctx.request_repaint_after(every);
+    }
+
+    /// Hands every tab the preferences, once the screen for them is away.
+    ///
+    /// Not while it is up: a number being dragged is forty numbers on the
+    /// way to the one that was wanted, and each of them would be every tab
+    /// reading its history again.
+    fn hand_preferences(&mut self) {
+        if self.preferring.is_some() {
+            return;
+        }
+        for open in &mut self.open {
+            open.prefer(&self.settings.general);
+        }
     }
 
     /// Opens a folder in a tab of its own, or goes to the tab already on it.
@@ -387,7 +569,7 @@ impl App {
     }
 
     fn add(&mut self, path: String) {
-        self.open.push(Open::new(path, self.opened));
+        self.open.push(Open::new(path, self.opened, &self.settings.general));
         self.opened += 1;
         self.at = self.open.len() - 1;
         self.picking = None;
@@ -400,7 +582,7 @@ impl App {
             Ok(repo) => {
                 self.settings.remember_remote(repo.descriptor());
                 let saved = self.settings.save();
-                self.open.push(Open::new_remote(repo, self.opened));
+                self.open.push(Open::new_remote(repo, self.opened, &self.settings.general));
                 self.opened += 1;
                 self.at = self.open.len() - 1;
                 self.picking = None;
@@ -457,6 +639,7 @@ impl App {
             })
             .collect();
         self.picking = Some(picker::Picker::default());
+        self.preferring = None;
     }
 
     /// Acts on what the screen asked for.
@@ -464,7 +647,10 @@ impl App {
         match act {
             picker::Act::Open(path) => self.open_tab(path),
             picker::Act::OpenRemote { session, path } => self.add_remote(session, path),
-            picker::Act::Start(path) => match gitrust_core::start::init(&path) {
+            picker::Act::Start(path) => match gitrust_core::start::init(
+                &path,
+                Some(&self.settings.general.default_branch),
+            ) {
                 Ok(_) => self.add(path.display().to_string()),
                 Err(err) => self.complain(err),
             },
@@ -708,6 +894,8 @@ impl App {
                     // which is exactly where somebody changes client.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.chip(ui);
+                        ui.add_space(6.0);
+                        self.gear(ui);
                     });
                 });
                 ui.add_space(4.0);
@@ -740,6 +928,49 @@ impl App {
         );
         if button.on_hover_text("Open another repository").clicked() {
             self.pick();
+        }
+    }
+
+    /// The button that opens the preferences, and puts them away again.
+    ///
+    /// Beside the profile, at the end of the strip, for the reason the
+    /// profile is there: it is not about a repository. The gear is drawn --
+    /// the fonts this program ships have none -- as a ring with eight teeth,
+    /// which is all a gear is at this size.
+    fn gear(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 20.0), egui::Sense::click());
+        let up = self.preferring.is_some();
+        let colour = match (up, response.hovered()) {
+            (true, _) => ui.visuals().selection.bg_fill,
+            (_, true) => theme::text(),
+            _ => theme::muted(),
+        };
+        let centre = rect.center();
+        let painter = ui.painter();
+        let stroke = egui::Stroke::new(1.3, colour);
+        painter.circle_stroke(centre, 4.6, stroke);
+        painter.circle_stroke(centre, 1.7, stroke);
+        for tooth in 0..8 {
+            let angle = std::f32::consts::TAU * tooth as f32 / 8.0;
+            let (sin, cos) = angle.sin_cos();
+            painter.line_segment(
+                [
+                    centre + egui::vec2(cos * 4.9, sin * 4.9),
+                    centre + egui::vec2(cos * 7.0, sin * 7.0),
+                ],
+                egui::Stroke::new(1.9, colour),
+            );
+        }
+
+        if response.on_hover_text("Preferences").clicked() {
+            self.note = None;
+            self.preferring = match up {
+                true => None,
+                false => {
+                    self.managing = None;
+                    Some(prefs_view::Preferring::open(&self.settings.general))
+                }
+            };
         }
     }
 
@@ -865,22 +1096,17 @@ impl App {
         }
     }
 
-    /// The profiles screen, drawn over everything instead of a repository.
-    fn profiles(&mut self, ctx: &egui::Context) {
-        let Some(state) = &mut self.managing else {
-            return;
-        };
-
-        let mut act = None;
-        let mut hush = false;
-
+    /// What a screen that is not a repository has to say, along the bottom.
+    /// Gives back whether the cross on it was pressed.
+    fn note_panel(ctx: &egui::Context, note: Option<&Note>) -> bool {
         // Along the bottom, and in a panel of its own, because the screen
         // above it fills whatever room there is: a line added after it is a
         // line below the edge of the window, which is a line nobody reads.
         // A profile that could not be written down is a profile that will
         // not be there tomorrow, and finding that out tomorrow is worse.
-        if let Some(note) = self.note.clone() {
-            let (text, colour) = match &note {
+        let mut hush = false;
+        if let Some(note) = note {
+            let (text, colour) = match note {
                 Note::Said(text) => (text, theme::muted()),
                 Note::Wrong(text) => (text, theme::removed()),
             };
@@ -911,6 +1137,72 @@ impl App {
                     });
                 });
         }
+        hush
+    }
+
+    /// The preferences screen, drawn over everything instead of a repository.
+    fn preferences(&mut self, ctx: &egui::Context) {
+        let Some(state) = &mut self.preferring else {
+            return;
+        };
+
+        let hush = Self::note_panel(ctx, self.note.as_ref());
+        let tokens = self.profiles.tokens();
+        let mut changed = false;
+        let mut act = None;
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::canvas())
+                    .inner_margin(egui::Margin::symmetric(14, 0)),
+            )
+            .show(ctx, |ui| {
+                (changed, act) = prefs_view::show(ui, state, &mut self.settings.general, tokens);
+            });
+
+        // Said only when it fails, as the switch for the waves is: a
+        // preference that could not be written down is one that will be
+        // back as it was tomorrow. And when it fails the screen stays up
+        // whatever else was pressed, because the line saying so is on it.
+        if changed {
+            self.note = self.settings.save().err().map(|err| {
+                Note::Wrong(format!("could not write the preferences down: {err:#}"))
+            });
+            if self.note.is_some() {
+                return;
+            }
+        }
+
+        match act {
+            Some(prefs_view::Act::Forget) => {
+                let had = self.profiles.forget_tokens();
+                self.keep_profiles();
+                // `keep_profiles` leaves a note only when the file could not
+                // be written, and then that is the thing to say.
+                if self.note.is_none() {
+                    self.note = Some(Note::Said(match had {
+                        1 => "1 token forgotten".to_string(),
+                        n => format!("{n} tokens forgotten"),
+                    }));
+                }
+            }
+            Some(prefs_view::Act::Close) => {
+                self.preferring = None;
+                self.note = None;
+            }
+            None if hush => self.note = None,
+            None => {}
+        }
+    }
+
+    /// The profiles screen, drawn over everything instead of a repository.
+    fn profiles(&mut self, ctx: &egui::Context) {
+        let Some(state) = &mut self.managing else {
+            return;
+        };
+
+        let mut act = None;
+        let hush = Self::note_panel(ctx, self.note.as_ref());
 
         egui::CentralPanel::default()
             .frame(
@@ -974,6 +1266,7 @@ impl App {
             profiles_view::Act::CopyKey(which) => self.copy_key(ctx, which),
             profiles_view::Act::Manage => {
                 self.managing = Some(profiles_view::Managing::default());
+                self.preferring = None;
                 self.note = None;
             }
             profiles_view::Act::Close => {
@@ -988,6 +1281,7 @@ impl App {
         self.managing
             .get_or_insert_with(profiles_view::Managing::default)
             .open(at);
+        self.preferring = None;
         self.note = None;
     }
 
@@ -1174,7 +1468,12 @@ impl App {
                 let into = cloning.into.clone();
                 self.cloning = None;
                 match result {
-                    Ok(_) => self.add(into.display().to_string()),
+                    Ok(_) => {
+                        self.add(into.display().to_string());
+                        if let Some(open) = self.open.get_mut(self.at) {
+                            open.after_clone();
+                        }
+                    }
                     Err(err) => self.complain(err),
                 }
             }
@@ -1247,11 +1546,16 @@ impl eframe::App for App {
         // "pushing…" with the push long since done.
         self.follow_front();
         self.adopt_profile();
+        self.hand_preferences();
+        self.auto_fetch(ctx);
         for open in &mut self.open {
             open.poll(ctx);
             open.poll_forge(ctx);
             open.poll_board(ctx);
+            open.poll_fetch(ctx);
+            open.poll_foresee(ctx);
         }
+        self.note_tabs();
 
         // Always, even with one repository open: the plus lives in it, and a
         // strip that appears only once you have two tabs is a way of opening
@@ -1261,11 +1565,12 @@ impl eframe::App for App {
         self.poll_browse(ctx);
         self.poll_dropped(ctx);
 
-        // One of the three, never two: a screen here is not a dialog over a
+        // One of the four, never two: a screen here is not a dialog over a
         // repository, it is what is there instead of one.
-        match (self.managing.is_some(), self.picking.is_some()) {
-            (true, _) => self.profiles(ctx),
-            (_, true) => self.picker(ctx),
+        match (self.preferring.is_some(), self.managing.is_some(), self.picking.is_some()) {
+            (true, _, _) => self.preferences(ctx),
+            (_, true, _) => self.profiles(ctx),
+            (_, _, true) => self.picker(ctx),
             _ => {
                 let mut elsewhere = None;
                 if let Some(open) = self.open.get_mut(self.at) {
@@ -1414,6 +1719,39 @@ struct Open {
     joining: Option<Joining>,
     /// The last thing that happened, said where it will be seen.
     toast: Option<toast::Toast>,
+
+    /// The preferences, as last handed over by the window.
+    general: General,
+    /// What has happened in this tab, oldest first.
+    log: Vec<Logged>,
+    /// A fetch nobody asked for, while one is out.
+    fetching: Option<std::sync::mpsc::Receiver<Result<bool>>>,
+    /// Held by whichever thread is working on this repository, so that the
+    /// fetch nobody asked for and the pull somebody did are never both
+    /// writing the remote's branches.
+    turn: std::sync::Arc<std::sync::Mutex<()>>,
+    /// What merging into the target would run into, when that is known.
+    foreseen: Option<Foreseen>,
+    /// Where the branch and its target were when that was last asked, so it
+    /// is asked again only when one of them has moved.
+    foresaw: Option<(Oid, Oid)>,
+    /// The asking, while it is out.
+    foreseeing: Option<std::sync::mpsc::Receiver<Result<Option<Foreseen>>>>,
+    /// Where HEAD was at the last reload, and whether there has been one:
+    /// a reload that finds it somewhere else is how the window knows a Git
+    /// action has happened, whichever one it was.
+    head_at: Option<Oid>,
+    looked: bool,
+    /// The commit the submodules were last brought up to date at, so that a
+    /// submodule that will not update is tried once and not on every reload.
+    subs_tried: Option<Oid>,
+}
+
+/// One line of the activity log.
+struct Logged {
+    at: chrono::DateTime<chrono::Local>,
+    text: String,
+    failed: bool,
 }
 
 /// A slow operation, running off to one side.
@@ -1550,17 +1888,40 @@ enum Deed {
 }
 
 impl Open {
-    fn new(path: String, salt: u64) -> Self {
-        Self::with_backend(path, salt, None)
+    fn new(path: String, salt: u64, general: &General) -> Self {
+        Self::with_backend(path, salt, None, None, general)
     }
 
-    fn new_remote(remote: RemoteRepo, salt: u64) -> Self {
+    fn new_remote(mut remote: RemoteRepo, salt: u64, general: &General) -> Self {
         let path = remote.location();
-        Self::with_backend(path, salt, Some(remote))
+        remote.pruning(general.auto_prune);
+        Self::with_backend(path, salt, Some(remote), None, general)
     }
 
-    fn with_backend(path: String, salt: u64, remote: Option<RemoteRepo>) -> Self {
-        let remote_descriptor = remote.as_ref().map(RemoteRepo::descriptor);
+    /// A tab onto a checkout on another machine that is not connected yet.
+    ///
+    /// What a remembered tab comes back as. Connecting needs the agent or a
+    /// key and can take as long as the network lets it, so it waits for
+    /// somebody to press Reconnect rather than being done for them, one tab
+    /// after another, before the window has drawn.
+    fn waiting(descriptor: gitrust_core::ssh::RemoteDescriptor, salt: u64, general: &General) -> Self {
+        let path = format!(
+            "{}@{}:{}",
+            descriptor.login.user, descriptor.login.host, descriptor.path
+        );
+        let mut open = Self::with_backend(path, salt, None, Some(descriptor), general);
+        open.status = "not connected: Reconnect opens it again".to_string();
+        open
+    }
+
+    fn with_backend(
+        path: String,
+        salt: u64,
+        remote: Option<RemoteRepo>,
+        waiting: Option<gitrust_core::ssh::RemoteDescriptor>,
+        general: &General,
+    ) -> Self {
+        let remote_descriptor = remote.as_ref().map(RemoteRepo::descriptor).or(waiting);
         let place = match &remote_descriptor {
             Some(remote) => Some(remote.place()),
             None => Repo::open(&path)
@@ -1581,7 +1942,7 @@ impl Open {
             status_failed: false,
             view: View::History,
             graph: Graph::default(),
-            limit: 5_000,
+            limit: general.commits(),
             needle: String::new(),
             found: Vec::new(),
             at: 0,
@@ -1626,6 +1987,16 @@ impl Open {
             naming: None,
             joining: None,
             toast: None,
+            general: general.clone(),
+            log: Vec::new(),
+            fetching: None,
+            turn: std::sync::Arc::default(),
+            foreseen: None,
+            foresaw: None,
+            foreseeing: None,
+            head_at: None,
+            looked: false,
+            subs_tried: None,
         };
         app.load();
         if let Ok(shot) = std::env::var("GITRUST_SHOT") {
@@ -1634,8 +2005,11 @@ impl Open {
         app
     }
 
+    /// Whether this tab is onto a checkout on another machine -- connected
+    /// or not. A remembered one comes back with the address and no
+    /// connection, and it is still not a folder on this disk.
     fn is_remote(&self) -> bool {
-        self.remote.is_some()
+        self.remote_descriptor.is_some()
     }
 
     /// Opens the window straight onto one screen, for photographing it.
@@ -1682,7 +2056,9 @@ impl Open {
     }
 
     fn repo(&self) -> Result<Repo> {
-        Ok(Repo::open(&self.path)?.using(self.profile.clone()))
+        Ok(Repo::open(&self.path)?
+            .using(self.profile.clone())
+            .pruning(self.general.auto_prune))
     }
 
     /// Takes on a profile: the one its repository is filed under.
@@ -1755,7 +2131,399 @@ impl Open {
         self.recount();
         self.status = format!("read in {} ms", started.elapsed().as_millis());
         self.status_failed = false;
+        self.record(self.status.clone(), false, true);
         self.reload_detail(&repo);
+        self.look_ahead(&repo);
+        // Last, because it may send something off that says so in the bar,
+        // and the line about how long the reading took would write over it.
+        self.mind_submodules(&repo);
+    }
+
+    /// Reads again what a fetch can have changed, and nothing else.
+    ///
+    /// For the fetch nobody asked for. A whole reload would also put away a
+    /// commit message being amended and move what is selected, and somebody
+    /// in the middle of writing one did not ask for anything to happen.
+    fn reload_refs(&mut self) {
+        let Ok(repo) = self.repo() else {
+            return;
+        };
+        self.refs = repo.references().unwrap_or_default();
+        self.tracking = repo.tracking();
+        self.backlog = repo.backlog().unwrap_or_default();
+        self.lay_out();
+        if self.rebuild_graph(&repo).is_ok() {
+            // Counting again starts the search from its first match, which
+            // is right for a reload somebody asked for and wrong for this:
+            // they were on the seventh.
+            let at = self.at;
+            self.recount();
+            self.at = at.min(self.found.len().saturating_sub(1));
+        }
+        self.look_ahead(&repo);
+    }
+
+    /// Takes on the preferences, and acts on the ones that change what is
+    /// already on screen.
+    fn prefer(&mut self, general: &General) {
+        if self.general == *general {
+            return;
+        }
+        let before = std::mem::replace(&mut self.general, general.clone());
+        if let Some(remote) = &mut self.remote {
+            remote.pruning(general.auto_prune);
+        }
+
+        if before.commits() != general.commits() {
+            // How much history to read has changed, and what is on screen
+            // was read under the old answer.
+            self.limit = general.commits();
+            if self.job.is_none() {
+                self.load();
+            }
+        } else if before.foresee_conflicts != general.foresee_conflicts {
+            self.foresaw = None;
+            self.foreseen = None;
+            match self.is_remote() {
+                true => self.look_ahead_remote(),
+                false => {
+                    if let Ok(repo) = self.repo() {
+                        self.look_ahead(&repo);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads further back, once somebody has reached the end of what was.
+    ///
+    /// Only when the end they reached is where the reading stopped and not
+    /// where the history does: a repository with fewer commits than were
+    /// asked for has shown all it has.
+    fn more(&mut self) {
+        if !self.general.lazy_load || self.general.show_all || self.job.is_some() {
+            return;
+        }
+        let read = self.graph.rows.iter().filter(|row| !row.commit.is_working()).count();
+        if read < self.limit {
+            return;
+        }
+        self.limit = self
+            .limit
+            .saturating_add(self.general.initial_commits.max(gitrust_core::FEWEST_COMMITS));
+
+        if self.is_remote() {
+            self.load();
+        } else if let Ok(repo) = self.repo() {
+            if self.rebuild_graph(&repo).is_ok() {
+                self.recount();
+            }
+        }
+        let now = self.graph.rows.iter().filter(|row| !row.commit.is_working()).count();
+        self.record(format!("read further back: {now} commits now"), false, true);
+    }
+
+    /// Writes a line in the activity log.
+    ///
+    /// `unasked` marks what the window did by itself -- a reload, a fetch on
+    /// the timer -- which is kept only when the preferences ask for the
+    /// extended log. Without it the log is what somebody did and how it
+    /// went, which is the question it is usually opened to answer.
+    fn record(&mut self, text: impl Into<String>, failed: bool, unasked: bool) {
+        if unasked && !self.general.extended_log {
+            return;
+        }
+        if self.log.len() >= LOG_LINES {
+            self.log.remove(0);
+        }
+        self.log.push(Logged {
+            at: chrono::Local::now(),
+            text: text.into(),
+            failed,
+        });
+    }
+
+    /// Fetches every remote off to one side, saying nothing.
+    ///
+    /// Not while something else is running: a fetch under a push is two
+    /// things writing the same references. And not a checkout on another
+    /// machine, whose commands run on the thread that paints -- a window
+    /// that stops for a moment every minute, by itself, is a broken window.
+    fn fetch_quietly(&mut self) {
+        if self.is_remote() || self.place.is_none() || self.job.is_some() || self.fetching.is_some() {
+            return;
+        }
+        let (send, done) = std::sync::mpsc::channel();
+        let path = self.path.clone();
+        let profile = self.profile.clone();
+        let prune = self.general.auto_prune;
+        let turn = self.turn.clone();
+
+        std::thread::spawn(move || {
+            // Something asked for got there first, between the look above
+            // and here. It goes ahead and this one waits for the next time.
+            let Ok(_held) = turn.try_lock() else {
+                let _ = send.send(Ok(false));
+                return;
+            };
+            let _ = send.send(
+                Repo::open(&path)
+                    .map(|repo| repo.using(profile).pruning(prune))
+                    .and_then(|repo| repo.fetch_quietly()),
+            );
+        });
+
+        self.fetching = Some(done);
+        self.record("auto-fetch\u{2026}", false, true);
+    }
+
+    /// Looks at whether that fetch is back.
+    ///
+    /// One that failed is a line in the extended log and nothing else: no
+    /// toast and no red in the bar. Nobody asked for it, it will be tried
+    /// again in a minute, and a laptop with no network would otherwise be
+    /// told so sixty times an hour.
+    fn poll_fetch(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(done) = &self.fetching else {
+            return;
+        };
+        match done.try_recv() {
+            Ok(result) => {
+                self.fetching = None;
+                match result {
+                    Ok(true) => {
+                        self.record("auto-fetch brought something new", false, true);
+                        self.reload_refs();
+                    }
+                    Ok(false) => self.record("auto-fetch: nothing new", false, true),
+                    Err(err) => self.record(format!("auto-fetch failed: {err:#}"), true, true),
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            Err(TryRecvError::Disconnected) => self.fetching = None,
+        }
+    }
+
+    /// Asks, off to one side, whether this branch would go into its target
+    /// cleanly -- when either of them has moved since it was last asked.
+    fn look_ahead(&mut self, repo: &Repo) {
+        if !self.general.foresee_conflicts || self.half != gitrust_core::Half::None {
+            self.foreseen = None;
+            self.foresaw = None;
+            self.foreseeing = None;
+            return;
+        }
+        let key = repo.head_id().zip(repo.target().map(|(_, at)| at));
+        if key == self.foresaw {
+            return;
+        }
+        self.foresaw = key;
+        self.foreseen = None;
+        self.foreseeing = None;
+        if key.is_none() {
+            return;
+        }
+
+        let (send, done) = std::sync::mpsc::channel();
+        let path = self.path.clone();
+        // A merge of two large trees is not instant, and this is asked on a
+        // reload: it goes where it will not hold the reload up.
+        std::thread::spawn(move || {
+            let _ = send.send(Repo::open(&path).and_then(|repo| repo.foresee()));
+        });
+        self.foreseeing = Some(done);
+    }
+
+    /// The same question for a checkout on another machine, asked of the
+    /// Git over there and waited for.
+    fn look_ahead_remote(&mut self) {
+        if !self.general.foresee_conflicts || self.half != gitrust_core::Half::None {
+            self.foreseen = None;
+            self.foresaw = None;
+            return;
+        }
+        let head = self.refs.iter().find(|entry| entry.is_head).map(|entry| entry.target);
+        let target = likely_target(&self.refs, self.tracking.as_ref().map(|t| t.remote.as_str()))
+            .map(|entry| (entry.name.clone(), entry.target));
+        let key = head.zip(target.as_ref().map(|(_, at)| *at));
+        if key == self.foresaw {
+            return;
+        }
+        self.foresaw = key;
+        self.foreseen = None;
+
+        let (Some((ours, theirs)), Some((name, _)), Some(remote)) = (key, target, self.remote.as_ref())
+        else {
+            return;
+        };
+        if ours == theirs {
+            return;
+        }
+        match remote.foresee(&name) {
+            Ok(seen) => {
+                if let Some(text) = seen.as_ref().and_then(Foreseen::says) {
+                    self.record(text, false, true);
+                }
+                self.foreseen = seen;
+            }
+            // An older Git on the server cannot answer. That is nothing
+            // somebody at this end can do anything about.
+            Err(err) => self.record(format!("could not look ahead for conflicts: {err:#}"), true, true),
+        }
+    }
+
+    /// Looks at whether the answer is back.
+    fn poll_foresee(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(done) = &self.foreseeing else {
+            return;
+        };
+        match done.try_recv() {
+            Ok(result) => {
+                self.foreseeing = None;
+                match result {
+                    Ok(seen) => {
+                        if let Some(text) = seen.as_ref().and_then(Foreseen::says) {
+                            self.record(text, false, true);
+                        }
+                        self.foreseen = seen;
+                    }
+                    Err(err) => {
+                        self.record(format!("could not look ahead for conflicts: {err:#}"), true, true)
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+            Err(TryRecvError::Disconnected) => self.foreseeing = None,
+        }
+    }
+
+    /// Notes where HEAD is, and says whether it has moved since last time.
+    ///
+    /// The first look is not a move: opening a repository is not a Git
+    /// action, and nothing in it should be put somewhere else for having
+    /// been opened. Neither is a commit written from this window, which
+    /// says where HEAD is itself before the reload looks: somebody trying a
+    /// newer library in a submodule and committing something else has not
+    /// asked for the library to be put back.
+    fn head_moved(&mut self, head: Option<Oid>) -> bool {
+        let moved = self.looked && head != self.head_at;
+        self.looked = true;
+        self.head_at = head;
+        if moved {
+            self.subs_tried = None;
+        }
+        moved
+    }
+
+    /// Brings the submodules up to date after a Git action, when the
+    /// preferences say to.
+    ///
+    /// "After a Git action" is "HEAD is not where it was": a pull, a switch,
+    /// a merge, a reset. Merely opening a repository is not one, and nothing
+    /// is fetched for having been looked at: where a submodule comes from
+    /// is whatever a file in the repository says, and a folder somebody was
+    /// sent is not a reason to go there.
+    fn mind_submodules(&mut self, repo: &Repo) {
+        if self.head_moved(repo.head_id()) {
+            self.bring_submodules(repo);
+        }
+    }
+
+    /// Moves every submodule that is not at its recorded commit to it, and
+    /// brings down the ones that were never brought down.
+    fn bring_submodules(&mut self, repo: &Repo) {
+        let head = repo.head_id();
+        if !self.general.submodules
+            || self.job.is_some()
+            || head.is_none()
+            || self.subs_tried == head
+            || self.half != gitrust_core::Half::None
+        {
+            return;
+        }
+        let stale: Vec<String> = repo
+            .submodules()
+            .into_iter()
+            .filter(|sub| sub.behind())
+            .map(|sub| sub.path)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        self.subs_tried = head;
+        self.spawn("updating submodules", move |repo| repo.update_submodules(&stale));
+    }
+
+    /// Brings down the submodules of a repository this window has just
+    /// cloned: the clone was the Git action, and it was asked for.
+    fn after_clone(&mut self) {
+        if let Ok(repo) = self.repo() {
+            self.bring_submodules(&repo);
+        }
+    }
+
+    /// The same for a checkout on another machine, with that machine's Git.
+    ///
+    /// Only after a move, never on sight: it is a command on the server that
+    /// may go out to the network from there, on the thread that paints.
+    fn mind_remote_submodules(&mut self) {
+        let head = self.refs.iter().find(|entry| entry.is_head).map(|entry| entry.target);
+        let moved = self.head_moved(head);
+        if !moved
+            || !self.general.submodules
+            || head.is_none()
+            || self.subs_tried == head
+            || self.half != gitrust_core::Half::None
+        {
+            return;
+        }
+        self.subs_tried = head;
+        let Some(remote) = self.remote.as_ref() else {
+            return;
+        };
+        if !remote.has_submodules() {
+            return;
+        }
+        match remote.update_submodules() {
+            Ok(note) => {
+                self.record(note, false, true);
+                // What was modified a moment ago no longer is.
+                self.load_remote();
+            }
+            Err(err) => self.note_error(format!("could not update the submodules: {err:#}")),
+        }
+    }
+
+    /// Takes away the `.orig` copy beside a file whose conflict has just
+    /// been settled, when the preferences say to.
+    fn drop_orig(&mut self, path: &str) {
+        if !self.general.delete_orig || self.clashes.iter().any(|clash| clash.path == path) {
+            return;
+        }
+        let gone = match &self.remote {
+            Some(remote) => remote.drop_orig(path),
+            None => self.repo().and_then(|repo| repo.drop_orig(path)),
+        };
+        match gone {
+            Ok(true) => {
+                self.record(format!("deleted {path}.orig"), false, true);
+                // It was in the list of untracked files a moment ago.
+                match self.is_remote() {
+                    true => self.load(),
+                    false => self.refresh(),
+                }
+            }
+            Ok(false) => {}
+            Err(err) => self.record(format!("could not delete {path}.orig: {err:#}"), true, false),
+        }
     }
 
     fn load_remote(&mut self) {
@@ -1810,8 +2578,11 @@ impl Open {
         self.preselect();
         self.status = format!("read remotely in {} ms", started.elapsed().as_millis());
         self.status_failed = false;
+        self.record(self.status.clone(), false, true);
         self.remote_disconnected = None;
         self.reload_remote_detail();
+        self.look_ahead_remote();
+        self.mind_remote_submodules();
     }
 
     fn reload_remote_detail(&mut self) {
@@ -2310,15 +3081,18 @@ impl Open {
                 }
             }
             conflict_view::Act::Take { path, side } => {
+                let settled = path.clone();
                 if self.is_remote() {
                     let theirs = side == gitrust_core::Side::Theirs;
                     self.run_remote(|repo| repo.take_conflict_side(&path, theirs));
                 } else {
                     self.note_down(move |repo| repo.take_side(&path, side));
                 }
+                self.drop_orig(&settled);
                 self.after_deciding();
             }
             conflict_view::Act::Write { path, text } => {
+                let settled = path.clone();
                 if self.is_remote() {
                     self.run_remote(|repo| {
                         repo.write_working_file(&path, text.as_bytes())?;
@@ -2327,6 +3101,7 @@ impl Open {
                 } else {
                     self.note_down(move |repo| repo.take_text(&path, &text));
                 }
+                self.drop_orig(&settled);
                 if let Some(state) = &mut self.deciding {
                     state.draft = None;
                 }
@@ -2455,7 +3230,7 @@ impl Open {
     }
 
     fn run_remote(&mut self, op: impl FnOnce(&RemoteRepo) -> Result<()>) -> bool {
-        match self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(op) {
+        match self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("this checkout is not connected: press Reconnect")).and_then(op) {
             Ok(()) => { self.load(); true }
             Err(err) => { self.note_error(format!("{err:#}")); false }
         }
@@ -2473,7 +3248,8 @@ impl Open {
         match gitrust_core::ssh::Session::connect_as(descriptor.login.clone(), None, key.as_deref(), false)
             .and_then(|session| RemoteRepo::new(session, descriptor.path.clone()))
         {
-            Ok(repo) => {
+            Ok(mut repo) => {
+                repo.pruning(self.general.auto_prune);
                 self.remote = Some(repo);
                 self.name_the_remote();
                 self.remote_disconnected = None;
@@ -2497,17 +3273,26 @@ impl Open {
         let (send, done) = std::sync::mpsc::channel();
         let path = self.path.clone();
         let profile = self.profile.clone();
+        let prune = self.general.auto_prune;
+        let turn = self.turn.clone();
 
         std::thread::spawn(move || {
+            // What was asked for waits for the fetch that was not, which is
+            // a second of somebody's time against a pull that fails on a
+            // locked reference it had nothing to do with. Not for ever: a
+            // quiet fetch hung on a dead network must not hold a push
+            // hostage, and past ten seconds the two take their chances.
+            let _held = wait_for(&turn, std::time::Duration::from_secs(10));
             let _ = send.send(
                 Repo::open(&path)
-                    .map(|repo| repo.using(profile))
+                    .map(|repo| repo.using(profile).pruning(prune))
                     .and_then(|mut repo| work(&mut repo)),
             );
         });
 
         self.status = format!("{doing}…");
         self.status_failed = false;
+        self.record(self.status.clone(), false, true);
         self.job = Some(Job { done });
     }
 
@@ -3481,6 +4266,7 @@ impl Open {
     /// gets seen. A sentence said only in the bar is a sentence nobody reads
     /// while they are looking at the work they just asked about.
     fn said(&mut self, text: String) {
+        self.record(text.clone(), false, false);
         self.toast = Some(toast::Toast::new(text.clone(), false));
         self.status = text;
         self.status_failed = false;
@@ -3489,6 +4275,7 @@ impl Open {
     /// The same, for something that went wrong: the bar marks it as a failure
     /// and the toast comes up in red and stays up for longer.
     fn note_error(&mut self, message: String) {
+        self.record(message.clone(), true, false);
         self.toast = Some(toast::Toast::new(message.clone(), true));
         self.status = message;
         self.status_failed = true;
@@ -3623,9 +4410,9 @@ impl Open {
             }
             Action::Amend if self.is_remote() => {
                 let message = compose(&self.subject, &self.body);
-                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(|repo| repo.amend(&message));
+                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("this checkout is not connected: press Reconnect")).and_then(|repo| repo.amend(&message));
                 match result {
-                    Ok(oid) => { self.saved = None; self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.detail_file = None; self.load(); self.said("last remote commit redone".to_string()); }
+                    Ok(oid) => { self.saved = None; self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.head_at = Some(oid); self.detail_file = None; self.load(); self.said("last remote commit redone".to_string()); }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
@@ -3639,6 +4426,8 @@ impl Open {
                         // The old one no longer exists: the cursor goes to the
                         // one replacing it, not to a gap.
                         self.selected_commit = Some(oid);
+                        // Written here, a moment ago: not the repository having moved.
+                        self.head_at = Some(oid);
                         self.detail_file = None;
                         self.load();
                         self.said("last commit redone".to_string());
@@ -3648,9 +4437,9 @@ impl Open {
             }
             Action::Commit if self.is_remote() => {
                 let message = compose(&self.subject, &self.body);
-                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("no remote checkout")).and_then(|repo| repo.commit(&message));
+                let result = self.remote.as_ref().ok_or_else(|| anyhow::anyhow!("this checkout is not connected: press Reconnect")).and_then(|repo| repo.commit(&message));
                 match result {
-                    Ok(oid) => { self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.detail_file = None; self.load(); self.said(format!("commit created on {}", self.head)); }
+                    Ok(oid) => { self.subject.clear(); self.body.clear(); self.selected_commit = Some(oid); self.head_at = Some(oid); self.detail_file = None; self.load(); self.said(format!("commit created on {}", self.head)); }
                     Err(err) => self.note_error(format!("{err:#}")),
                 }
             }
@@ -3663,6 +4452,8 @@ impl Open {
                         // The cursor stays on what has just been written: the
                         // changes row it was on has just stopped existing.
                         self.selected_commit = Some(oid);
+                        // Written here, a moment ago: not the repository having moved.
+                        self.head_at = Some(oid);
                         self.detail_file = None;
                         // The commit changes the history: redraw the graph.
                         self.load();
@@ -3883,6 +4674,9 @@ impl Open {
                         self.select_commit(oid);
                     }
                     if let Some(picked) = asked.pick { self.act_on_ref(picked, ctx); }
+                    if asked.bottom {
+                        self.more();
+                    }
                 }
                 View::Board => {
                     // The forge is asked the first time the board is looked
@@ -4231,7 +5025,9 @@ impl Open {
                     theme::vrule(ui);
                     self.views(ui, false);
                     theme::vrule(ui);
-                    if self.remote_disconnected.is_some() {
+                    if self.remote.is_none() {
+                        ui.label(egui::RichText::new("Not connected").color(theme::muted()));
+                    } else if self.remote_disconnected.is_some() {
                         ui.label(egui::RichText::new("Connection lost").color(theme::removed()));
                     } else {
                         ui.label(egui::RichText::new("Connected").color(theme::added()));
@@ -4406,19 +5202,121 @@ impl Open {
                             .font(theme::body(11.5))
                             .color(theme::muted()),
                     );
+                    // A conflict that has not happened yet, in the amber the
+                    // window keeps for where you are: it is about this
+                    // branch, and it is not yet anything that has gone wrong.
+                    if let Some(seen) = &self.foreseen {
+                        if let Some(text) = seen.says() {
+                            ui.add_space(12.0);
+                            let shown: Vec<&str> =
+                                seen.files.iter().take(12).map(String::as_str).collect();
+                            let mut files = shown.join("\n");
+                            if seen.files.len() > shown.len() {
+                                files.push_str(&format!(
+                                    "\n\u{2026}and {} more",
+                                    seen.files.len() - shown.len()
+                                ));
+                            }
+                            ui.label(
+                                egui::RichText::new(text)
+                                    .font(theme::body(11.5))
+                                    .color(theme::head()),
+                            )
+                            .on_hover_text(files);
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let color = if self.status_failed {
                             theme::removed()
                         } else {
                             theme::faint()
                         };
-                        ui.label(
-                            egui::RichText::new(&self.status)
-                                .font(theme::body(11.5))
-                                .color(color),
+                        // The last thing that happened is the last line of
+                        // the log, so it is also the way into the rest.
+                        let last = match self.status.is_empty() {
+                            true => "Activity log",
+                            false => self.status.as_str(),
+                        };
+                        let line = ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(last).font(theme::body(11.5)).color(color),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Activity log");
+                        let id = egui::Id::new(("activity", self.salt));
+                        if line.clicked() {
+                            ui.memory_mut(|memory| memory.toggle_popup(id));
+                        }
+                        egui::popup::popup_above_or_below_widget(
+                            ui,
+                            id,
+                            &line,
+                            egui::AboveOrBelow::Above,
+                            egui::PopupCloseBehavior::CloseOnClickOutside,
+                            |ui| self.activity(ui),
                         );
                     });
                 });
+            });
+    }
+
+    /// The activity log: what has happened in this tab, newest first.
+    fn activity(&self, ui: &mut egui::Ui) {
+        ui.set_width(LOG_MENU);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Activity log")
+                    .font(theme::medium(12.0))
+                    .color(theme::text()),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(match self.general.extended_log {
+                        true => "extended: what you did and what the window did by itself",
+                        false => "what you did, and how it went",
+                    })
+                    .font(theme::body(11.0))
+                    .color(theme::faint()),
+                );
+            });
+        });
+        theme::rule(ui);
+
+        if self.log.is_empty() {
+            ui.label(
+                egui::RichText::new("Nothing has happened here yet.")
+                    .font(theme::body(11.5))
+                    .color(theme::faint()),
+            );
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .id_salt(("activity-lines", self.salt))
+            .max_height(320.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for line in self.log.iter().rev() {
+                    ui.horizontal_top(|ui| {
+                        ui.label(
+                            egui::RichText::new(line.at.format("%H:%M:%S").to_string())
+                                .font(theme::mono(10.5))
+                                .color(theme::faint()),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(&line.text)
+                                .font(theme::body(11.5))
+                                .color(match line.failed {
+                                    true => theme::removed(),
+                                    false => theme::text(),
+                                }),
+                        );
+                    });
+                }
             });
     }
 

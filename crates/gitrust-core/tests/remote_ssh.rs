@@ -275,4 +275,24 @@ fn resolves_continues_and_aborts_a_remote_merge() {
     assert_eq!(remote.clashes().unwrap().len(), 1);
     remote.abort_operation().unwrap();
     assert_eq!(remote.half_done(), Half::None);
+
+    // What the preferences ask of a checkout over there. `topic` and `main`
+    // are known to clash -- the rebase above has just shown it -- so the
+    // merge tried in the server's memory names the one file, and leaves
+    // nothing half-done behind it: it was a question.
+    let seen = remote.foresee("main").unwrap().expect("there is something to merge");
+    assert_eq!(seen.target, "main");
+    assert_eq!(seen.files.len(), 1, "{:?}", seen.files);
+    assert_eq!(remote.half_done(), Half::None);
+
+    // The copy a merge tool leaves goes, once, and only that copy.
+    fs::write(checkout.join("stray.txt.orig"), "left by a merge tool\n").unwrap();
+    assert!(remote.drop_orig("stray.txt").unwrap());
+    assert!(!checkout.join("stray.txt.orig").exists());
+    assert!(!remote.drop_orig("stray.txt").unwrap());
+    assert!(remote.drop_orig("../outside").is_err());
+
+    // And a checkout with no `.gitmodules` has no submodules to be asked
+    // about, which is what keeps a command off the server after every pull.
+    assert!(!remote.has_submodules());
 }

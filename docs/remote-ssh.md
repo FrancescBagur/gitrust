@@ -64,6 +64,30 @@ SSH and SFTP operations currently run synchronously on the UI thread and have
 a 15-second timeout. A slow or unreachable server can therefore make the
 window temporarily unresponsive until that operation returns or times out.
 
+## What the preferences do here
+
+The preferences behind the gear reach a remote checkout as far as they can
+without the window stopping by itself.
+
+- **Auto-fetch does not.** Commands on a remote checkout run on the thread
+  that paints, and a window that paused every minute with nobody touching it
+  would be a broken one. It is fetched when you press Fetch.
+- **Auto-prune does**: with it on, Fetch runs `git fetch --all --prune`
+  there; with it off, `git fetch --all`, and the server's own `fetch.prune`
+  decides.
+- **Submodules** are updated by the server's Git -- `git submodule update
+  --init --recursive` -- after something has moved HEAD, and only if the
+  checkout has a `.gitmodules`. It uses the server's credentials.
+- **Conflicts are seen coming** with `git merge-tree --write-tree`, which is
+  that Git's own merge in memory and needs Git 2.38 or newer on the server.
+  An older one cannot answer, and nothing is said about it outside the
+  extended log.
+- **The `.orig` copy** beside a file whose conflict was settled is removed
+  with `git clean`, and never when the server's Git tracks it.
+- **A remembered tab** comes back with the address and no connection, and
+  waits for Reconnect. No password was kept, so a server that only takes a
+  password has to be opened again from the repository screen.
+
 ## Limits and safety
 
 - A remote checkout is never cloned, mounted or silently mirrored locally.

@@ -17,7 +17,7 @@ fn a_repository_started_in_a_folder_that_is_not_there_makes_the_folder() {
     let path = scratch("fresh");
     assert!(!path.exists());
 
-    gitrust_core::start::init(&path).unwrap();
+    gitrust_core::start::init(&path, None).unwrap();
 
     assert!(path.join(".git").exists());
     gitrust_core::Repo::open(path.to_str().unwrap()).expect("it opens");
@@ -29,7 +29,7 @@ fn a_repository_started_in_an_empty_folder_that_is_there_is_fine() {
     let path = scratch("empty");
     std::fs::create_dir_all(&path).unwrap();
 
-    gitrust_core::start::init(&path).unwrap();
+    gitrust_core::start::init(&path, None).unwrap();
 
     assert!(path.join(".git").exists());
     let _ = std::fs::remove_dir_all(&path);
@@ -41,7 +41,7 @@ fn a_folder_with_anything_in_it_is_refused_and_left_alone() {
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(path.join("notes.txt"), "mine\n").unwrap();
 
-    let err = gitrust_core::start::init(&path).unwrap_err().to_string();
+    let err = gitrust_core::start::init(&path, None).unwrap_err().to_string();
     assert!(err.contains("already has something"), "{err}");
 
     // Nothing of theirs was touched, and no repository was left half-made.
@@ -65,7 +65,7 @@ fn a_clone_with_no_address_says_so_before_touching_the_disk() {
 fn a_repository_cloned_from_a_folder_arrives_with_its_history() {
     let source = scratch("clone-source");
     std::fs::create_dir_all(&source).unwrap();
-    gitrust_core::start::init(&source).unwrap();
+    gitrust_core::start::init(&source, None).unwrap();
 
     // Who the commit below is by. Without this the test borrows whatever
     // identity the machine happens to have in its global config, which means

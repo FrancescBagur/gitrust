@@ -425,6 +425,31 @@ impl Profiles {
     }
 
     /// The profile a repository works under, if it has one.
+    /// How many tokens are written down, across every profile.
+    pub fn tokens(&self) -> usize {
+        self.list
+            .iter()
+            .flat_map(|profile| &profile.accounts)
+            .filter(|account| !account.token.trim().is_empty())
+            .count()
+    }
+
+    /// Forgets every one of them, and says how many there were.
+    ///
+    /// The accounts stay, with their host and their user: those are what a
+    /// repository is matched to, and they are no secret. What goes is the
+    /// one thing in the file that is one. A key is a file somewhere else and
+    /// is not touched.
+    pub fn forget_tokens(&mut self) -> usize {
+        let had = self.tokens();
+        for profile in &mut self.list {
+            for account in &mut profile.accounts {
+                account.token.clear();
+            }
+        }
+        had
+    }
+
     pub fn owner_of(&self, place: &str) -> Option<usize> {
         self.list
             .iter()
@@ -772,6 +797,38 @@ mod tests {
         profiles.add(Profile::new("Personal"));
         profiles.use_at(Some(0));
         profiles
+    }
+
+    #[test]
+    fn forgetting_the_tokens_leaves_the_accounts_and_the_key() {
+        let mut profiles = Profiles::default();
+        let mut acme = Profile::new("Acme");
+        acme.key = "~/.ssh/acme".to_string();
+        acme.accounts.push(Account {
+            forge: Forge::GitHub,
+            host: "github.com".to_string(),
+            user: "someone".to_string(),
+            token: "ghp_secret".to_string(),
+        });
+        acme.accounts.push(Account {
+            forge: Forge::GitLab,
+            host: "gitlab.com".to_string(),
+            user: "someone".to_string(),
+            token: String::new(),
+        });
+        profiles.add(acme);
+        assert_eq!(profiles.tokens(), 1);
+
+        assert_eq!(profiles.forget_tokens(), 1);
+        assert_eq!(profiles.tokens(), 0);
+        let acme = &profiles.list[0];
+        assert_eq!(acme.key, "~/.ssh/acme");
+        assert_eq!(acme.accounts.len(), 2);
+        assert_eq!(acme.accounts[0].user, "someone");
+        assert!(!profiles.render().contains("ghp_secret"));
+
+        // With none to forget it says none, and nothing else has moved.
+        assert_eq!(profiles.forget_tokens(), 0);
     }
 
     #[test]
