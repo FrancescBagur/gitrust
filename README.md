@@ -9,7 +9,7 @@
 
 > ### Your project board is already in your repository. gitrust just draws it.
 
-### [Download it](https://github.com/FrancescBagur/gitrust/releases/latest)
+### [Download it](https://github.com/FrancescBagur/gitrust/releases)
 
 A `.deb`, a Linux tarball, a Mac app and a Windows zip, built by the machine
 that runs the tests. [Which file, and what each one will
@@ -413,9 +413,11 @@ repository in the current directory if there is one.
 
 ## Installing
 
-Everything is on [the latest
-release](https://github.com/FrancescBagur/gitrust/releases/latest), built by
-the machine that runs the tests, from the tag and nothing else. Take one:
+Everything is on [the releases
+page](https://github.com/FrancescBagur/gitrust/releases), newest at the top,
+built by the machine that runs the tests, from the tag and nothing else. A
+version with `beta` in its name is one: it is there to be tried, and what it
+gets wrong is wanted as an issue. Take one:
 
 | | |
 |---|---|
