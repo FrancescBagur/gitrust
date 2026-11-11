@@ -30,7 +30,7 @@ cargo test
 ```
 
 The system libraries you need are in the [README](README.md#building).
-Three hundred and twenty-five tests, most of them against real repositories
+Three hundred and forty tests, most of them against real repositories
 made in `/tmp`, so they are slow and they are honest. CI runs them on Linux
 on every pull request; macOS and Windows are built there and not tested,
 which is a gap and not a decision.

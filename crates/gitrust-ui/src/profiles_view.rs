@@ -119,6 +119,26 @@ pub fn show(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) ->
             {
                 act = Some(Act::Close);
             }
+            // Up here, and in the blue this program keeps for the thing that
+            // is switched on, not at the foot of the list where it used to
+            // be: on a screen with no profiles the foot of the list is the
+            // far corner of an empty window, and the one button that screen
+            // exists for was the last thing on it anybody found.
+            let blue = ui.visuals().selection.bg_fill;
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("+  Add a profile")
+                            .font(theme::medium(12.0))
+                            .color(theme::text()),
+                    )
+                    .fill(blue)
+                    .min_size(egui::vec2(124.0, 26.0)),
+                )
+                .clicked()
+            {
+                act = Some(Act::Add);
+            }
         });
     });
 
@@ -177,7 +197,7 @@ fn list(ui: &mut egui::Ui, state: &mut Managing, profiles: &Profiles) -> Option<
 
         egui::ScrollArea::vertical()
             .id_salt("profiles")
-            .max_height(ui.available_height() - 44.0)
+            .max_height(ui.available_height() - 8.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (which, profile) in profiles.list.iter().enumerate() {
@@ -220,14 +240,6 @@ fn list(ui: &mut egui::Ui, state: &mut Managing, profiles: &Profiles) -> Option<
                     });
                 }
             });
-
-        ui.add_space(8.0);
-        if ui
-            .add(egui::Button::new(RichText::new("+  Add a profile").font(theme::body(12.0))))
-            .clicked()
-        {
-            act = Some(Act::Add);
-        }
     });
 
     act
