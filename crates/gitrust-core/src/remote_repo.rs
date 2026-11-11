@@ -432,17 +432,32 @@ fn remote_status(output: &str) -> WorkingState {
             continue;
         }
         let bytes = record.as_bytes();
+        let first = bytes[0] as char;
+        let second = bytes[1] as char;
+        let path = record[3..].to_string();
+
+        // Porcelain reports every unmerged state in two columns, but it is
+        // one unresolved working-tree path. Keep it out of the index list,
+        // exactly like the local backend, so the conflict screen is the only
+        // place that claims it can be resolved.
+        if unmerged_status(first, second) {
+            state.unstaged.push(FileChange {
+                path,
+                kind: ChangeKind::Conflicted,
+                staged: false,
+            });
+            continue;
+        }
         let staged = (bytes[0] as char != '?')
-            .then(|| change_kind(bytes[0] as char, bytes[1] as char))
+            .then(|| change_kind(first))
             .flatten();
         let unstaged = (bytes[1] as char != '?')
-            .then(|| change_kind(bytes[1] as char, bytes[0] as char))
+            .then(|| change_kind(second))
             .flatten()
             .or_else(|| {
                 (bytes[0] as char == '?' && bytes[1] as char == '?')
                     .then_some(ChangeKind::Untracked)
             });
-        let path = record[3..].to_string();
         if let Some(kind) = staged {
             state.staged.push(FileChange {
                 path: path.clone(),
@@ -467,7 +482,16 @@ fn remote_status(output: &str) -> WorkingState {
     state
 }
 
-fn change_kind(code: char, other: char) -> Option<ChangeKind> {
+/// The complete set of unmerged XY pairs from `git status --porcelain=v1`.
+/// A `U` is not present in every case (`AA` and `DD` are also conflicts).
+pub(crate) fn unmerged_status(first: char, second: char) -> bool {
+    matches!(
+        (first, second),
+        ('D', 'D') | ('A', 'U') | ('U', 'D') | ('U', 'A') | ('D', 'U') | ('A', 'A') | ('U', 'U')
+    )
+}
+
+fn change_kind(code: char) -> Option<ChangeKind> {
     Some(match code {
         ' ' => return None,
         '?' => ChangeKind::Untracked,
@@ -476,7 +500,7 @@ fn change_kind(code: char, other: char) -> Option<ChangeKind> {
         'D' => ChangeKind::Deleted,
         'R' => ChangeKind::Renamed,
         'C' | 'T' => ChangeKind::TypeChange,
-        'U' | _ if other == 'U' => ChangeKind::Conflicted,
+        'U' => ChangeKind::Conflicted,
         _ => return None,
     })
 }
@@ -604,6 +628,16 @@ mod tests {
             .unstaged
             .iter()
             .any(|change| change.path == "new file"));
+    }
+
+    #[test]
+    fn every_unmerged_porcelain_pair_is_one_unstaged_conflict() {
+        for code in ["DD", "AU", "UD", "UA", "DU", "AA", "UU"] {
+            let state = remote_status(&format!("{code} conflict.txt\0"));
+            assert!(state.staged.is_empty(), "{code} is not staged work");
+            assert_eq!(state.unstaged.len(), 1, "{code} appears once");
+            assert_eq!(state.unstaged[0].kind, ChangeKind::Conflicted, "{code}");
+        }
     }
 
     #[test]
