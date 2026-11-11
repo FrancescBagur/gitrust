@@ -38,12 +38,18 @@ use crate::ssh::{Login, RemoteDescriptor};
 use anyhow::{Context, Result};
 
 /// The appearance chosen for the application.
+///
+/// Dark until somebody says otherwise. It is the palette the lanes were
+/// drawn for and the one in every picture of this program, and a window
+/// that follows the system opens white on most Windows machines -- on
+/// somebody who has never seen it and did not ask. Following the system is
+/// still there, one click away, for whoever wants it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Appearance {
     /// Follow macOS, Windows, or Linux's current appearance.
-    #[default]
     Auto,
     /// The original dark graphite palette.
+    #[default]
     Dark,
     /// A white and light-grey palette.
     Light,
@@ -231,7 +237,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             waves: true,
-            appearance: Appearance::Auto,
+            appearance: Appearance::default(),
             remotes: Vec::new(),
             general: General::default(),
             tabs: Vec::new(),
@@ -386,6 +392,14 @@ mod tests {
             let settings = Settings { waves, appearance, ..Settings::default() };
             assert_eq!(Settings::parse(&settings.render()), settings);
         }
+    }
+
+    #[test]
+    fn the_window_is_dark_until_somebody_chooses() {
+        assert_eq!(Settings::default().appearance, Appearance::Dark);
+        assert_eq!(Settings::parse("waves off\n").appearance, Appearance::Dark);
+        // Whoever asked to follow the system is still followed.
+        assert_eq!(Settings::parse("appearance auto\n").appearance, Appearance::Auto);
     }
 
     #[test]
