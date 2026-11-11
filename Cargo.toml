@@ -13,3 +13,4 @@ authors = ["Francesc Bagur <francesc.bagur@coffeesoftware.io>"]
 [workspace.dependencies]
 anyhow = "1"
 git2 = "0.20"
+ssh2 = "0.9"

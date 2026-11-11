@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, RichText};
-use gitrust_core::Known;
+use gitrust_core::{ssh, Known};
 
 use crate::theme;
 
@@ -20,6 +20,9 @@ use crate::theme;
 pub enum Act {
     /// Open that repository in a tab.
     Open(PathBuf),
+    /// Open the authenticated checkout without ever putting its path on this
+    /// computer's known-repository list.
+    OpenRemote { session: ssh::Session, path: String },
     /// Bring one down from an address into a folder.
     Clone { url: String, into: PathBuf },
     /// Make an empty one there.
@@ -40,6 +43,7 @@ pub enum Act {
 enum Asking {
     Open,
     Clone,
+    Remote,
     Start,
 }
 
@@ -48,6 +52,7 @@ impl Asking {
         match self {
             Asking::Open => "path to a repository",
             Asking::Clone => "address to clone from",
+            Asking::Remote => "",
             Asking::Start => "path for the new repository",
         }
     }
@@ -56,13 +61,13 @@ impl Asking {
         match self {
             Asking::Open => "Open",
             Asking::Clone => "Clone",
+            Asking::Remote => "",
             Asking::Start => "Start",
         }
     }
 }
 
 /// What is typed into the screen, which has to survive between frames.
-#[derive(Default)]
 pub struct Picker {
     needle: String,
     pub draft: String,
@@ -70,6 +75,43 @@ pub struct Picker {
     /// filled in from the address as it is typed.
     pub beside: String,
     asking: Option<Asking>,
+    remote: Remote,
+}
+
+struct Remote {
+    hosts: Vec<ssh::Host>,
+    host: String,
+    user: String,
+    port: String,
+    password: String,
+    path: String,
+    folders: Vec<String>,
+    session: Option<ssh::Session>,
+    note: Option<(String, bool)>,
+    trust_new_host: bool,
+}
+
+impl Default for Picker {
+    fn default() -> Self {
+        Self {
+            needle: String::new(),
+            draft: String::new(),
+            beside: String::new(),
+            asking: None,
+            remote: Remote {
+                hosts: ssh::configured_hosts().unwrap_or_default(),
+                host: String::new(),
+                user: String::new(),
+                port: "22".to_string(),
+                password: String::new(),
+                path: "/".to_string(),
+                folders: Vec::new(),
+                session: None,
+                note: None,
+                trust_new_host: false,
+            },
+        }
+    }
 }
 
 impl Picker {
@@ -101,6 +143,7 @@ pub fn show(
     known: &[Known],
     glance: &HashMap<PathBuf, String>,
     open_now: &[PathBuf],
+    saved_remotes: &[ssh::RemoteDescriptor],
 ) -> Option<Act> {
     let mut act = None;
 
@@ -123,7 +166,7 @@ pub fn show(
     });
 
     ui.add_space(12.0);
-    if let Some(asked) = buttons(ui, state) {
+    if let Some(asked) = buttons(ui, state, saved_remotes) {
         act = Some(asked);
     }
 
@@ -146,7 +189,12 @@ pub fn show(
         .filter(|known| {
             needle.is_empty()
                 || known.name().to_lowercase().contains(&needle)
-                || known.path.display().to_string().to_lowercase().contains(&needle)
+                || known
+                    .path
+                    .display()
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&needle)
         })
         .collect();
 
@@ -165,7 +213,11 @@ pub fn show(
     // Three lists out of one, and a repository can be in two of them: the one
     // you are looking at can also be a favourite. Saying it twice is better
     // than making somebody look in both places to find out.
-    let here: Vec<&Known> = matching.iter().copied().filter(|k| open_now.contains(&k.path)).collect();
+    let here: Vec<&Known> = matching
+        .iter()
+        .copied()
+        .filter(|k| open_now.contains(&k.path))
+        .collect();
     let starred: Vec<&Known> = matching.iter().copied().filter(|k| k.starred).collect();
     let rest: Vec<&Known> = matching
         .iter()
@@ -201,19 +253,27 @@ pub fn show(
 
 /// The three ways a repository gets here, and the box behind whichever was
 /// pressed.
-fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
+fn buttons(
+    ui: &mut egui::Ui,
+    state: &mut Picker,
+    saved_remotes: &[ssh::RemoteDescriptor],
+) -> Option<Act> {
     let mut act = None;
 
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        for asking in [Asking::Open, Asking::Clone, Asking::Start] {
+        for asking in [Asking::Open, Asking::Clone, Asking::Remote, Asking::Start] {
             let on = state.asking == Some(asking);
             let label = match asking {
                 Asking::Open => "Open a folder",
                 Asking::Clone => "Clone from an address",
+                Asking::Remote => "Open remote checkout",
                 Asking::Start => "Start an empty one",
             };
-            if ui.selectable_label(on, RichText::new(label).font(theme::body(12.5))).clicked() {
+            if ui
+                .selectable_label(on, RichText::new(label).font(theme::body(12.5)))
+                .clicked()
+            {
                 // Pressing the one already open puts it away, which is what
                 // anybody expects of a control that looks pressed in.
                 state.asking = (!on).then_some(asking);
@@ -231,6 +291,10 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
     let Some(asking) = state.asking else {
         return None;
     };
+
+    if asking == Asking::Remote {
+        return remote_picker(ui, &mut state.remote, saved_remotes);
+    }
 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -273,6 +337,7 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
                     url: state.draft.trim().to_string(),
                     into,
                 }),
+                Asking::Remote => None,
             };
         }
     });
@@ -282,21 +347,33 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            ui.label(RichText::new("into").font(theme::body(11.5)).color(theme::FAINT));
+            ui.label(
+                RichText::new("into")
+                    .font(theme::body(11.5))
+                    .color(theme::FAINT),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut state.beside)
                     .desired_width(240.0)
                     .margin(egui::vec2(6.0, 4.0))
                     .font(theme::mono(11.0)),
             );
-            if ui.small_button("\u{2026}").on_hover_text("Pick the folder").clicked() {
+            if ui
+                .small_button("\u{2026}")
+                .on_hover_text("Pick the folder")
+                .clicked()
+            {
                 act = Some(Act::Browse { beside: true });
             }
             let landing = state
                 .landing()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "nowhere yet".to_string());
-            ui.label(RichText::new(landing).font(theme::mono(11.0)).color(theme::MUTED));
+            ui.label(
+                RichText::new(landing)
+                    .font(theme::mono(11.0))
+                    .color(theme::MUTED),
+            );
         });
     }
 
@@ -307,6 +384,199 @@ fn buttons(ui: &mut egui::Ui, state: &mut Picker) -> Option<Act> {
         state.draft.clear();
     }
     act
+}
+
+/// The first half of opening a remote checkout: authenticate and choose a
+/// folder. A verified session remains here until the remote-tab backend is
+/// ready to take ownership of it.
+fn remote_picker(
+    ui: &mut egui::Ui,
+    remote: &mut Remote,
+    saved_remotes: &[ssh::RemoteDescriptor],
+) -> Option<Act> {
+    let mut open = None;
+    ui.add_space(8.0);
+    if !saved_remotes.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("Saved checkouts")
+                    .font(theme::body(11.5))
+                    .color(theme::FAINT),
+            );
+            for saved in saved_remotes {
+                let label = format!(
+                    "{}@{}:{}{}",
+                    saved.login.user, saved.login.host, saved.login.port, saved.path
+                );
+                if ui.small_button(label).clicked() {
+                    remote.host = saved.login.host.clone();
+                    remote.user = saved.login.user.clone();
+                    remote.port = saved.login.port.to_string();
+                    remote.path = saved.path.clone();
+                    remote.session = None;
+                    remote.note = Some((
+                        "Press Connect to authenticate again; no password was saved.".to_string(),
+                        false,
+                    ));
+                }
+            }
+        });
+        ui.add_space(5.0);
+    }
+    if !remote.hosts.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("SSH hosts")
+                    .font(theme::body(11.5))
+                    .color(theme::FAINT),
+            );
+            for saved in &remote.hosts {
+                if ui.small_button(&saved.alias).clicked() {
+                    remote.host = saved
+                        .hostname
+                        .clone()
+                        .unwrap_or_else(|| saved.alias.clone());
+                    remote.user = saved.user.clone().unwrap_or_default();
+                    remote.port = saved.port.unwrap_or(22).to_string();
+                    remote.session = None;
+                    remote.note = None;
+                }
+            }
+        });
+        ui.add_space(5.0);
+    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut remote.user)
+                .hint_text("user")
+                .desired_width(120.0),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut remote.host)
+                .hint_text("host")
+                .desired_width(190.0),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut remote.port)
+                .hint_text("port")
+                .desired_width(62.0),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut remote.password)
+                .password(true)
+                .hint_text("password")
+                .desired_width(150.0),
+        );
+        let ready = !remote.user.trim().is_empty() && !remote.host.trim().is_empty();
+        if ui
+            .add_enabled(ready, egui::Button::new("Connect").fill(theme::CHOSEN))
+            .clicked()
+        {
+            let port = remote.port.trim().parse().unwrap_or(22);
+            let password = std::mem::take(&mut remote.password);
+            // Trust is a confirmation for this one connection attempt, never
+            // a broad setting that could accept a later, unrelated host.
+            let trust_new_host = std::mem::replace(&mut remote.trust_new_host, false);
+            match ssh::Login::new(
+                remote.host.trim().to_string(),
+                remote.user.trim().to_string(),
+                port,
+            )
+            .and_then(|login| {
+                ssh::Session::connect(
+                    login,
+                    (!password.is_empty()).then_some(password.as_str()),
+                    trust_new_host,
+                )
+            }) {
+                Ok(session) => match session.folders("/") {
+                    Ok(folders) => {
+                        remote.session = Some(session);
+                        remote.folders = folders;
+                        remote.note = Some((
+                            "Connected. Choose the remote checkout folder.".to_string(),
+                            false,
+                        ));
+                    }
+                    Err(err) => remote.note = Some((format!("SFTP: {err:#}"), true)),
+                },
+                Err(err) => remote.note = Some((format!("SSH: {err:#}"), true)),
+            }
+        }
+    });
+    ui.checkbox(
+        &mut remote.trust_new_host,
+        "I verified this host key; trust and save it for this attempt",
+    );
+    if let Some((note, bad)) = &remote.note {
+        ui.add_space(4.0);
+        ui.label(RichText::new(note).font(theme::body(11.5)).color(if *bad {
+            theme::REMOVED
+        } else {
+            theme::MUTED
+        }));
+    }
+    let Some(session) = remote.session.as_ref() else {
+        return None;
+    };
+    let mut use_folder = false;
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(&remote.path)
+                .font(theme::mono(11.5))
+                .color(theme::TEXT),
+        );
+        if remote.path != "/" && ui.small_button("Up").clicked() {
+            let parent = Path::new(&remote.path)
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .display()
+                .to_string();
+            match session.folders(&parent) {
+                Ok(folders) => {
+                    remote.path = parent;
+                    remote.folders = folders;
+                }
+                Err(err) => remote.note = Some((format!("SFTP: {err:#}"), true)),
+            }
+        }
+        if ui.button("Use this folder").clicked() {
+            remote.note = Some(match session.verify_checkout(&remote.path) {
+                Ok(_) => {
+                    use_folder = true;
+                    (format!("Opening {}…", remote.path), false)
+                }
+                Err(err) => (format!("Git: {err:#}"), true),
+            });
+        }
+    });
+    egui::ScrollArea::vertical()
+        .max_height(180.0)
+        .show(ui, |ui| {
+            for folder in remote.folders.clone() {
+                if ui
+                    .selectable_label(false, RichText::new(&folder).font(theme::mono(11.5)))
+                    .clicked()
+                {
+                    match session.folders(&folder) {
+                        Ok(folders) => {
+                            remote.path = folder;
+                            remote.folders = folders;
+                        }
+                        Err(err) => remote.note = Some((format!("SFTP: {err:#}"), true)),
+                    }
+                }
+            }
+        });
+    if use_folder {
+        let session = remote.session.take().expect("session checked above");
+        open = Some(Act::OpenRemote {
+            session,
+            path: remote.path.clone(),
+        });
+    }
+    open
 }
 
 /// One repository: what it is called, where it is, and what it was at.
@@ -346,7 +616,10 @@ fn row(
                 false => "Keep it at the top",
             });
         if star.clicked() {
-            act = Some(Act::Star { path: known.path.clone(), starred: !known.starred });
+            act = Some(Act::Star {
+                path: known.path.clone(),
+                starred: !known.starred,
+            });
         }
 
         let name = ui.selectable_label(
@@ -374,15 +647,23 @@ fn row(
                     .color(theme::REMOVED),
             );
         } else if let Some(line) = glance.get(&known.path) {
-            ui.label(RichText::new(line).font(theme::mono(11.0)).color(theme::MUTED));
+            ui.label(
+                RichText::new(line)
+                    .font(theme::mono(11.0))
+                    .color(theme::MUTED),
+            );
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(
-                    egui::Button::new(RichText::new("\u{00d7}").font(theme::body(13.0)).color(theme::FAINT))
-                        .frame(false)
-                        .min_size(egui::vec2(18.0, 18.0)),
+                    egui::Button::new(
+                        RichText::new("\u{00d7}")
+                            .font(theme::body(13.0))
+                            .color(theme::FAINT),
+                    )
+                    .frame(false)
+                    .min_size(egui::vec2(18.0, 18.0)),
                 )
                 .on_hover_text("Forget it. The folder is not touched")
                 .clicked()
