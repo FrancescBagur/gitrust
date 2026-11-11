@@ -139,22 +139,8 @@ impl RemoteRepo {
     }
 
     fn ref_labels(&self) -> Result<HashMap<Oid, Vec<RefLabel>>> {
-        let mut labels = HashMap::new();
         let output = self.git(&["for-each-ref", "--format=%(objectname)%00%(refname)%00"])?;
-        let fields: Vec<&str> = output.split('\0').collect();
-        for pair in fields.chunks_exact(2) {
-            let Ok(target) = Oid::from_str(pair[0]) else {
-                continue;
-            };
-            let Some((kind, name)) = label(pair[1]) else {
-                continue;
-            };
-            labels
-                .entry(target)
-                .or_insert_with(Vec::new)
-                .push(RefLabel { name, kind });
-        }
-        Ok(labels)
+        Ok(parse_ref_labels(&output))
     }
 }
 
@@ -550,6 +536,27 @@ fn label(reference: &str) -> Option<(RefKind, String)> {
         })
 }
 
+fn parse_ref_labels(output: &str) -> HashMap<Oid, Vec<RefLabel>> {
+    let mut labels = HashMap::new();
+    let fields: Vec<&str> = output.split('\0').collect();
+    for pair in fields.chunks_exact(2) {
+        // Git terminates every formatted ref with a newline. The NUL fields
+        // make the names unambiguous, but that newline becomes the first
+        // character of the next object id unless it is removed.
+        let Ok(target) = Oid::from_str(pair[0].trim_start_matches('\n')) else {
+            continue;
+        };
+        let Some((kind, name)) = label(pair[1]) else {
+            continue;
+        };
+        labels
+            .entry(target)
+            .or_insert_with(Vec::new)
+            .push(RefLabel { name, kind });
+    }
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +572,18 @@ mod tests {
             Some((RefKind::RemoteBranch, _))
         ));
         assert!(matches!(label("refs/tags/v1"), Some((RefKind::Tag, _))));
+    }
+
+    #[test]
+    fn nul_separated_ref_output_keeps_every_ref() {
+        let output = concat!(
+            "1111111111111111111111111111111111111111\0refs/heads/main\0\n",
+            "2222222222222222222222222222222222222222\0refs/heads/topic\0\n",
+        );
+        let labels = parse_ref_labels(output);
+        assert_eq!(labels.len(), 2);
+        assert!(labels.values().flatten().any(|label| label.name == "main"));
+        assert!(labels.values().flatten().any(|label| label.name == "topic"));
     }
 
     #[test]

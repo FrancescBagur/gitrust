@@ -67,12 +67,12 @@ impl Default for Shares {
 
 fn kind_color(kind: ChangeKind) -> Color32 {
     match kind {
-        ChangeKind::Added => theme::ADDED,
-        ChangeKind::Deleted => theme::REMOVED,
+        ChangeKind::Added => theme::added(),
+        ChangeKind::Deleted => theme::removed(),
         ChangeKind::Renamed => theme::lane(0),
         ChangeKind::TypeChange => theme::lane(6),
-        ChangeKind::Conflicted => theme::REMOVED,
-        _ => theme::CHANGED,
+        ChangeKind::Conflicted => theme::removed(),
+        _ => theme::changed(),
     }
 }
 
@@ -104,7 +104,7 @@ pub fn show(
     ui.label(
         RichText::new(&detail.summary)
             .font(theme::strong(15.0))
-            .color(theme::TEXT),
+            .color(theme::text()),
     );
 
     ui.add_space(6.0);
@@ -121,14 +121,14 @@ pub fn show(
         ui.label(
             RichText::new(&detail.author)
                 .font(theme::medium(12.0))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         )
         .on_hover_text(&detail.email);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(&detail.short_id)
                     .font(theme::mono(11.5))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
             if detail.is_merge() {
                 ui.label(
@@ -141,7 +141,7 @@ pub fn show(
             ui.label(
                 RichText::new(when)
                     .font(theme::mono(11.0))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
         });
     });
@@ -176,7 +176,7 @@ pub fn show(
                         Block::Prose(text) => RichText::new(text).font(theme::body(12.5)),
                         Block::Literal(text) => RichText::new(text).font(theme::mono(11.0)),
                     };
-                    ui.add(egui::Label::new(text.color(theme::MUTED)).wrap());
+                    ui.add(egui::Label::new(text.color(theme::muted())).wrap());
                     ui.add_space(7.0);
                 }
             });
@@ -206,13 +206,13 @@ pub fn show(
         ui.label(
             RichText::new(theme::files_label(detail.files.len()))
                 .font(theme::medium(11.5))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for (count, word, color) in [
-                (deleted, "deleted", theme::REMOVED),
-                (modified, "modified", theme::CHANGED),
-                (added, "new", theme::ADDED),
+                (deleted, "deleted", theme::removed()),
+                (modified, "modified", theme::changed()),
+                (added, "new", theme::added()),
             ] {
                 if count > 0 {
                     ui.label(
@@ -268,8 +268,19 @@ pub fn show(
         None => theme::empty(ui, "Pick a file to see what changed"),
         Some(diff) if diff.binary => theme::empty(ui, "Binary file"),
         Some(diff) => {
+            // Egui normally keeps this bar visible whenever the diff is
+            // taller than its pane. Treat it like an editor overlay instead:
+            // visible while this pane is actually being scrolled, invisible
+            // while reading.
+            let scrolling_here = ui.rect_contains_pointer(ui.max_rect())
+                && ui.input(|input| input.smooth_scroll_delta != egui::Vec2::ZERO);
             egui::ScrollArea::both()
                 .id_salt("diff-commit")
+                .scroll_bar_visibility(if scrolling_here {
+                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+                } else {
+                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                })
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -300,7 +311,7 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
     let button = ui.add(egui::Button::new(
         RichText::new("Tag          ")
             .font(theme::body(11.5))
-            .color(theme::MUTED),
+            .color(theme::muted()),
     ));
     theme::caret(ui, &button);
     let id = ui.make_persistent_id("menu-tag");
@@ -319,7 +330,7 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
             ui.label(
                 RichText::new("Tag on this commit")
                     .font(theme::medium(12.0))
-                    .color(theme::TEXT),
+                    .color(theme::text()),
             );
             ui.add_space(5.0);
 
@@ -328,7 +339,7 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
                     .desired_width(f32::INFINITY)
                     .margin(egui::vec2(8.0, 5.0))
                     .font(theme::mono(12.0))
-                    .hint_text(RichText::new("v1.0").color(theme::FAINT)),
+                    .hint_text(RichText::new("v1.0").color(theme::faint())),
             );
             ui.add_space(5.0);
             ui.add(
@@ -337,13 +348,13 @@ fn tag_menu(ui: &mut egui::Ui, draft: &mut TagDraft) -> Option<Pick> {
                     .desired_width(f32::INFINITY)
                     .margin(egui::vec2(8.0, 5.0))
                     .font(theme::body(11.5))
-                    .hint_text(RichText::new("what this version brings").color(theme::FAINT)),
+                    .hint_text(RichText::new("what this version brings").color(theme::faint())),
             );
             ui.add_space(4.0);
             ui.label(
                 RichText::new("With a message it is annotated; without one, lightweight")
                     .font(theme::body(10.5))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
             ui.add_space(6.0);
 

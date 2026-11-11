@@ -297,7 +297,7 @@ pub fn wash(painter: &egui::Painter, band: Rect, from: f32, age: f32, color: Col
     // window wider than the front ever travels the arithmetic would leave a
     // dark strip at the far end for ever.
     if age >= LIFE {
-        painter.rect_filled(band, 0.0, theme::HOVER);
+        painter.rect_filled(band, 0.0, theme::hover());
         return;
     }
 
@@ -314,7 +314,7 @@ pub fn wash(painter: &egui::Painter, band: Rect, from: f32, age: f32, color: Col
         let crest = (1.0 - (filled * 2.0 - 1.0).abs()).max(0.0);
 
         let shade = blend(
-            theme::tint(theme::HOVER, (255.0 * filled) as u8),
+            theme::tint(theme::hover(), (255.0 * filled) as u8),
             theme::tint(color, (CREST_ALPHA * crest) as u8),
         );
 

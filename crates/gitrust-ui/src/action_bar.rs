@@ -103,14 +103,8 @@ pub fn show(
             action = Some(other);
         }
 
-        ui.spacing_mut().item_spacing.x = PAIRED;
-        let push = count_button(ui, "↑ Push", ahead, !busy).on_hover_text(push_hint(tracking));
-        if push.clicked() {
-            action = Some(Action::Push);
-        }
-
         ui.spacing_mut().item_spacing.x = APART;
-        if let Some(other) = push_menu(ui, busy, push.rect) {
+        if let Some(other) = push_menu(ui, busy, ahead, tracking) {
             action = Some(other);
         }
 
@@ -128,8 +122,11 @@ pub fn show(
 /// A button with its count flush against it, in the same amber chip the
 /// changes tab wears: it means the same thing, that something of yours is due.
 fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> egui::Response {
-    let ink = if enabled { theme::TEXT } else { theme::FAINT };
+    ui.add_enabled(enabled, egui::Button::new(count_label(label, count, enabled)))
+}
 
+fn count_label(label: &str, count: usize, enabled: bool) -> LayoutJob {
+    let ink = if enabled { theme::text() } else { theme::faint() };
     let mut job = LayoutJob::default();
     job.append(label, 0.0, TextFormat::simple(theme::medium(12.5), ink));
 
@@ -139,9 +136,9 @@ fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> 
             6.0,
             TextFormat {
                 font_id: theme::mono(10.5),
-                color: if enabled { theme::CHANGED } else { theme::FAINT },
+                color: if enabled { theme::changed() } else { theme::faint() },
                 background: if enabled {
-                    theme::tint(theme::CHANGED, 32)
+                    theme::tint(theme::changed(), 32)
                 } else {
                     Color32::TRANSPARENT
                 },
@@ -150,7 +147,7 @@ fn count_button(ui: &mut egui::Ui, label: &str, count: usize, enabled: bool) -> 
         );
     }
 
-    ui.add_enabled(enabled, egui::Button::new(job))
+    job
 }
 
 /// Hands egui a response pinned to the whole control instead of to the part
@@ -207,7 +204,7 @@ fn open_mark(ui: &egui::Ui, id: egui::Id, control: egui::Rect) {
     ui.painter().rect_stroke(
         control,
         egui::CornerRadius::same(theme::RADIUS),
-        egui::Stroke::new(1.0, theme::MUTED),
+        egui::Stroke::new(1.0, theme::muted()),
         egui::StrokeKind::Outside,
     );
 }
@@ -284,24 +281,42 @@ fn push_hint(tracking: Option<&Tracking>) -> String {
     }
 }
 
-/// The two ways of pushing that are not the everyday one.
-fn push_menu(ui: &mut egui::Ui, busy: bool, main: egui::Rect) -> Option<Action> {
-    // No text: the width comes from the button's own padding, so the caret
-    // lands in its middle instead of leaving half a button empty on the left.
-    let caret = ui.add_enabled(!busy, egui::Button::new("").min_size(egui::vec2(20.0, 0.0)));
-    theme::caret(ui, &caret);
+/// The push menu deliberately has the same one-piece control as Branch and
+/// Stash. A separate caret looked like it belonged to the next action.
+fn push_menu(
+    ui: &mut egui::Ui,
+    busy: bool,
+    ahead: usize,
+    tracking: Option<&Tracking>,
+) -> Option<Action> {
+    let mut label = count_label("↑ Push", ahead, !busy);
+    // `caret` is painted inside the button, just as it is for Branch and
+    // Stash. Reserve its room in the text job so it never sits on the count.
+    label.append(
+        "     ",
+        0.0,
+        TextFormat::simple(theme::body(11.0), theme::muted()),
+    );
+    let button = ui
+        .add_enabled(!busy, egui::Button::new(label))
+        .on_hover_text(push_hint(tracking));
+    theme::caret(ui, &button);
     let id = ui.make_persistent_id("menu-push");
-    let control = main.union(caret.rect);
 
-    if caret.clicked() {
+    if button.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(id));
     }
-    open_mark(ui, id, control);
+    open_mark(ui, id, button.rect);
 
-    let anchor = anchored(ui, &caret, control, PUSH_MENU);
+    let anchor = anchored(ui, &button, button.rect, PUSH_MENU);
     egui::popup::popup_below_widget(ui, id, &anchor, PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_width(PUSH_MENU);
         let mut action = None;
+
+        if ui.button("Push").clicked() {
+            action = Some(Action::Push);
+        }
+        theme::rule(ui);
 
         if ui
             .button("Force the push")
@@ -349,7 +364,7 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
         ui.label(
             RichText::new("New branch right here")
                 .font(theme::medium(12.0))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.add_space(5.0);
 
@@ -358,7 +373,7 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
                 .desired_width(f32::INFINITY)
                 .margin(egui::vec2(8.0, 5.0))
                 .font(theme::mono(12.0))
-                .hint_text(RichText::new("branch name").color(theme::FAINT)),
+                .hint_text(RichText::new("branch name").color(theme::faint())),
         );
         ui.add_space(5.0);
 
@@ -371,7 +386,7 @@ fn branch_menu(ui: &mut egui::Ui, busy: bool, name: &mut String) -> Option<Strin
         ui.label(
             RichText::new("The working tree is left alone")
                 .font(theme::body(11.0))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
 
         (entered || pressed).then(|| {
@@ -389,20 +404,20 @@ fn stash_menu(
     message: &mut String,
 ) -> Option<Action> {
     let mut job = LayoutJob::default();
-    job.append("Stash", 0.0, TextFormat::simple(theme::medium(12.5), theme::TEXT));
+    job.append("Stash", 0.0, TextFormat::simple(theme::medium(12.5), theme::text()));
     if !stashes.is_empty() {
         job.append(
             &format!(" {} ", stashes.len()),
             6.0,
             TextFormat {
                 font_id: theme::mono(10.5),
-                color: theme::MUTED,
-                background: theme::tint(theme::MUTED, 26),
+                color: theme::muted(),
+                background: theme::tint(theme::muted(), 26),
                 ..Default::default()
             },
         );
     }
-    job.append("     ", 0.0, TextFormat::simple(theme::body(11.0), theme::MUTED));
+    job.append("     ", 0.0, TextFormat::simple(theme::body(11.0), theme::muted()));
 
     let button = ui.add_enabled(!busy, egui::Button::new(job));
     theme::caret(ui, &button);
@@ -424,7 +439,7 @@ fn stash_menu(
                     .desired_width(ui.available_width() - 76.0)
                     .margin(egui::vec2(8.0, 5.0))
                     .font(theme::body(12.0))
-                    .hint_text(RichText::new("what you are setting aside").color(theme::FAINT)),
+                    .hint_text(RichText::new("what you are setting aside").color(theme::faint())),
             );
             if ui.button("Stash").clicked() {
                 action = Some(Action::StashSave(std::mem::take(message)));
@@ -436,7 +451,7 @@ fn stash_menu(
             ui.label(
                 RichText::new("Nothing stashed")
                     .font(theme::body(11.5))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
         } else {
             theme::rule(ui);
@@ -473,31 +488,31 @@ fn stash_row(ui: &mut egui::Ui, entry: &StashEntry) -> Option<Action> {
 
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
-        ui.add(egui::Label::new(RichText::new(text).font(theme::body(12.0)).color(theme::TEXT)))
+        ui.add(egui::Label::new(RichText::new(text).font(theme::body(12.0)).color(theme::text())))
             .on_hover_text(&entry.message);
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         // Which branch it came off: stashing on one and popping on another is
         // easy to do by accident, and this is the only thing that warns you.
-        ui.label(RichText::new(branch).font(theme::body(11.0)).color(theme::MUTED));
+        ui.label(RichText::new(branch).font(theme::body(11.0)).color(theme::muted()));
         if let Some(when) = when(entry.time) {
-            ui.label(RichText::new("·").font(theme::body(11.0)).color(theme::FAINT));
-            ui.label(RichText::new(when).font(theme::mono(10.5)).color(theme::FAINT));
+            ui.label(RichText::new("·").font(theme::body(11.0)).color(theme::faint()));
+            ui.label(RichText::new(when).font(theme::mono(10.5)).color(theme::faint()));
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
 
-            if ui.button(small("Drop", theme::MUTED)).on_hover_text("there is no getting it back").clicked() {
+            if ui.button(small("Drop", theme::muted())).on_hover_text("there is no getting it back").clicked() {
                 action = Some(Action::StashDrop(entry.index));
             }
-            if ui.button(small("Apply", theme::MUTED)).on_hover_text("and it stays stashed").clicked()
+            if ui.button(small("Apply", theme::muted())).on_hover_text("and it stays stashed").clicked()
             {
                 action = Some(Action::StashApply(entry.index));
             }
-            if ui.button(small("Pop", theme::TEXT)).on_hover_text("and it leaves the stack").clicked() {
+            if ui.button(small("Pop", theme::text())).on_hover_text("and it leaves the stack").clicked() {
                 action = Some(Action::StashPop(entry.index));
             }
         });
@@ -537,8 +552,8 @@ fn small(text: &str, color: Color32) -> RichText {
 /// caret `theme::caret` paints.
 fn label(text: &str) -> LayoutJob {
     let mut job = LayoutJob::default();
-    job.append(text, 0.0, TextFormat::simple(theme::medium(12.5), theme::TEXT));
-    job.append("     ", 0.0, TextFormat::simple(theme::body(11.0), theme::MUTED));
+    job.append(text, 0.0, TextFormat::simple(theme::medium(12.5), theme::text()));
+    job.append("     ", 0.0, TextFormat::simple(theme::body(11.0), theme::muted()));
     job
 }
 

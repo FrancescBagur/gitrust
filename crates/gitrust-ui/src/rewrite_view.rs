@@ -55,12 +55,12 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan, busy: bool) -> Option<Act> {
         ui.label(
             RichText::new(format!("Rewriting {}", plan.branch))
                 .font(theme::medium(13.5))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.label(
             RichText::new(plan.says())
                 .font(theme::body(12.0))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -68,7 +68,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan, busy: bool) -> Option<Act> {
             let go = ui.add_enabled(
                 ready,
                 egui::Button::new(RichText::new("Rewrite it").font(theme::medium(12.5)))
-                    .fill(theme::CHOSEN),
+                    .fill(theme::chosen()),
             );
             let go = match &trouble {
                 None => go.on_hover_text(
@@ -89,7 +89,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan, busy: bool) -> Option<Act> {
             ui.label(
                 RichText::new(trouble)
                     .font(theme::body(12.0))
-                    .color(theme::REMOVED),
+                    .color(theme::removed()),
             );
         }
         // The one thing about rewriting that surprises people, said where
@@ -102,7 +102,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan, busy: bool) -> Option<Act> {
                      pulled by somebody else will not match theirs afterwards.",
                 )
                 .font(theme::body(11.5))
-                .color(theme::FAINT),
+                .color(theme::faint()),
             );
         }
     }
@@ -168,9 +168,9 @@ fn row(
                         RichText::new(line.step.says())
                             .font(theme::body(11.5))
                             .color(match line.step {
-                                Step::Drop => theme::REMOVED,
-                                Step::Pick => theme::MUTED,
-                                _ => theme::HEAD,
+                                Step::Drop => theme::removed(),
+                                Step::Pick => theme::muted(),
+                                _ => theme::head(),
                             }),
                     )
                     .width(STEP)
@@ -200,7 +200,7 @@ fn row(
             RichText::new(&line.short)
                 .font(theme::mono(10.5))
                 .color(match gone {
-                    true => theme::FAINT,
+                    true => theme::faint(),
                     false => theme::lane(0),
                 }),
         );
@@ -210,8 +210,8 @@ fn row(
                 RichText::new(&line.summary)
                     .font(theme::body(12.0))
                     .color(match gone {
-                        true => theme::FAINT,
-                        false => theme::TEXT,
+                        true => theme::faint(),
+                        false => theme::text(),
                     })
                     .strikethrough_if(gone),
             )
@@ -222,7 +222,7 @@ fn row(
             ui.label(
                 RichText::new(&line.author)
                     .font(theme::body(10.5))
-                    .color(theme::FAINT),
+                    .color(theme::faint()),
             );
         });
     });

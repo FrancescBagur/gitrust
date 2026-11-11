@@ -120,12 +120,12 @@ pub fn show(ui: &mut egui::Ui, looking: &mut Looking, busy: bool, editable: bool
         ui.label(
             RichText::new(&looking.path)
                 .font(theme::medium(13.5))
-                .color(theme::TEXT),
+                .color(theme::text()),
         );
         ui.label(
             RichText::new(format!("at {}", short(looking.at)))
                 .font(theme::mono(11.0))
-                .color(theme::FAINT),
+                .color(theme::faint()),
         );
 
         // The three questions sit over the column they answer, on the right.
@@ -162,7 +162,7 @@ pub fn show(ui: &mut egui::Ui, looking: &mut Looking, busy: bool, editable: bool
                 ui.label(
                     RichText::new(trouble)
                         .font(theme::body(12.0))
-                        .color(theme::REMOVED),
+                        .color(theme::removed()),
                 );
                 return;
             }
@@ -212,7 +212,7 @@ fn story(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
                      and there is a limit on how many.",
                 )
                 .font(theme::body(11.0))
-                .color(theme::FAINT),
+                .color(theme::faint()),
             );
         }
         false => {
@@ -220,7 +220,7 @@ fn story(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
                 ui.label(
                     RichText::new("End of history")
                         .font(theme::body(11.0))
-                        .color(theme::FAINT),
+                        .color(theme::faint()),
                 );
             });
         }
@@ -243,10 +243,10 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
     if ui.is_rect_visible(rect) {
         match (here, response.hovered()) {
             (true, _) => {
-                ui.painter().rect_filled(rect, 4.0, theme::CHOSEN);
+                ui.painter().rect_filled(rect, 4.0, theme::chosen());
             }
             (false, true) => {
-                ui.painter().rect_filled(rect, 4.0, theme::RAISED);
+                ui.painter().rect_filled(rect, 4.0, theme::raised());
             }
             _ => {}
         }
@@ -276,7 +276,7 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
                         RichText::new(&commit.short_id)
                             .font(theme::mono(10.5))
                             .color(match here {
-                                true => theme::TEXT,
+                                true => theme::text(),
                                 false => theme::lane(0),
                             }),
                     );
@@ -285,7 +285,7 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
                             egui::Label::new(
                                 RichText::new(&commit.summary)
                                     .font(theme::body(12.0))
-                                    .color(theme::TEXT),
+                                    .color(theme::text()),
                             )
                             .truncate(),
                         );
@@ -298,13 +298,13 @@ fn row(ui: &mut egui::Ui, commit: &Commit, here: bool) -> bool {
                 ui.label(
                     RichText::new(when(commit.time))
                         .font(theme::mono(10.0))
-                        .color(theme::FAINT),
+                        .color(theme::faint()),
                 );
                 ui.add(
                     egui::Label::new(
                         RichText::new(format!("by {}", commit.author))
                             .font(theme::body(10.5))
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                     )
                     .truncate(),
                 );
@@ -386,7 +386,7 @@ fn whole(ui: &mut egui::Ui, looking: &mut Looking, editable: bool, act: &mut Opt
                         egui::Label::new(
                             RichText::new((index + 1).to_string())
                                 .font(theme::mono(11.0))
-                                .color(theme::FAINT),
+                                .color(theme::faint()),
                         ),
                     );
                     code(ui, line, painted.and_then(|all| all.get(index)));
@@ -449,8 +449,8 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
                     })
                     .font(theme::body(10.5))
                     .color(match line.commit.is_zero() {
-                        true => theme::ADDED,
-                        false => theme::MUTED,
+                        true => theme::added(),
+                        false => theme::muted(),
                     }),
                 )
                 .truncate(),
@@ -461,7 +461,7 @@ fn blame(ui: &mut egui::Ui, looking: &Looking, act: &mut Option<Act>) {
                 egui::Label::new(
                     RichText::new(line.number.to_string())
                         .font(theme::mono(10.5))
-                        .color(theme::FAINT),
+                        .color(theme::faint()),
                 ),
             );
             code(
@@ -480,7 +480,7 @@ fn code(ui: &mut egui::Ui, line: &str, pieces: Option<&Vec<syntax::Piece>>) {
             ui.label(syntax::laid(pieces, theme::mono(11.5)));
         }
         None => {
-            ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::TEXT));
+            ui.label(RichText::new(line).font(theme::mono(11.5)).color(theme::text()));
         }
     }
 }

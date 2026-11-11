@@ -53,7 +53,7 @@ pub use reader::Reader;
 pub use remote_repo::RemoteRepo;
 pub use rewrite::{Plan, Step};
 pub use repo::Repo;
-pub use settings::Settings;
+pub use settings::{Appearance, Settings};
 pub use stash::StashEntry;
 pub use status::{ChangeKind, FileChange, WorkingState};
 pub use worktree::Worktree;

@@ -85,8 +85,8 @@ pub fn show(ctx: &egui::Context, toast: &Toast) -> bool {
     ctx.request_repaint_after(Duration::from_millis(16));
 
     let color = match toast.failed {
-        true => theme::REMOVED,
-        false => theme::ADDED,
+        true => theme::removed(),
+        false => theme::added(),
     };
     // A few pixels of rise as it comes in. It is the only movement in the
     // window, so it is enough to say "this is new" without being a show.
@@ -100,17 +100,17 @@ pub fn show(ctx: &egui::Context, toast: &Toast) -> bool {
             ui.multiply_opacity(toast.opacity());
 
             let frame = egui::Frame::NONE
-                .fill(theme::RAISED)
+                .fill(theme::raised())
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                .stroke(egui::Stroke::new(1.0, theme::EDGE));
+                .stroke(egui::Stroke::new(1.0, theme::edge()));
 
             let painted = frame.show(ui, |ui| {
                 ui.set_max_width(340.0);
                 ui.label(
                     RichText::new(&toast.text)
                         .font(theme::body(12.0))
-                        .color(theme::TEXT),
+                        .color(theme::text()),
                 );
             });
 

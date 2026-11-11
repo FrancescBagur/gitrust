@@ -79,7 +79,7 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
                 .desired_width(260.0)
                 .margin(egui::vec2(8.0, 5.0))
                 .font(theme::body(12.0))
-                .hint_text(RichText::new("Find: message, author or hash").color(theme::FAINT)),
+                .hint_text(RichText::new("Find: message, author or hash").color(theme::faint())),
         );
 
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
@@ -101,8 +101,8 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
 
         ui.add_space(4.0);
         let (text, color) = match found {
-            0 => ("no matches".to_string(), theme::MUTED),
-            n => (format!("{} of {n}", at + 1), theme::FAINT),
+            0 => ("no matches".to_string(), theme::muted()),
+            n => (format!("{} of {n}", at + 1), theme::faint()),
         };
         ui.label(RichText::new(text).font(theme::mono(11.0)).color(color));
 
@@ -218,7 +218,7 @@ pub fn show(
                 egui::Sense::click(),
             );
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, theme::CANVAS);
+            painter.rect_filled(rect, 0.0, theme::canvas());
 
             // The branch column is measured before anything else: where
             // everything else starts depends on its width.
@@ -370,11 +370,11 @@ pub fn show(
                 if selected == Some(row.commit.id) {
                     let band = band_of(index);
                     let edge = if row.commit.is_working() {
-                        theme::MUTED
+                        theme::muted()
                     } else {
                         theme::lane(row.color)
                     };
-                    painter.rect_filled(band, 0.0, theme::CHOSEN);
+                    painter.rect_filled(band, 0.0, theme::chosen());
                     painter.rect_filled(
                         Rect::from_min_size(band.min, egui::vec2(2.0, band.height())),
                         0.0,
@@ -383,7 +383,7 @@ pub fn show(
                 } else if hovered == Some(index) {
                     let band = band_of(index);
                     let color = match row.commit.is_working() {
-                        true => theme::MUTED,
+                        true => theme::muted(),
                         false => theme::lane(row.color),
                     };
                     // The wash stays with the pointer rather than adding up:
@@ -414,7 +414,7 @@ pub fn show(
                         index < until && link.from == lane && link.to == lane
                     });
                     let stroke = if dashed {
-                        Stroke::new(LINE_W, theme::MUTED)
+                        Stroke::new(LINE_W, theme::muted())
                     } else {
                         Stroke::new(LINE_W, theme::lane(link.color))
                     };
@@ -466,7 +466,7 @@ pub fn show(
                 // strip is not a ring.
                 for (_, _, _, age) in struck.iter().filter(|(hit, _, _, _)| *hit == index) {
                     let color = match row.commit.is_working() {
-                        true => theme::MUTED,
+                        true => theme::muted(),
                         false => theme::lane(row.color),
                     };
                     ripple::rings(&painter, center, *age, color, DOT_R + 3.0);
@@ -478,7 +478,7 @@ pub fn show(
                     painter.hline(
                         band.x_range(),
                         band.bottom(),
-                        Stroke::new(1.0, theme::HAIRLINE),
+                        Stroke::new(1.0, theme::hairline()),
                     );
                 } else {
                     // What does not match the search is dimmed, but stays: its
@@ -543,18 +543,18 @@ fn draw_commit(painter: &egui::Painter, row: &Row, center: Pos2, swell: f32) {
     // it. The ring sits flush with the dot so as not to eat the dashes of its
     // line, which is short and has few to spare.
     if row.commit.is_working() {
-        painter.circle_filled(center, dot_r + 1.0, theme::CANVAS);
-        painter.circle_stroke(center, dot_r - 0.5, Stroke::new(1.6, theme::MUTED));
+        painter.circle_filled(center, dot_r + 1.0, theme::canvas());
+        painter.circle_stroke(center, dot_r - 0.5, Stroke::new(1.6, theme::muted()));
         return;
     }
 
     // A ring in the canvas's color lifts the dot off the lines passing behind
     // it; without one the graph smears at the junctions.
-    painter.circle_filled(center, dot_r + 2.5, theme::CANVAS);
+    painter.circle_filled(center, dot_r + 2.5, theme::canvas());
 
     // A merge is marked with a hollow dot; an ordinary commit, solid.
     if row.commit.parents.len() > 1 {
-        painter.circle_filled(center, dot_r, theme::CANVAS);
+        painter.circle_filled(center, dot_r, theme::canvas());
         painter.circle_stroke(center, dot_r - 0.5, Stroke::new(2.0, color));
     } else {
         painter.circle_filled(center, dot_r, color);
@@ -562,7 +562,7 @@ fn draw_commit(painter: &egui::Painter, row: &Row, center: Pos2, swell: f32) {
 
     // Where HEAD is can be seen from across the room.
     if row.commit.refs.iter().any(|r| r.kind == RefKind::Head) {
-        painter.circle_stroke(center, dot_r + 3.5, Stroke::new(1.5, theme::HEAD));
+        painter.circle_stroke(center, dot_r + 3.5, Stroke::new(1.5, theme::head()));
     }
 }
 
@@ -577,7 +577,7 @@ fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
         Align2::LEFT_CENTER,
         "Uncommitted changes",
         theme::medium(13.0),
-        theme::TEXT,
+        theme::text(),
     );
 
     if !pending.is_empty() {
@@ -586,7 +586,7 @@ fn draw_working(painter: &egui::Painter, left: f32, y: f32, pending: &str) {
             Align2::LEFT_CENTER,
             pending,
             theme::body(11.5),
-            theme::MUTED,
+            theme::muted(),
         );
     }
 }
@@ -644,7 +644,7 @@ fn draw_row(
         Align2::LEFT_CENTER,
         summary,
         summary_font,
-        if dim { theme::FAINT } else { theme::TEXT },
+        if dim { theme::faint() } else { theme::text() },
     );
 
     if let Some(edge) = columns.author {
@@ -654,7 +654,7 @@ fn draw_row(
             Align2::RIGHT_CENTER,
             elide(ui, &row.commit.author, AUTHOR_W, &font),
             font,
-            if dim { theme::FAINT } else { theme::MUTED },
+            if dim { theme::faint() } else { theme::muted() },
         );
     }
 
@@ -669,7 +669,7 @@ fn draw_row(
             Align2::RIGHT_CENTER,
             when,
             theme::mono(11.0),
-            theme::FAINT,
+            theme::faint(),
         );
     }
 
@@ -679,7 +679,7 @@ fn draw_row(
             Align2::RIGHT_CENTER,
             &row.commit.short_id,
             theme::mono(11.0),
-            theme::FAINT,
+            theme::faint(),
         );
     }
 }
@@ -801,7 +801,7 @@ fn draw_refs(
             Align2::RIGHT_CENTER,
             format!("+{}", refs.len() - shown),
             theme::mono(10.5),
-            theme::FAINT,
+            theme::faint(),
         );
     }
 }
@@ -833,15 +833,15 @@ fn draw_badge(
     let font = theme::medium(11.0);
 
     if current {
-        painter.rect_filled(chip, radius, theme::HEAD);
-        painter.text(text, Align2::LEFT_CENTER, name, font, theme::CANVAS);
+        painter.rect_filled(chip, radius, theme::head());
+        painter.text(text, Align2::LEFT_CENTER, name, font, theme::canvas());
         return chip;
     }
 
     let (color, filled) = match kind {
-        RefKind::Head => (theme::HEAD, true),
+        RefKind::Head => (theme::head(), true),
         RefKind::LocalBranch => (lane, true),
-        RefKind::RemoteBranch => (theme::MUTED, false),
+        RefKind::RemoteBranch => (theme::muted(), false),
         RefKind::Tag => (theme::lane(6), true),
     };
 
@@ -851,7 +851,7 @@ fn draw_badge(
         painter.rect_stroke(
             chip,
             radius,
-            Stroke::new(1.0, theme::HAIRLINE),
+            Stroke::new(1.0, theme::hairline()),
             egui::StrokeKind::Inside,
         );
     }
