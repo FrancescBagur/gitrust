@@ -544,7 +544,7 @@ pub(crate) fn credentials(
         if allowed.contains(CredentialType::SSH_KEY) && !key_tried {
             key_tried = true;
             if let Some(key) = profile.as_ref().and_then(crate::Profile::key_file) {
-                let public = key.with_extension("pub");
+                let public = crate::profile::public_of(&key);
                 let public = public.exists().then_some(public);
                 return Cred::ssh_key(user, public.as_deref(), &key, None);
             }

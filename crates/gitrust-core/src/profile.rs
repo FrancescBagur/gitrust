@@ -70,8 +70,9 @@
 //! and the profile leaves the key empty.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 /// Which forge an account is on.
 ///
@@ -239,6 +240,33 @@ impl Profile {
         Some(PathBuf::from(home).join(rest))
     }
 
+    /// The public half of that key, beside it on the disk.
+    ///
+    /// `.pub` is added to the whole name rather than put in place of an
+    /// extension, because that is where `ssh-keygen` puts it: a key called
+    /// `acme.key` keeps its public half in `acme.key.pub`, and a path with
+    /// the extension replaced would point at `acme.pub`, which is nobody's.
+    pub fn public_key(&self) -> Option<PathBuf> {
+        self.key_file().as_deref().map(public_of)
+    }
+
+    /// Where a key for this profile would go, if one had to be made now.
+    ///
+    /// The one it already names, when it names one. Otherwise a name of its
+    /// own under `~/.ssh`, because a second client's key called
+    /// `id_ed25519` would be the first client's key.
+    pub fn key_place(&self) -> Option<PathBuf> {
+        if let Some(key) = self.key_file() {
+            return Some(key);
+        }
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join(".ssh")
+                .join(format!("{}_ed25519", slug(&self.name))),
+        )
+    }
+
     /// The account that owns a host, if this profile has one for it.
     ///
     /// Hosts are compared with no regard for case, because `GitHub.com` and
@@ -369,6 +397,18 @@ impl Profiles {
         self.list.len() - 1
     }
 
+    /// Copies one, name and key and accounts and all.
+    ///
+    /// Two clients at the same company are the same key and the same host
+    /// with a different account, and typing the key path twice is how the
+    /// second one ends up pointing at a file that does not exist. The copy
+    /// is complete, tokens included: it is the same person, filed twice.
+    pub fn duplicate(&mut self, which: usize) -> Option<usize> {
+        let mut copy = self.list.get(which)?.clone();
+        copy.name = format!("{} copy", copy.name.trim());
+        Some(self.add(copy))
+    }
+
     /// Takes one away, and leaves the right one in use.
     ///
     /// Deleting the profile that was in use leaves none in use rather than
@@ -488,6 +528,111 @@ impl Profiles {
     }
 }
 
+/// The public half of a key, beside it.
+pub fn public_of(key: &Path) -> PathBuf {
+    let mut name = key.as_os_str().to_os_string();
+    name.push(".pub");
+    PathBuf::from(name)
+}
+
+/// A path as it would be typed: `~/` back on the front of it.
+///
+/// The other half of what `key_file` undoes. A key made here is written down
+/// the way somebody would have written it themselves, so the box they read
+/// afterwards says `~/.ssh/acme_ed25519` and not their home folder spelled
+/// out in full.
+pub fn shorten(path: &Path) -> String {
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.display().to_string();
+    };
+    match path.strip_prefix(PathBuf::from(home)) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// A profile's name, as something a file can be called.
+///
+/// Letters and digits are kept and everything else becomes an underscore,
+/// which is blunt and is meant to be: this is a suggestion in a box somebody
+/// can edit, not a name anything is filed under.
+fn slug(name: &str) -> String {
+    let slug: String = name
+        .trim()
+        .chars()
+        .map(|letter| match letter.is_ascii_alphanumeric() {
+            true => letter.to_ascii_lowercase(),
+            false => '_',
+        })
+        .collect();
+    let slug = slug.trim_matches('_').to_string();
+    match slug.is_empty() {
+        true => "profile".to_string(),
+        false => slug,
+    }
+}
+
+/// Makes a key pair at `at` and gives back the public half, text and all.
+///
+/// # The three decisions in here
+///
+/// **ed25519, and no choice about it.** It is short, it is fast, every forge
+/// in this program takes it, and `ssh-keygen` itself recommends it. A
+/// program that asked which cipher you wanted would be asking a question
+/// almost nobody has an answer to.
+///
+/// **No passphrase.** Not a shortcut: a key with a passphrase has to be
+/// unlocked by something, and the only thing here that can unlock one is the
+/// SSH agent, which this program does not drive. A key made here is a key
+/// this program can use on its own, and that is the whole bargain. A key
+/// that should have a passphrase should be made by `ssh-keygen` by hand and
+/// pointed at with Browse.
+///
+/// **It will not write over a file.** A key that is overwritten is a key
+/// whose other half is sitting on somebody's server, and the first anybody
+/// hears of it is a host that stops answering. If something is already
+/// there, this refuses and says so.
+pub fn make_key(at: &Path, comment: &str) -> Result<String> {
+    if at.exists() {
+        bail!(
+            "{} is already there, and a key is not a thing to write over",
+            at.display()
+        );
+    }
+
+    // `~/.ssh` has to be the owner's alone or `ssh` will not look in it, so
+    // a folder made here is made shut. One that was already there is left
+    // exactly as it is: its permissions are somebody's decision, not ours.
+    if let Some(folder) = at.parent() {
+        if !folder.exists() {
+            std::fs::create_dir_all(folder)
+                .with_context(|| format!("could not make {}", folder.display()))?;
+            shut_folder(folder)?;
+        }
+    }
+
+    let made = Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-C", comment, "-f"])
+        .arg(at)
+        .output()
+        .context("ssh-keygen could not be run: it comes with OpenSSH, and this needs it")?;
+    if !made.status.success() {
+        let said = String::from_utf8_lossy(&made.stderr);
+        let said = said.trim();
+        bail!(
+            "ssh-keygen would not make the key: {}",
+            match said.is_empty() {
+                true => "it said nothing about why",
+                false => said,
+            }
+        );
+    }
+
+    let public = public_of(at);
+    std::fs::read_to_string(&public)
+        .with_context(|| format!("the key was made but {} could not be read", public.display()))
+}
+
 /// Makes a file readable by its owner and nobody else.
 ///
 /// On Windows there is no mode to set and this does nothing, which is worth
@@ -498,6 +643,19 @@ fn shut(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("could not keep {} to yourself", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// The same for a folder, which needs the bit that lets you walk into it.
+fn shut_folder(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("could not keep {} to yourself", path.display()))?;
     }
     #[cfg(not(unix))]
@@ -664,7 +822,116 @@ mod tests {
     }
 
     #[test]
+    fn a_path_under_the_home_folder_is_written_back_with_a_tilde() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+        let key = PathBuf::from(&home).join(".ssh/acme_ed25519");
+        assert_eq!(shorten(&key), "~/.ssh/acme_ed25519");
+        // Somewhere else on the disk is left exactly as it is.
+        assert_eq!(shorten(Path::new("/keys/acme")), "/keys/acme");
+    }
+
+    #[test]
     fn no_key_is_the_agent_and_not_a_path() {
         assert_eq!(Profile::new("Acme").key_file(), None);
+    }
+
+    #[test]
+    fn the_public_half_is_the_whole_name_with_pub_on_the_end() {
+        // Not `with_extension`, which would turn `acme.key` into `acme.pub`
+        // and look for a file nobody wrote.
+        assert_eq!(
+            public_of(Path::new("/keys/acme.key")),
+            PathBuf::from("/keys/acme.key.pub")
+        );
+        assert_eq!(
+            public_of(Path::new("/keys/acme_ed25519")),
+            PathBuf::from("/keys/acme_ed25519.pub")
+        );
+    }
+
+    #[test]
+    fn a_name_becomes_something_a_file_can_be_called() {
+        assert_eq!(slug("Acme Ltd."), "acme_ltd");
+        assert_eq!(slug("  "), "profile");
+        assert_eq!(slug("Señor/Cliente"), "se_or_cliente");
+    }
+
+    #[test]
+    fn a_profile_with_a_key_already_keeps_it_when_one_is_made() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+        let profile = Profile {
+            key: "~/.ssh/acme_ed25519".to_string(),
+            ..Profile::new("Acme")
+        };
+        assert_eq!(profile.key_place(), profile.key_file());
+        assert_eq!(
+            Profile::new("Acme Ltd").key_place(),
+            Some(PathBuf::from(&home).join(".ssh/acme_ltd_ed25519"))
+        );
+    }
+
+    #[test]
+    fn a_copy_is_the_same_profile_under_a_name_of_its_own() {
+        let mut profiles = sample();
+        let at = profiles.duplicate(0).expect("there is a profile to copy");
+
+        let original = &profiles.list[0];
+        let copy = &profiles.list[at];
+        assert_eq!(copy.name, "Acme Ltd copy");
+        assert_eq!(copy.author, original.author);
+        assert_eq!(copy.key, original.key);
+        assert_eq!(copy.accounts, original.accounts);
+
+        // And copying the copy does not make a second "Acme Ltd copy".
+        let again = profiles.duplicate(at).expect("the copy can be copied");
+        assert_eq!(profiles.list[again].name, "Acme Ltd copy copy");
+    }
+
+    #[test]
+    fn copying_a_profile_does_not_move_who_is_in_use() {
+        let mut profiles = sample();
+        profiles.use_at(Some(0));
+        profiles.duplicate(0);
+        assert_eq!(profiles.at(), Some(0));
+    }
+
+    #[test]
+    fn a_made_key_is_a_pair_and_the_second_one_is_refused() {
+        // ssh-keygen is OpenSSH's, not ours, and a machine without it is a
+        // machine where this feature is not there rather than one where the
+        // test fails.
+        if Command::new("ssh-keygen").arg("-?").output().is_err() {
+            return;
+        }
+
+        let folder = std::env::temp_dir().join(format!("gitrust-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let key = folder.join("deeper").join("acme_ed25519");
+
+        let public = make_key(&key, "someone@acme.example").expect("a key is made");
+        assert!(public.starts_with("ssh-ed25519"), "said: {public}");
+        assert!(public.contains("someone@acme.example"));
+        assert!(key.exists() && public_of(&key).exists());
+
+        // The folder it had to make is its owner's alone, which is what ssh
+        // insists on before it will look in one.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(key.parent().unwrap()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+
+        // Asking again is asking to destroy the first one, and it will not.
+        let again = make_key(&key, "someone@acme.example");
+        assert!(again.is_err());
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

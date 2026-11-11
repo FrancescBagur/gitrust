@@ -300,9 +300,14 @@ pile named: a name for the commits, a private key for the remote, and an
 account per forge, switched from the end of the tab strip. Every part of it
 is optional, and an empty part means the answer that was there before --
 Git's own settings, the SSH agent, whatever `gh` is logged in as -- so a
-profile can exist for its key alone. It writes nothing into `.gitconfig` or
-`~/.ssh/config`: a program that rewrites the files other programs read is a
-program that breaks them while you are not looking. **The tokens are on the
+profile can exist for its key alone. A profile with no key yet can be given
+one -- ed25519, no passphrase, named after the profile, beside your other
+keys -- and hand you its public half for the box on the forge's settings
+page; it will not write over a key that is already there, because the other
+half of that one is sitting on somebody's server. A second person at the
+same client is the first one duplicated and renamed. It writes nothing into
+`.gitconfig` or `~/.ssh/config`: a program that rewrites the files other
+programs read is a program that breaks them while you are not looking. **The tokens are on the
 disk in plain text**, in a file written `rw-------`, which is the same
 bargain `~/.netrc` and `gh`'s own `hosts.yml` make; whoever is not content
 with it leaves the token empty and lets the forge's tool answer as itself.

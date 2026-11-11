@@ -282,13 +282,25 @@ struct App {
     profiles: Profiles,
     /// The screen for the profiles, while it is up.
     managing: Option<profiles_view::Managing>,
-    /// What went wrong on one of the screens that is not a repository. A
-    /// tab's own bottom bar cannot say it: the tab is not on screen.
-    note: Option<String>,
+    /// What one of the screens that is not a repository has to say. A tab's
+    /// own bottom bar cannot say it: the tab is not on screen.
+    note: Option<Note>,
     /// What somebody has said they prefer. It is about this computer, not
     /// about a repository, so it is held here and lent to whichever tab is
     /// on top rather than being a copy per tab that would drift apart.
     settings: Settings,
+}
+
+/// A line for a screen that has no bottom bar of its own.
+///
+/// Two kinds, because they are read differently: a complaint is something to
+/// act on and is red, and a word about something that worked is grey and is
+/// only there because the thing that worked left nothing on screen to show
+/// for it -- a key written into a file, a line put on the clipboard.
+#[derive(Clone)]
+enum Note {
+    Said(String),
+    Wrong(String),
 }
 
 /// What the desktop's dialog was opened for, so that the answer knows where
@@ -793,6 +805,20 @@ impl App {
                 }
 
                 theme::rule(ui);
+                // Making one is here and not only on the screen behind
+                // "Manage", because the first thing anybody wants from this
+                // menu the first time they open it is a profile, and this is
+                // where they are already looking.
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("+  Add a profile")
+                            .font(theme::body(12.0))
+                            .color(theme::text()),
+                    ))
+                    .clicked()
+                {
+                    act = Some(profiles_view::Act::Add);
+                }
                 if ui
                     .add(egui::Button::new(
                         egui::RichText::new("Manage profiles\u{2026}")
@@ -807,7 +833,8 @@ impl App {
         );
 
         if let Some(act) = act {
-            self.act_on_profiles(act);
+            let ctx = ui.ctx().clone();
+            self.act_on_profiles(&ctx, act);
         }
     }
 
@@ -818,7 +845,46 @@ impl App {
         };
 
         let mut act = None;
-        let note = self.note.clone();
+        let mut hush = false;
+
+        // Along the bottom, and in a panel of its own, because the screen
+        // above it fills whatever room there is: a line added after it is a
+        // line below the edge of the window, which is a line nobody reads.
+        // A profile that could not be written down is a profile that will
+        // not be there tomorrow, and finding that out tomorrow is worse.
+        if let Some(note) = self.note.clone() {
+            let (text, colour) = match &note {
+                Note::Said(text) => (text, theme::muted()),
+                Note::Wrong(text) => (text, theme::removed()),
+            };
+            egui::TopBottomPanel::bottom("profiles-note")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::raised())
+                        .inner_margin(egui::Margin::symmetric(18, 7)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(text).font(theme::body(11.5)).color(colour));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{00d7}")
+                                            .font(theme::body(13.0))
+                                            .color(theme::faint()),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                hush = true;
+                            }
+                        });
+                    });
+                });
+        }
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -827,45 +893,51 @@ impl App {
             )
             .show(ctx, |ui| {
                 act = profiles_view::show(ui, state, &mut self.profiles);
-
-                // A profile that could not be written down is a profile that
-                // will not be there tomorrow, and finding that out tomorrow
-                // is worse than being told now.
-                if let Some(note) = &note {
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(note)
-                            .font(theme::body(11.5))
-                            .color(theme::removed()),
-                    );
-                }
             });
 
         if let Some(act) = act {
-            self.act_on_profiles(act);
+            self.act_on_profiles(ctx, act);
+        } else if hush {
+            self.note = None;
         }
     }
 
     /// Acts on what the screen, or the menu, asked for.
-    fn act_on_profiles(&mut self, act: profiles_view::Act) {
+    fn act_on_profiles(&mut self, ctx: &egui::Context, act: profiles_view::Act) {
         match act {
             profiles_view::Act::Changed => self.keep_profiles(),
             profiles_view::Act::Use(which) => {
                 self.profiles.use_at(which);
                 self.keep_profiles();
             }
+            // Adding is asked for from the menu as well as from the screen,
+            // and from the menu there is no screen yet. A profile made and
+            // left somewhere the person who asked for it cannot see is a
+            // profile they will make again, so the screen comes up on it.
             profiles_view::Act::Add => {
                 let at = self.profiles.add(Profile::new("New profile"));
-                if let Some(state) = &mut self.managing {
-                    state.at = Some(at);
+                self.open_profiles_at(at);
+                self.keep_profiles();
+            }
+            profiles_view::Act::Duplicate(which) => {
+                if let Some(at) = self.profiles.duplicate(which) {
+                    self.open_profiles_at(at);
                 }
                 self.keep_profiles();
             }
             profiles_view::Act::Remove(which) => {
                 self.profiles.remove(which);
+                // Which one the screen was open on is now a number about a
+                // profile that has gone; it picks another for itself.
+                if let Some(state) = &mut self.managing {
+                    state.at = None;
+                    state.settled();
+                }
                 self.keep_profiles();
             }
             profiles_view::Act::Browse(which) => self.browse(Browsing::Key { which }),
+            profiles_view::Act::MakeKey(which) => self.make_key(which),
+            profiles_view::Act::CopyKey(which) => self.copy_key(ctx, which),
             profiles_view::Act::Manage => {
                 self.managing = Some(profiles_view::Managing::default());
                 self.note = None;
@@ -877,11 +949,86 @@ impl App {
         }
     }
 
+    /// Brings the profiles screen up on one profile in particular.
+    fn open_profiles_at(&mut self, at: usize) {
+        self.managing
+            .get_or_insert_with(profiles_view::Managing::default)
+            .open(at);
+        self.note = None;
+    }
+
+    /// Makes a profile a key of its own and writes the path into it.
+    ///
+    /// On the thread that paints, which is a thing this program does not do
+    /// with work that can be slow. This one is not: an ed25519 pair is a few
+    /// milliseconds of arithmetic, and the alternative -- a thread, a
+    /// channel and a state for "a key is being made" -- would be more
+    /// machinery than the wait it saves.
+    fn make_key(&mut self, which: usize) {
+        let Some(profile) = self.profiles.list.get(which) else {
+            return;
+        };
+        let Some(at) = profile.key_place() else {
+            self.note = Some(Note::Wrong(
+                "there is no home folder to put a key in".to_string(),
+            ));
+            return;
+        };
+        // The comment is what the forge shows beside the key in its list, so
+        // it should say who this is, and the address says that best.
+        let comment = match profile.email.trim().is_empty() {
+            false => profile.email.trim(),
+            true => match profile.name.trim().is_empty() {
+                false => profile.name.trim(),
+                true => "gitrust",
+            },
+        };
+
+        match gitrust_core::make_key(&at, comment) {
+            Ok(_) => {
+                let written = gitrust_core::shorten(&at);
+                self.profiles.list[which].key = written.clone();
+                self.keep_profiles();
+                if self.note.is_none() {
+                    self.note = Some(Note::Said(format!(
+                        "{written} made. Its public half goes in the client's forge: \
+                         Copy the public key, then paste it there"
+                    )));
+                }
+            }
+            Err(err) => self.note = Some(Note::Wrong(format!("{err:#}"))),
+        }
+    }
+
+    /// Puts the public half of a profile's key on the clipboard.
+    fn copy_key(&mut self, ctx: &egui::Context, which: usize) {
+        let Some(path) = self
+            .profiles
+            .list
+            .get(which)
+            .and_then(gitrust_core::Profile::public_key)
+        else {
+            return;
+        };
+        self.note = match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                ctx.copy_text(text.trim().to_string());
+                Some(Note::Said(format!(
+                    "{} is on the clipboard",
+                    gitrust_core::shorten(&path)
+                )))
+            }
+            Err(err) => Some(Note::Wrong(format!("could not read {}: {err}", path.display()))),
+        };
+    }
+
     /// Writes the profiles down, and says so if it could not.
     fn keep_profiles(&mut self) {
         self.note = match self.profiles.save() {
             Ok(()) => None,
-            Err(err) => Some(format!("could not write the profiles down: {err:#}")),
+            Err(err) => Some(Note::Wrong(format!(
+                "could not write the profiles down: {err:#}"
+            ))),
         };
     }
 

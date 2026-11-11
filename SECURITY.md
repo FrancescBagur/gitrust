@@ -47,6 +47,17 @@ a passphrase cannot be opened from here at all, because there is nowhere to
 ask for the passphrase and nowhere safe to keep it; that key belongs in the
 SSH agent, which is what gitrust falls back to.
 
+A key made from the profiles screen is made by `ssh-keygen`, as ed25519, and
+**with no passphrase** -- said plainly because it is the one thing about it
+worth knowing. It is not a shortcut: a key with a passphrase has to be
+unlocked by something, and the only thing here that could is the agent, which
+this program does not drive. So the key is as safe as the file it is in, which
+is `rw-------` in `~/.ssh`, and no safer. A key that should have a passphrase
+should be made with `ssh-keygen` by hand and pointed at with Browse. Nothing
+here ever writes over a key that already exists: being asked twice gets a
+refusal, not a new pair, because the public half of the old one is on a server
+somewhere and overwriting it locks you out of it.
+
 ## What does not
 
 - Losing uncommitted work through a destructive operation the program warned

@@ -17,6 +17,8 @@
 //! and hands back what was asked of it. The one thing it does change in
 //! place is the text in the boxes, because that is what a text box is.
 
+use std::path::Path;
+
 use eframe::egui::{self, RichText};
 use gitrust_core::{Account, Forge, Profiles};
 
@@ -33,10 +35,18 @@ pub enum Act {
     Use(Option<usize>),
     /// Make one, with nothing in it.
     Add,
+    /// Make one that is a copy of this one.
+    Duplicate(usize),
     /// Take one away.
     Remove(usize),
     /// Ask the desktop for a key file for the profile being looked at.
     Browse(usize),
+    /// Make this profile a key of its own, where it says it wants one.
+    MakeKey(usize),
+    /// Put the public half of this profile's key on the clipboard, which is
+    /// the only thing anybody ever does with it: a forge asks for it in a
+    /// box on a web page.
+    CopyKey(usize),
     /// Open this screen. It is the one thing only the menu in the tab strip
     /// asks for, and it is here because that menu answers in the same words
     /// as the screen does.
@@ -56,6 +66,24 @@ pub struct Managing {
     /// screen and not remembered: it goes back to dots the next time this is
     /// opened, which is what somebody expects of a password box.
     showing: bool,
+    /// The profile whose deletion has been asked for but not yet confirmed.
+    ///
+    /// Deleting used to be one click, which is one click away from losing a
+    /// token that is written down nowhere else.
+    asking: Option<usize>,
+}
+
+impl Managing {
+    /// Opens the screen on one profile in particular, with nothing pending.
+    pub fn open(&mut self, at: usize) {
+        self.at = Some(at);
+        self.asking = None;
+    }
+
+    /// Nothing is waiting on an answer any more.
+    pub fn settled(&mut self) {
+        self.asking = None;
+    }
 }
 
 /// Draws the screen and gives back whatever was asked of it.
@@ -220,8 +248,17 @@ fn editor(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) -> O
     };
     let showing = state.showing;
     let using = profiles.at() == Some(which);
+    // Carried out of the borrow below and put back after it, because the
+    // profile being edited and the screen's own memory cannot both be held
+    // at once.
+    let confirming = state.asking == Some(which);
+    let mut asking = state.asking;
     let Some(profile) = profiles.list.get_mut(which) else {
         return None;
+    };
+    let called = match profile.name.trim().is_empty() {
+        true => "(no name)".to_string(),
+        false => profile.name.trim().to_string(),
     };
 
     ui.vertical(|ui| {
@@ -265,18 +302,64 @@ fn editor(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) -> O
                         act = Some(Act::Browse(which));
                     }
                 });
-                if let Some(path) = profile.key_file() {
-                    if !path.exists() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(LABEL + 8.0);
+
+                // Three states, and each one gets a different line under the
+                // box, because "no file there" while a key is being made and
+                // "no file there" after somebody mistyped a path are the
+                // same four words about two different situations.
+                let key = profile.key_file();
+                let made = key.as_deref().is_some_and(Path::exists);
+                let public = profile.public_key().filter(|path| path.exists());
+                ui.horizontal(|ui| {
+                    ui.add_space(LABEL + 8.0);
+                    match (&key, made) {
+                        (Some(_), false) => {
                             ui.label(
                                 RichText::new("there is no file there")
                                     .font(theme::body(11.0))
                                     .color(theme::removed()),
                             );
-                        });
+                        }
+                        _ => {}
                     }
-                }
+                    // Making one is offered whether or not a path is typed:
+                    // with one it makes that key, without one it makes a key
+                    // named after the profile under `~/.ssh`. What it will
+                    // never do is write over a file that is already there.
+                    if !made
+                        && ui
+                            .add(egui::Button::new(
+                                RichText::new("Make one").font(theme::body(11.5)),
+                            ))
+                            .on_hover_text(
+                                "ed25519, no passphrase, beside your other keys. The public \
+                                 half is yours to paste into the client's forge",
+                            )
+                            .clicked()
+                    {
+                        act = Some(Act::MakeKey(which));
+                    }
+                    if public.is_some()
+                        && ui
+                            .add(egui::Button::new(
+                                RichText::new("Copy the public key").font(theme::body(11.5)),
+                            ))
+                            .on_hover_text(
+                                "The half that goes in the box on the forge's settings page",
+                            )
+                            .clicked()
+                    {
+                        act = Some(Act::CopyKey(which));
+                    }
+                    if made && public.is_none() {
+                        ui.label(
+                            RichText::new("the key is there; its .pub half is not")
+                                .font(theme::body(11.0))
+                                .color(theme::faint()),
+                        );
+                    }
+                });
+                ui.add_space(2.0);
 
                 ui.add_space(14.0);
                 heading(ui, "Accounts");
@@ -342,6 +425,19 @@ fn editor(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) -> O
                         act = Some(Act::Use(Some(which)));
                     }
 
+                    if ui
+                        .add(egui::Button::new(
+                            RichText::new("Duplicate").font(theme::body(12.0)),
+                        ))
+                        .on_hover_text(
+                            "The same key and the same accounts under a second name, which \
+                             is what a second person at the same client is",
+                        )
+                        .clicked()
+                    {
+                        act = Some(Act::Duplicate(which));
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(egui::Button::new(
@@ -349,17 +445,62 @@ fn editor(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) -> O
                                     .font(theme::body(12.0))
                                     .color(theme::removed()),
                             ))
-                            .on_hover_text("No key and no account is deleted. Only this list")
+                            .clicked()
+                        {
+                            asking = Some(which);
+                        }
+                    });
+                });
+
+                // The asking, in place rather than in a window over the
+                // screen: there is one thing to answer and it is about the
+                // row that is already open.
+                if confirming {
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Delete \u{201c}{called}\u{201d}? The key stays on the disk \
+                                 and the account stays at the forge. What goes is this list's \
+                                 line about them, and it does not come back."
+                            ))
+                            .font(theme::body(11.5))
+                            .color(theme::text()),
+                        );
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Delete it")
+                                        .font(theme::medium(12.0))
+                                        .color(theme::removed()),
+                                )
+                                .min_size(egui::vec2(100.0, 26.0)),
+                            )
                             .clicked()
                         {
                             act = Some(Act::Remove(which));
                         }
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Keep it").font(theme::body(12.0)))
+                                    .min_size(egui::vec2(90.0, 26.0)),
+                            )
+                            .clicked()
+                        {
+                            asking = None;
+                        }
                     });
-                });
+                }
                 ui.add_space(16.0);
             });
     });
 
+    state.asking = asking;
     act
 }
 
