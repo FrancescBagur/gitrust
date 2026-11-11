@@ -14,6 +14,7 @@ pub mod foresee;
 pub mod forge;
 pub mod graph;
 pub mod history;
+pub mod home;
 pub mod known;
 pub mod merge;
 pub mod message;

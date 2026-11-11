@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -244,11 +244,10 @@ fn verify_host(raw: &RawSession, login: &Login, trust_new_host: bool, known_host
     let file = match known_hosts {
         Some(file) => file.to_path_buf(),
         None => {
-            let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-            let Some(home) = home else {
+            let Some(home) = crate::home::folder() else {
                 bail!("could not find known_hosts to verify {}", login.host)
             };
-            PathBuf::from(home).join(".ssh").join("known_hosts")
+            home.join(".ssh").join("known_hosts")
         }
     };
     let mut known = raw.known_hosts().context("could not read known_hosts")?;
@@ -302,10 +301,8 @@ fn fingerprint(raw: &RawSession) -> String {
 /// Reads aliases from `~/.ssh/config`, or `%USERPROFILE%\\.ssh\\config` when
 /// HOME is unavailable (as is common on native Windows).
 pub fn configured_hosts() -> Result<Vec<Host>> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .context("could not find your home folder")?;
-    let path = PathBuf::from(home).join(".ssh").join("config");
+    let home = crate::home::folder().context("could not find your home folder")?;
+    let path = home.join(".ssh").join("config");
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(parse_hosts(&text)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
