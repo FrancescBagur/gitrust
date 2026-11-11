@@ -17,6 +17,10 @@ pub struct RemoteRepo {
     path: String,
     /// Who is writing, when a profile says: a name and an address.
     who: Option<(String, String)>,
+    /// Whether a fetch over there is asked to prune. See [`Repo::pruning`].
+    ///
+    /// [`Repo::pruning`]: crate::Repo::pruning
+    pub(crate) prune: bool,
 }
 
 impl Writer for RemoteRepo {
@@ -105,7 +109,7 @@ impl RemoteRepo {
 impl RemoteRepo {
     pub fn new(session: Session, path: String) -> Result<Self> {
         session.verify_checkout(&path)?;
-        Ok(Self { session, path, who: None })
+        Ok(Self { session, path, who: None, prune: false })
     }
 
     /// Writes from here on as this person, or as whoever the server says.
@@ -122,6 +126,11 @@ impl RemoteRepo {
     /// server's own business.
     pub fn working_as(&mut self, who: Option<(&str, &str)>) {
         self.who = who.map(|(name, email)| (name.to_string(), email.to_string()));
+    }
+
+    /// Fetches the way the preferences say, as a local repository does.
+    pub fn pruning(&mut self, prune: bool) {
+        self.prune = prune;
     }
 
     /// Enough to reconnect later, with no password retained in memory or on
@@ -143,6 +152,20 @@ impl RemoteRepo {
         words.extend(identity.iter().map(String::as_str));
         words.extend(arguments);
         self.session.command(&words)
+    }
+
+    /// The same, for a command whose exit status is the answer.
+    pub(crate) fn git_status(&self, arguments: &[&str]) -> Result<(i32, String, String)> {
+        let identity = identity(self.who.as_ref());
+        let mut words = vec!["git", "-C", &self.path];
+        words.extend(identity.iter().map(String::as_str));
+        words.extend(arguments);
+        self.session.run(&words)
+    }
+
+    /// Where the checkout is on the server, as it was typed.
+    pub(crate) fn path(&self) -> &str {
+        &self.path
     }
 
     pub fn read_working_file(&self, path: &str) -> Result<Vec<u8>> {
@@ -187,14 +210,20 @@ impl Reader for RemoteRepo {
 
     fn commits(&self, limit: usize) -> Result<Vec<Commit>> {
         let labels = self.ref_labels()?;
-        let output = self.git(&[
+        let count = format!("-{limit}");
+        let mut args = vec![
             "log",
             "--all",
             "--topo-order",
             "--date-order",
             "--format=%H%x1f%h%x1f%an%x1f%at%x1f%P%x1f%s%x1e",
-            &format!("-{limit}"),
-        ])?;
+        ];
+        // The whole history is asked for by not asking for a count. The
+        // largest number there is would not fit in the one Git reads.
+        if limit != usize::MAX {
+            args.push(&count);
+        }
+        let output = self.git(&args)?;
         let head = self.head_name();
         output
             .split('\x1e')

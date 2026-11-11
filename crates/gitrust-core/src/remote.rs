@@ -123,6 +123,45 @@ impl Repo {
         }
     }
 
+    /// Fetches from every remote without a word, and says whether anything
+    /// came of it.
+    ///
+    /// For the fetch nobody asked for. It has nothing to report when nothing
+    /// changed -- which is nearly every time -- and a repository with no
+    /// remote is not a failure to somebody who did not press anything. What
+    /// it gives back is whether a remote branch or a tag is somewhere it was
+    /// not before, so the window is read again only when there is something
+    /// new in it to read.
+    pub fn fetch_quietly(&self) -> Result<bool> {
+        let remotes: Vec<String> =
+            self.inner.remotes()?.iter().flatten().map(str::to_string).collect();
+        if remotes.is_empty() {
+            return Ok(false);
+        }
+
+        let before = self.fetched()?;
+        for remote in &remotes {
+            self.fetch_from(remote)?;
+        }
+        Ok(self.fetched()? != before)
+    }
+
+    /// Everything a fetch can move, and where each of them is.
+    fn fetched(&self) -> Result<Vec<(String, git2::Oid)>> {
+        let mut found = Vec::new();
+        // The backlog too: it travels outside the branches, and one item
+        // added by somebody else is the whole of what some fetches bring.
+        for glob in ["refs/remotes/*", "refs/tags/*", "refs/gitrust/*"] {
+            for reference in self.inner.references_glob(glob)?.flatten() {
+                if let (Some(name), Some(target)) = (reference.name(), reference.target()) {
+                    found.push((name.to_string(), target));
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
     /// Fetches from the remote and joins what comes with what is here, as asked.
     ///
     /// The fetching is the same in all three modes; what changes is what is done
@@ -496,6 +535,13 @@ impl Repo {
 
         let mut options = FetchOptions::new();
         options.remote_callbacks(callbacks);
+        // Only ever asked for, never asked against: with the preference off
+        // the option is left unset, which is libgit2 for "whatever
+        // `fetch.prune` says". Somebody who turned pruning on in Git itself
+        // did not turn it off by not ticking a box in here.
+        if self.prune {
+            options.prune(git2::FetchPrune::On);
+        }
 
         let mut refspecs: Vec<String> =
             remote.fetch_refspecs()?.iter().flatten().map(str::to_string).collect();

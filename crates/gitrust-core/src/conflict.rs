@@ -388,6 +388,31 @@ impl Repo {
     }
 
     /// Writes the merge commit, once nothing is clashing any more.
+    /// Takes away the `.orig` copy a merge tool left beside a file.
+    ///
+    /// `git mergetool` keeps the file as it was, markers and all, under the
+    /// same name with `.orig` on the end, and leaves it there for somebody
+    /// to delete. Once the conflict in the file is settled that copy is the
+    /// conflict that no longer exists, and it turns up in the next commit of
+    /// whoever stages everything.
+    ///
+    /// It is taken away only if Git does not know it. A repository that
+    /// really keeps a file called `config.orig` keeps it.
+    pub fn drop_orig(&self, path: &str) -> Result<bool> {
+        let orig = format!("{path}.orig");
+        let file = self.workdir().join(&orig);
+        let plain = std::fs::symlink_metadata(&file).map(|meta| meta.is_file()).unwrap_or(false);
+        if !plain {
+            return Ok(false);
+        }
+        let tracked = self.inner.index()?.get_path(std::path::Path::new(&orig), 0).is_some();
+        if tracked {
+            return Ok(false);
+        }
+        std::fs::remove_file(&file).with_context(|| format!("could not delete {orig}"))?;
+        Ok(true)
+    }
+
     pub fn finish_merge(&self) -> Result<String> {
         anyhow::ensure!(
             self.half_done() == Half::Merge,

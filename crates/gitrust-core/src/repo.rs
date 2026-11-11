@@ -21,6 +21,10 @@ pub struct Repo {
     /// is about this machine, and a repository knows nothing about which of
     /// its owner's several lives it belongs to.
     pub(crate) profile: Option<crate::Profile>,
+    /// Whether a fetch is asked to take away the remote branches that have
+    /// gone from the remote. When it is not, nothing is asked either way and
+    /// Git's own `fetch.prune` decides, as it did before there was a choice.
+    pub(crate) prune: bool,
 }
 
 impl Repo {
@@ -30,7 +34,7 @@ impl Repo {
         let path = path.as_ref();
         let inner = Repository::discover(path)
             .with_context(|| format!("no Git repository at {}", path.display()))?;
-        Ok(Self { inner, profile: None })
+        Ok(Self { inner, profile: None, prune: false })
     }
 
     /// Works under a profile: its name on the commits it writes, its key on
@@ -42,6 +46,12 @@ impl Repo {
     /// one of them is missing.
     pub fn using(mut self, profile: Option<crate::Profile>) -> Self {
         self.profile = profile;
+        self
+    }
+
+    /// Fetches the way the preferences say: pruning, or leaving that to Git.
+    pub fn pruning(mut self, prune: bool) -> Self {
+        self.prune = prune;
         self
     }
 

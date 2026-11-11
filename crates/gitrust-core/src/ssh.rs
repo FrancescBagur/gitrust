@@ -196,6 +196,26 @@ impl Session {
     }
 
     pub(crate) fn command(&self, words: &[&str]) -> Result<String> {
+        let (status, stdout, stderr) = self.run(words)?;
+        if status != 0 {
+            bail!(
+                "{}",
+                if stderr.trim().is_empty() {
+                    "the remote command failed"
+                } else {
+                    stderr.trim()
+                }
+            );
+        }
+        Ok(stdout)
+    }
+
+    /// Runs a command and hands back how it ended along with what it said.
+    ///
+    /// For the few whose exit status is an answer and not a verdict: a merge
+    /// tried in memory ends with one when it found conflicts, and that is
+    /// the result that was asked for.
+    pub(crate) fn run(&self, words: &[&str]) -> Result<(i32, String, String)> {
         let command = words
             .iter()
             .map(|word| quote(word))
@@ -213,17 +233,7 @@ impl Session {
         channel.read_to_string(&mut stdout)?;
         channel.stderr().read_to_string(&mut stderr)?;
         channel.wait_close()?;
-        if channel.exit_status()? != 0 {
-            bail!(
-                "{}",
-                if stderr.trim().is_empty() {
-                    "the remote command failed"
-                } else {
-                    stderr.trim()
-                }
-            );
-        }
-        Ok(stdout)
+        Ok((channel.exit_status()?, stdout, stderr))
     }
 }
 

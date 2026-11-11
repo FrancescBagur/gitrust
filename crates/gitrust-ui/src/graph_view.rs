@@ -140,6 +140,10 @@ pub fn finder(ui: &mut egui::Ui, needle: &mut String, found: usize, at: usize) -
 pub struct Asked {
     pub show: Option<Oid>,
     pub pick: Option<Pick>,
+    /// Whether the last row there is was on screen. It is how the window
+    /// knows somebody has reached the end of what was read, which is the
+    /// moment to read more of it.
+    pub bottom: bool,
 }
 
 /// A chip as it was actually drawn.
@@ -205,6 +209,7 @@ pub fn show(
     let lanes = graph.lane_count.clamp(1, MAX_LANES);
     let graph_w = GUTTER * 2.0 + lanes as f32 * LANE_W;
     let mut clicked = None;
+    let mut bottom = false;
     let mut chips: Vec<Chip> = Vec::new();
 
     egui::ScrollArea::vertical()
@@ -238,6 +243,7 @@ pub fn show(
             let first = (((clip.top() - rect.top()) / row_h).floor() as isize).max(0) as usize;
             let last = ((((clip.bottom() - rect.top()) / row_h).ceil() as usize) + 1)
                 .min(graph.rows.len());
+            bottom = last >= graph.rows.len();
 
             let row_at = |y: f32| {
                 let index = ((y - rect.top()) / row_h).floor();
@@ -529,7 +535,7 @@ pub fn show(
             }
         });
 
-    Asked { show: clicked, pick: picked }
+    Asked { show: clicked, pick: picked, bottom }
 }
 
 /// `swell` is what the wave is doing to this dot right now, as a share of its

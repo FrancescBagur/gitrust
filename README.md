@@ -123,8 +123,12 @@ cherry-pick and an undo all stop here instead of being thrown away.
 - [x] An icon, a name on the dock, and one command that installs it
 - [x] A profile per client: the name on the commits, the SSH key, and the
       GitHub and GitLab accounts, switched from the tab strip
+- [x] Preferences behind the gear: a fetch on a timer, pruning, how much
+      history the graph reads and whether it reads on, the tabs that come
+      back, submodules kept at their recorded commit, conflicts seen coming,
+      and a log of what happened
 - [ ] Three-way editor with line-by-line picking
-- [ ] Submodules, bisect, LFS, signing
+- [ ] A screen for the submodules themselves, bisect, LFS, signing
 
 ## Architecture
 
@@ -148,6 +152,9 @@ crates/
     start.rs        cloning one down, or starting an empty one
     known.rs        the repositories this machine has opened
     profile.rs      who you are working as: the name, the key, the accounts
+    settings.rs     what somebody prefers, and the tabs that were open
+    submodule.rs    the repositories inside this one, put where the record says
+    foresee.rs      the merge into the target, tried in memory and thrown away
     forge.rs        the pull requests, which Git does not store
     status.rs       the working tree's state
     diff.rs         a diff cut into hunks
@@ -163,6 +170,7 @@ crates/
     refs_view.rs    the sidebar of branches, tags and checkouts
     picker.rs       choosing a repository, cloning one, starting one
     profiles_view.rs the profiles, and which one is in use
+    prefs_view.rs   the preferences: one column of rows, and no Save button
     chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
@@ -325,6 +333,34 @@ disk in plain text**, in a file written `rw-------`, which is the same
 bargain `~/.netrc` and `gh`'s own `hosts.yml` make; whoever is not content
 with it leaves the token empty and lets the forge's tool answer as itself.
 
+**Preferences:** behind the gear at the end of the tab strip, beside the
+profile, because they are about this computer too. One column of rows, and
+a row changed is a row written down. **A fetch on a timer** -- every minute
+unless told otherwise, nought for never -- of the repository in front, on a
+thread of its own and without a word: when something came the graph has it,
+and when the network is not there nothing says so sixty times an hour. It
+does not reach a checkout on another machine, whose commands run on the
+thread that paints. **Pruning** is asked for on every fetch or left to Git's
+own `fetch.prune`; unticking it never turns off what Git was configured to
+do. **The graph** starts with five thousand commits, or however many it is
+told, and reads further back when the end of them is reached; or it reads
+all of them. **The tabs come back** as they were left, a remote checkout
+among them waiting to be reconnected rather than connecting before the
+window has drawn. **Submodules** are brought to the commit the repository
+records for them once a pull or a switch has moved it, and brought down
+after a clone made here -- never for a repository having merely been
+opened. **The branch a new repository starts
+on** can be named, and Git is asked whether it is a name. **The `.orig`
+copy** a merge tool leaves beside a file can go when that file's conflict is
+settled here -- never one the repository itself keeps. **Conflicts are seen
+coming**: the merge into the main branch of the remote is tried in memory
+on a thread of its own each time either end moves, and the bar under the
+repository says how many files would clash, with nothing touched to find
+out. And the line at the bottom right, which was the last thing that
+happened, opens **a log** of the things before it -- with what the window
+did by itself among them when the preferences ask for that. The screen has
+a row for forgetting every token the profiles hold, which asks first.
+
 **The folder dialog:** the one dependency that was not part of the plan.
 Opening a repository meant typing its path, and the obvious fix was to run
 `gdbus` and ask `xdg-desktop-portal`, the way `gh` is run to ask GitHub. It
@@ -372,7 +408,8 @@ Then:
 cargo run --release -- /path/to/a/repository
 ```
 
-With no argument it opens the repository in the current directory.
+With no argument it opens the tabs that were open last time, and the
+repository in the current directory if there is one.
 
 ## Installing
 
