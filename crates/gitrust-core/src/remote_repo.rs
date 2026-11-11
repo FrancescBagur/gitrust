@@ -15,6 +15,8 @@ use crate::ssh::RemoteDescriptor;
 pub struct RemoteRepo {
     pub(crate) session: Session,
     path: String,
+    /// Who is writing, when a profile says: a name and an address.
+    who: Option<(String, String)>,
 }
 
 impl Writer for RemoteRepo {
@@ -103,7 +105,23 @@ impl RemoteRepo {
 impl RemoteRepo {
     pub fn new(session: Session, path: String) -> Result<Self> {
         session.verify_checkout(&path)?;
-        Ok(Self { session, path })
+        Ok(Self { session, path, who: None })
+    }
+
+    /// Writes from here on as this person, or as whoever the server says.
+    ///
+    /// A checkout on another machine commits under that machine's Git
+    /// configuration, and on a server several people log in to that is
+    /// somebody else's name or nobody's. A profile's name goes along on the
+    /// command line of each command instead -- `git -c user.name=...` -- so
+    /// nothing is written into a configuration file over there: the next
+    /// person to log in finds the server exactly as they left it.
+    ///
+    /// It is the name and the address and nothing else. No key and no token
+    /// crosses the wire: what that checkout fetches and pushes with is the
+    /// server's own business.
+    pub fn working_as(&mut self, who: Option<(&str, &str)>) {
+        self.who = who.map(|(name, email)| (name.to_string(), email.to_string()));
     }
 
     /// Enough to reconnect later, with no password retained in memory or on
@@ -116,7 +134,13 @@ impl RemoteRepo {
     }
 
     pub(crate) fn git(&self, arguments: &[&str]) -> Result<String> {
+        // On every command and not only on `commit`: a merge, a rebase, a
+        // cherry-pick, a stash and an annotated tag all write a name down,
+        // and a list of which commands do is a list that goes out of date.
+        // To the ones that write nothing it is two settings nobody reads.
+        let identity = identity(self.who.as_ref());
         let mut words = vec!["git", "-C", &self.path];
+        words.extend(identity.iter().map(String::as_str));
         words.extend(arguments);
         self.session.command(&words)
     }
@@ -266,6 +290,19 @@ impl Reader for RemoteRepo {
                 path,
             ])?,
         )
+    }
+}
+
+/// The words that tell Git who is writing, for one command and no longer.
+fn identity(who: Option<&(String, String)>) -> Vec<String> {
+    match who {
+        Some((name, email)) => vec![
+            "-c".to_string(),
+            format!("user.name={name}"),
+            "-c".to_string(),
+            format!("user.email={email}"),
+        ],
+        None => Vec::new(),
     }
 }
 
@@ -667,6 +704,16 @@ mod tests {
         assert!(patch.contains("diff --git"));
         assert!(patch.contains("+after"));
         assert!(!patch.contains("+new"));
+    }
+
+    #[test]
+    fn a_profile_goes_along_on_the_command_line_and_nobody_is_nothing() {
+        assert!(identity(None).is_empty());
+        let who = ("Someone At Acme".to_string(), "someone@acme.example".to_string());
+        assert_eq!(
+            identity(Some(&who)),
+            ["-c", "user.name=Someone At Acme", "-c", "user.email=someone@acme.example"]
+        );
     }
 
     #[test]

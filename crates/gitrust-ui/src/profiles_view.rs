@@ -414,6 +414,57 @@ fn editor(ui: &mut egui::Ui, state: &mut Managing, profiles: &mut Profiles) -> O
                     }
                 });
 
+                ui.add_space(14.0);
+                heading(ui, "Repositories");
+                hint(
+                    ui,
+                    "The ones that open as this profile, on this disk or on another machine. \
+                     One joins when it is opened while this profile is in use, or when this \
+                     profile is chosen with it in front \u{2014} and from then on, going to \
+                     it puts this profile in use.",
+                );
+                // Listed so that the remembering can be seen, and undone: a
+                // program that quietly decides who you are in a repository
+                // has to be able to say where it wrote that down.
+                let mut released = None;
+                for (at, repo) in profile.repos.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(LABEL + 8.0);
+                        ui.label(RichText::new(repo).font(theme::mono(11.5)).color(theme::text()));
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("\u{00d7}")
+                                        .font(theme::body(13.0))
+                                        .color(theme::faint()),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(18.0, 18.0)),
+                            )
+                            .on_hover_text(
+                                "Stop opening it as this profile. The repository is not touched",
+                            )
+                            .clicked()
+                        {
+                            released = Some(at);
+                        }
+                    });
+                }
+                if profile.repos.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(LABEL + 8.0);
+                        ui.label(
+                            RichText::new("none yet")
+                                .font(theme::body(11.0))
+                                .color(theme::faint()),
+                        );
+                    });
+                }
+                if let Some(at) = released {
+                    profile.repos.remove(at);
+                    act = Some(Act::Changed);
+                }
+
                 ui.add_space(18.0);
                 theme::rule(ui);
                 ui.add_space(8.0);

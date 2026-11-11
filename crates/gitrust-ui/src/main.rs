@@ -291,6 +291,30 @@ struct App {
     settings: Settings,
 }
 
+/// Whether two profiles are the same person, whatever is filed under them.
+fn same_person(one: Option<&Profile>, other: Option<&Profile>) -> bool {
+    match (one, other) {
+        (None, None) => true,
+        (Some(one), Some(other)) => {
+            one.name == other.name
+                && one.author == other.author
+                && one.email == other.email
+                && one.key == other.key
+                && one.accounts == other.accounts
+        }
+        _ => false,
+    }
+}
+
+/// The key a profile would open a connection with, when it has one that is
+/// really there. A path to a file that has gone is no key, and handing it
+/// over would turn "the agent would have worked" into a failure.
+fn profile_key(profile: Option<&Profile>) -> Option<std::path::PathBuf> {
+    profile
+        .and_then(Profile::key_file)
+        .filter(|key| key.exists())
+}
+
 /// A line for a screen that has no bottom bar of its own.
 ///
 /// Two kinds, because they are read differently: a complaint is something to
@@ -339,6 +363,7 @@ impl App {
             note: None,
         };
         app.remember(0);
+        app.file_under_profile();
         app
     }
 
@@ -367,6 +392,7 @@ impl App {
         self.at = self.open.len() - 1;
         self.picking = None;
         self.remember(self.at);
+        self.file_under_profile();
     }
 
     fn add_remote(&mut self, session: gitrust_core::ssh::Session, path: String) {
@@ -378,6 +404,7 @@ impl App {
                 self.opened += 1;
                 self.at = self.open.len() - 1;
                 self.picking = None;
+                self.file_under_profile();
                 if let Err(err) = saved {
                     self.complain(err);
                 }
@@ -906,8 +933,15 @@ impl App {
     fn act_on_profiles(&mut self, ctx: &egui::Context, act: profiles_view::Act) {
         match act {
             profiles_view::Act::Changed => self.keep_profiles(),
+            // Choosing a profile with a repository in front is saying whose
+            // that repository is, and it is written down as that: the next
+            // time it is opened it is opened as this one, whatever was in
+            // use a moment before. Choosing nobody takes it back off.
             profiles_view::Act::Use(which) => {
                 self.profiles.use_at(which);
+                if let Some(place) = self.in_front() {
+                    self.profiles.claim(which, &place);
+                }
                 self.keep_profiles();
             }
             // Adding is asked for from the menu as well as from the screen,
@@ -1032,23 +1066,82 @@ impl App {
         };
     }
 
-    /// Hands every tab the profile in use.
+    /// The repository being looked at, as a profile would file it.
+    ///
+    /// Nothing while the repository screen is up: what is in front then is a
+    /// list to choose from, and a profile picked over it is picked for
+    /// whatever is about to be opened, not for the tab left behind it.
+    fn in_front(&self) -> Option<String> {
+        if self.picking.is_some() {
+            return None;
+        }
+        self.open.get(self.at).and_then(|open| open.place.clone())
+    }
+
+    /// Files a repository that has just been opened under the profile in
+    /// use, if it is not filed under one already.
+    ///
+    /// Only on opening, never on merely coming back to a tab: a repository
+    /// is opened as somebody on purpose, and it is looked at on the way past
+    /// by accident.
+    fn file_under_profile(&mut self) {
+        let Some(place) = self.open.get(self.at).and_then(|open| open.place.clone()) else {
+            return;
+        };
+        if self.profiles.owner_of(&place).is_some() {
+            return;
+        }
+        if let Some(using) = self.profiles.at() {
+            self.profiles.claim(Some(using), &place);
+            self.keep_profiles();
+        }
+    }
+
+    /// Puts the profile of the repository in front in use.
+    ///
+    /// This is what stops a commit to one client's repository going out
+    /// under another client's name: which profile is in use is no longer
+    /// whichever was chosen last, it is whose repository this is. One that
+    /// is nobody's works as nobody -- Git's own settings -- rather than as
+    /// the last profile that happened to be on screen.
+    fn follow_front(&mut self) {
+        let Some(place) = self.in_front() else {
+            return;
+        };
+        let owner = self.profiles.owner_of(&place);
+        if self.profiles.at() != owner {
+            self.profiles.use_at(owner);
+            self.keep_profiles();
+        }
+    }
+
+    /// Hands every tab its profile: the one its repository is filed under.
     ///
     /// Compared before it is handed over, because handing it over is a
     /// handful of copied strings on every frame -- and because the
     /// comparison is also what tells a tab that its person has changed,
     /// which is the moment what the forge said stops being true.
     fn adopt_profile(&mut self) {
-        let same = {
-            let active = self.profiles.active();
-            self.open.iter().all(|open| open.profile.as_ref() == active)
-        };
-        if same {
-            return;
-        }
-        let active = self.profiles.active().cloned();
         for open in &mut self.open {
-            open.adopt(active.clone());
+            let mine = match &open.place {
+                Some(place) => self
+                    .profiles
+                    .owner_of(place)
+                    .and_then(|at| self.profiles.list.get(at)),
+                // A tab onto nothing in particular has nothing to be filed
+                // under, and works as whoever is in use.
+                None => self.profiles.active(),
+            };
+            if same_person(open.profile.as_ref(), mine) {
+                continue;
+            }
+            // Without the list of repositories: a tab has no use for it, and
+            // carrying it would make every tab of a profile think its person
+            // had changed each time another repository was filed under them.
+            open.adopt(mine.map(|profile| Profile {
+                repos: Vec::new(),
+                ..profile.clone()
+            }));
         }
     }
 
@@ -1124,6 +1217,7 @@ impl App {
                     &glance,
                     &open_now,
                     &self.settings.remotes,
+                    &self.profiles,
                 );
 
                 if let Some(cloning) = &self.cloning {
@@ -1151,6 +1245,7 @@ impl eframe::App for App {
         // running in another one has to finish whether or not you are looking
         // at it; otherwise coming back to it would find it still saying
         // "pushing…" with the push long since done.
+        self.follow_front();
         self.adopt_profile();
         for open in &mut self.open {
             open.poll(ctx);
@@ -1256,10 +1351,17 @@ struct Open {
     forge_note: Option<String>,
     /// The fetch button's position: it repeats the last thing asked for.
     pull_mode: PullMode,
-    /// Who this tab is working as. It is the window's profile, copied in
-    /// rather than borrowed, because every repository this tab opens is
-    /// opened on a thread that outlives the frame that started it.
+    /// Who this tab is working as: the profile its repository is filed
+    /// under. Copied in rather than borrowed, because every repository this
+    /// tab opens is opened on a thread that outlives the frame that started
+    /// it.
     profile: Option<Profile>,
+    /// Where this tab's repository is, as the line a profile files it under:
+    /// a folder, or `ssh://...` for a checkout on another machine. Worked
+    /// out once, here, because the frame asks for it sixty times a second
+    /// and the answer is a walk through every link in a path. `None` is a
+    /// tab onto something that is not a repository, which is nobody's.
+    place: Option<String>,
 
     // The action bar and what it needs to know.
     tracking: Option<Tracking>,
@@ -1459,9 +1561,16 @@ impl Open {
 
     fn with_backend(path: String, salt: u64, remote: Option<RemoteRepo>) -> Self {
         let remote_descriptor = remote.as_ref().map(RemoteRepo::descriptor);
+        let place = match &remote_descriptor {
+            Some(remote) => Some(remote.place()),
+            None => Repo::open(&path)
+                .ok()
+                .and_then(|_| gitrust_core::place_of(std::path::Path::new(&path))),
+        };
         let mut app = Self {
             salt,
             path,
+            place,
             remote,
             remote_descriptor,
             remote_disconnected: None,
@@ -1576,7 +1685,7 @@ impl Open {
         Ok(Repo::open(&self.path)?.using(self.profile.clone()))
     }
 
-    /// Takes on the window's profile.
+    /// Takes on a profile: the one its repository is filed under.
     ///
     /// What the forge last said is thrown away with it: it answered as
     /// somebody else, and a column that says "in review" because another
@@ -1586,8 +1695,21 @@ impl Open {
             return;
         }
         self.profile = profile;
+        self.name_the_remote();
         self.pulls = None;
         self.forge_note = None;
+    }
+
+    /// Tells a checkout on another machine whose name to write.
+    ///
+    /// Asked for apart from `adopt` because a reconnection makes a new
+    /// connection that has been told nothing, under a profile that has not
+    /// changed -- which is exactly the case `adopt` returns early on.
+    fn name_the_remote(&mut self) {
+        let who = self.profile.as_ref().and_then(Profile::who);
+        if let Some(remote) = &mut self.remote {
+            remote.working_as(who);
+        }
     }
 
     /// Reloads everything: history, references and the working tree's state.
@@ -2339,18 +2461,21 @@ impl Open {
         }
     }
 
-    /// Re-authenticates deliberately through the SSH agent.  The descriptor
-    /// has no password, so a password-only server asks the user to reopen it
-    /// from the picker instead of retaining a secret for later.
+    /// Re-authenticates deliberately, with the profile's key when it has
+    /// one and through the SSH agent after it.  The descriptor has no
+    /// password, so a password-only server asks the user to reopen it from
+    /// the picker instead of retaining a secret for later.
     fn reconnect_remote(&mut self) {
         let Some(descriptor) = self.remote_descriptor.clone() else {
             return self.note_error("this tab has no remote connection details".to_string());
         };
-        match gitrust_core::ssh::Session::connect(descriptor.login.clone(), None, false)
+        let key = profile_key(self.profile.as_ref());
+        match gitrust_core::ssh::Session::connect_as(descriptor.login.clone(), None, key.as_deref(), false)
             .and_then(|session| RemoteRepo::new(session, descriptor.path.clone()))
         {
             Ok(repo) => {
                 self.remote = Some(repo);
+                self.name_the_remote();
                 self.remote_disconnected = None;
                 self.load();
                 self.said("remote checkout reconnected".to_string());

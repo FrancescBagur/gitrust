@@ -305,7 +305,20 @@ one -- ed25519, no passphrase, named after the profile, beside your other
 keys -- and hand you its public half for the box on the forge's settings
 page; it will not write over a key that is already there, because the other
 half of that one is sitting on somebody's server. A second person at the
-same client is the first one duplicated and renamed. It writes nothing into
+same client is the first one duplicated and renamed. **A repository is
+filed under the profile it was opened as**, on this disk or on another
+machine, and going to it puts that profile in use: which client you are is
+no longer whichever was picked last, it is whose repository is in front, so
+a commit to one client cannot go out under another's name because of which
+tab was looked at a moment ago. Picking a profile with a repository in front
+moves it; the list is on the profile's screen, where any line of it can be
+taken back off. A checkout on another machine gets the same three things as
+far as they can honestly reach: the profile's key opens the connection, with
+the agent after it, and the profile's name goes along on the command line of
+each Git command there, so the commit is yours and the server's own
+configuration is left exactly as it was. What does not cross is the token
+and the key: what that checkout fetches and pushes with stays the server's
+business. It writes nothing into
 `.gitconfig` or `~/.ssh/config`: a program that rewrites the files other
 programs read is a program that breaks them while you are not looking. **The tokens are on the
 disk in plain text**, in a file written `rw-------`, which is the same

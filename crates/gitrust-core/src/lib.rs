@@ -49,7 +49,7 @@ pub use merge::Join;
 pub use message::{blocks, compose, Block, SUBJECT_LIMIT};
 pub use model::{Commit, Graph, Link, RefKind, RefLabel, Row};
 pub use note::Note;
-pub use profile::{make_key, shorten, Account, Forge, Profile, Profiles};
+pub use profile::{make_key, place_of, shorten, Account, Forge, Profile, Profiles};
 pub use remote::{PullMode, Tracking};
 pub use reader::Reader;
 pub use remote_repo::RemoteRepo;

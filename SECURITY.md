@@ -47,6 +47,17 @@ a passphrase cannot be opened from here at all, because there is nowhere to
 ask for the passphrase and nowhere safe to keep it; that key belongs in the
 SSH agent, which is what gitrust falls back to.
 
+A profile also lists the repositories filed under it: folders on this disk,
+and checkouts on other machines as `ssh://user@host:port/path`. Those lines
+are addresses and nothing else -- no password is ever among them -- but they
+do say which servers you work on and as whom, and they are in the same
+`rw-------` file as the tokens for that reason too.
+
+When a profile is used on a checkout on another machine, two things leave
+this one and two do not. Its name and address go along on the command line of
+each Git command run there. Its private key is used to sign the SSH
+authentication and never leaves; its tokens are not used at all.
+
 A key made from the profiles screen is made by `ssh-keygen`, as ed25519, and
 **with no passphrase** -- said plainly because it is the one thing about it
 worth knowing. It is not a shortcut: a key with a passphrase has to be

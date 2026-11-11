@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, RichText};
-use gitrust_core::{ssh, Known};
+use gitrust_core::{ssh, Known, Profile, Profiles};
 
 use crate::theme;
 
@@ -144,6 +144,7 @@ pub fn show(
     glance: &HashMap<PathBuf, String>,
     open_now: &[PathBuf],
     saved_remotes: &[ssh::RemoteDescriptor],
+    profiles: &Profiles,
 ) -> Option<Act> {
     let mut act = None;
 
@@ -166,7 +167,7 @@ pub fn show(
     });
 
     ui.add_space(12.0);
-    if let Some(asked) = buttons(ui, state, saved_remotes) {
+    if let Some(asked) = buttons(ui, state, saved_remotes, profiles) {
         act = Some(asked);
     }
 
@@ -247,7 +248,14 @@ pub fn show(
                 }
                 theme::section(ui, title, mark, group.len(), !needle.is_empty(), |ui| {
                     for known in group {
-                        if let Some(asked) = row(ui, known, glance, open_now) {
+                        // The list keeps folders with their links followed,
+                        // which is how a profile files them, so the path as
+                        // it stands is the line to look for.
+                        let owner = profiles
+                            .owner_of(&known.path.display().to_string())
+                            .and_then(|at| profiles.list.get(at))
+                            .map(|profile| profile.name.trim());
+                        if let Some(asked) = row(ui, known, glance, open_now, owner) {
                             act = Some(asked);
                         }
                     }
@@ -265,6 +273,7 @@ fn buttons(
     ui: &mut egui::Ui,
     state: &mut Picker,
     saved_remotes: &[ssh::RemoteDescriptor],
+    profiles: &Profiles,
 ) -> Option<Act> {
     let mut act = None;
 
@@ -301,7 +310,7 @@ fn buttons(
     };
 
     if asking == Asking::Remote {
-        return remote_picker(ui, &mut state.remote, saved_remotes);
+        return remote_picker(ui, &mut state.remote, saved_remotes, profiles);
     }
 
     ui.add_space(8.0);
@@ -401,8 +410,11 @@ fn remote_picker(
     ui: &mut egui::Ui,
     remote: &mut Remote,
     saved_remotes: &[ssh::RemoteDescriptor],
+    profiles: &Profiles,
 ) -> Option<Act> {
     let mut open = None;
+    let whom = connecting_as(profiles, remote);
+    let key = crate::profile_key(whom);
     ui.add_space(8.0);
     egui::Frame::NONE
         .fill(theme::raised())
@@ -471,7 +483,7 @@ fn remote_picker(
                     // a broad setting that could accept a later, unrelated host.
                     let trust_new_host = std::mem::replace(&mut remote.trust_new_host, false);
                     match ssh::Login::new(remote.host.trim().to_string(), remote.user.trim().to_string(), port)
-                        .and_then(|login| ssh::Session::connect(login, (!password.is_empty()).then_some(password.as_str()), trust_new_host)) {
+                        .and_then(|login| ssh::Session::connect_as(login, (!password.is_empty()).then_some(password.as_str()), key.as_deref(), trust_new_host)) {
                         Ok(session) => match session.folders("/") {
                             Ok(folders) => {
                                 remote.session = Some(session);
@@ -484,6 +496,28 @@ fn remote_picker(
                     }
                 }
             });
+            // Who is about to knock, said before the knocking: a connection
+            // refused is easier to understand next to the key it was tried
+            // with than next to nothing.
+            if let Some(profile) = whom {
+                let name = match profile.name.trim().is_empty() {
+                    true => "(no name)",
+                    false => profile.name.trim(),
+                };
+                let line = match (&key, profile.key.trim().is_empty()) {
+                    (Some(_), _) => format!(
+                        "As {name}: {} first, then the SSH agent. A password typed here goes before both.",
+                        profile.key.trim()
+                    ),
+                    (None, true) => format!("As {name}, which has no key of its own: the SSH agent."),
+                    (None, false) => format!(
+                        "As {name}, whose key {} is not there: the SSH agent.",
+                        profile.key.trim()
+                    ),
+                };
+                ui.add_space(3.0);
+                ui.label(RichText::new(line).font(theme::body(11.0)).color(theme::faint()));
+            }
             ui.checkbox(&mut remote.trust_new_host, "I verified this host key; trust and save it for this attempt");
             if let Some((note, bad)) = &remote.note {
                 ui.add_space(3.0);
@@ -558,6 +592,21 @@ fn remote_picker(
 
 /// A full-width row for remote lists. Buttons centre their label by default;
 /// paths and host names scan better from a shared left edge.
+/// The profile a connection is about to be made as.
+///
+/// A checkout that is already filed under a profile is opened as that one,
+/// whoever is in use: it is that client's server, and that client's key is
+/// the one it knows. Anything else is opened as whoever is in use now.
+fn connecting_as<'a>(profiles: &'a Profiles, remote: &Remote) -> Option<&'a Profile> {
+    let port = remote.port.trim().parse().unwrap_or(22);
+    ssh::Login::new(remote.host.trim().to_string(), remote.user.trim().to_string(), port)
+        .and_then(|login| ssh::RemoteDescriptor::new(login, remote.path.trim().to_string()))
+        .ok()
+        .and_then(|checkout| profiles.owner_of(&checkout.place()))
+        .and_then(|at| profiles.list.get(at))
+        .or(profiles.active())
+}
+
 fn remote_list_row(ui: &mut egui::Ui, _kind: &str, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), theme::ROW_H),
@@ -587,6 +636,7 @@ fn row(
     known: &Known,
     glance: &HashMap<PathBuf, String>,
     open_now: &[PathBuf],
+    owner: Option<&str>,
 ) -> Option<Act> {
     let mut act = None;
     let there = known.there();
@@ -671,6 +721,21 @@ fn row(
                 .clicked()
             {
                 act = Some(Act::Forget(known.path.clone()));
+            }
+            // Whose it is, at the end of the row where the eye can run down
+            // a column of them. Nothing for one that is nobody's: most
+            // repositories on most machines are, and a column of "none" is
+            // a column of noise.
+            if let Some(owner) = owner {
+                ui.label(
+                    RichText::new(match owner.is_empty() {
+                        true => "(no name)",
+                        false => owner,
+                    })
+                    .font(theme::body(11.0))
+                    .color(theme::muted()),
+                )
+                .on_hover_text("The profile this repository opens as");
             }
         });
 

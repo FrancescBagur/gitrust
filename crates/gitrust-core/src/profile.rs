@@ -38,12 +38,30 @@
 //!   email someone@acme.example
 //!   key ~/.ssh/acme_ed25519
 //!   github github.com someone-at-acme ghp_xxxxxxxxxxxx
+//!   repo /home/someone/Projects/acme-site
+//!   repo ssh://someone@staging.acme.example:22/srv/site
 //!
 //! profile Personal
 //!   author Someone
 //!   email someone@example.invalid
 //!   gitlab gitlab.com someone
 //! ```
+//!
+//! # The repositories under a profile
+//!
+//! A `repo` line is a repository that works under that profile: a folder on
+//! this disk, or a checkout on another machine written as
+//! `ssh://user@host:port/path`. Opening one puts its profile in use, so a
+//! commit to one client's repository cannot be written under another
+//! client's name because of which tab was looked at last.
+//!
+//! They are kept here, under the profile, rather than as a name beside each
+//! entry in the list of known repositories, for two reasons. A profile that
+//! is renamed takes its repositories with it without a second file having to
+//! be found and rewritten; and a remote checkout is not in that list at all
+//! -- it is in the settings -- so there would have been two places to look.
+//! A repository belongs to one profile or to none: [`Profiles::claim`] takes
+//! it away from whoever had it.
 //!
 //! A line it does not understand is skipped and a field that is not there
 //! keeps its default, like the settings file beside it: a file written by a
@@ -200,6 +218,9 @@ pub struct Profile {
     /// Empty means the agent, which is where a key with a passphrase lives.
     pub key: String,
     pub accounts: Vec<Account>,
+    /// The repositories that work under it, each as [`place_of`] or
+    /// `RemoteDescriptor::place` writes it: a folder, or `ssh://...`.
+    pub repos: Vec<String>,
 }
 
 impl Profile {
@@ -296,6 +317,12 @@ impl Profile {
         }
         for account in &self.accounts {
             text.push_str(&account.render());
+        }
+        for repo in &self.repos {
+            let repo = repo.trim();
+            if !repo.is_empty() {
+                text.push_str(&format!("  repo {repo}\n"));
+            }
         }
         text
     }
@@ -397,6 +424,27 @@ impl Profiles {
         self.list.len() - 1
     }
 
+    /// The profile a repository works under, if it has one.
+    pub fn owner_of(&self, place: &str) -> Option<usize> {
+        self.list
+            .iter()
+            .position(|profile| profile.repos.iter().any(|repo| repo == place))
+    }
+
+    /// Puts a repository under one profile, or under none.
+    ///
+    /// It is taken from whoever had it first: a repository is one client's,
+    /// and one listed under two profiles would work as whichever happened
+    /// to come first in the file.
+    pub fn claim(&mut self, which: Option<usize>, place: &str) {
+        for profile in &mut self.list {
+            profile.repos.retain(|repo| repo != place);
+        }
+        if let Some(profile) = which.and_then(|which| self.list.get_mut(which)) {
+            profile.repos.push(place.to_string());
+        }
+    }
+
     /// Copies one, name and key and accounts and all.
     ///
     /// Two clients at the same company are the same key and the same host
@@ -406,6 +454,10 @@ impl Profiles {
     pub fn duplicate(&mut self, which: usize) -> Option<usize> {
         let mut copy = self.list.get(which)?.clone();
         copy.name = format!("{} copy", copy.name.trim());
+        // Everything but the repositories. Those are the one thing here that
+        // cannot be in two places, and a copy that took them would be taking
+        // them away from the profile it was copied from.
+        copy.repos.clear();
         Some(self.add(copy))
     }
 
@@ -430,6 +482,11 @@ impl Profiles {
     fn parse(text: &str) -> Self {
         let mut profiles = Profiles::default();
         let mut using: Option<String> = None;
+        // Held back and handed out at the end, through `claim`, so that a
+        // file somebody edited to list one repository under two profiles
+        // comes out with it under one: the later one, as if it had been
+        // moved there.
+        let mut repos: Vec<(usize, String)> = Vec::new();
 
         for line in text.lines() {
             let line = line.trim();
@@ -464,6 +521,13 @@ impl Profiles {
                                 profile.accounts.push(account);
                             }
                         }
+                        // The rest of the line, spaces and all: a folder can
+                        // be called anything, and this is the one field here
+                        // that is somebody else's name for something.
+                        "repo" if !value.is_empty() => repos.push((
+                            profiles.list.len() - 1,
+                            value.to_string(),
+                        )),
                         _ => continue,
                     }
                 }
@@ -475,6 +539,9 @@ impl Profiles {
         // going stale.
         if let Some(using) = using {
             profiles.at = profiles.list.iter().position(|profile| profile.name == using);
+        }
+        for (which, place) in repos {
+            profiles.claim(Some(which), &place);
         }
         profiles
     }
@@ -526,6 +593,18 @@ impl Profiles {
             .with_context(|| format!("could not put {} in place", file.display()))?;
         Ok(())
     }
+}
+
+/// Where a repository on this disk is, as the line a profile files it under.
+///
+/// The folder with every link in it followed, so that the same repository
+/// reached by two spellings of its path is one repository and not two.
+/// `None` is a path with nothing at it, which has no business being
+/// remembered as anybody's.
+pub fn place_of(path: &Path) -> Option<String> {
+    std::fs::canonicalize(path)
+        .ok()
+        .map(|path| path.display().to_string())
 }
 
 /// The public half of a key, beside it.
@@ -688,6 +767,7 @@ mod tests {
                     token: String::new(),
                 },
             ],
+            repos: Vec::new(),
         });
         profiles.add(Profile::new("Personal"));
         profiles.use_at(Some(0));
@@ -899,6 +979,75 @@ mod tests {
         profiles.use_at(Some(0));
         profiles.duplicate(0);
         assert_eq!(profiles.at(), Some(0));
+    }
+
+    #[test]
+    fn the_repositories_under_a_profile_survive_the_trip_and_keep_their_spaces() {
+        let mut profiles = sample();
+        profiles.claim(Some(0), "/home/someone/Projects/acme site");
+        profiles.claim(Some(0), "ssh://someone@staging.acme.example:22/srv/site");
+
+        let back = Profiles::parse(&profiles.render());
+        assert_eq!(back, profiles);
+        assert_eq!(back.owner_of("/home/someone/Projects/acme site"), Some(0));
+        assert_eq!(
+            back.owner_of("ssh://someone@staging.acme.example:22/srv/site"),
+            Some(0)
+        );
+        assert_eq!(back.owner_of("/home/someone/Projects/elsewhere"), None);
+    }
+
+    #[test]
+    fn a_repository_claimed_by_another_profile_leaves_the_first() {
+        let mut profiles = sample();
+        profiles.claim(Some(0), "/work/site");
+        profiles.claim(Some(1), "/work/site");
+        assert_eq!(profiles.owner_of("/work/site"), Some(1));
+        assert!(profiles.list[0].repos.is_empty());
+
+        // And claimed by nobody, it is nobody's.
+        profiles.claim(None, "/work/site");
+        assert_eq!(profiles.owner_of("/work/site"), None);
+    }
+
+    #[test]
+    fn a_file_with_one_repository_under_two_profiles_gives_it_to_the_later() {
+        let profiles = Profiles::parse(
+            "profile Acme\n  repo /work/site\n\nprofile Personal\n  repo /work/site\n",
+        );
+        assert_eq!(profiles.owner_of("/work/site"), Some(1));
+        assert!(profiles.list[0].repos.is_empty());
+    }
+
+    #[test]
+    fn a_copy_does_not_take_the_repositories_with_it() {
+        let mut profiles = sample();
+        profiles.claim(Some(0), "/work/site");
+        let copy = profiles.duplicate(0).expect("there is a profile to copy");
+        assert!(profiles.list[copy].repos.is_empty());
+        assert_eq!(profiles.owner_of("/work/site"), Some(0));
+    }
+
+    #[test]
+    fn deleting_a_profile_leaves_its_repositories_with_nobody() {
+        let mut profiles = sample();
+        profiles.claim(Some(0), "/work/site");
+        profiles.remove(0);
+        assert_eq!(profiles.owner_of("/work/site"), None);
+    }
+
+    #[test]
+    fn a_folder_is_one_place_however_it_is_spelt() {
+        let folder = std::env::temp_dir().join(format!("gitrust-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("inside")).unwrap();
+
+        let plain = place_of(&folder).expect("the folder is there");
+        let roundabout = place_of(&folder.join("inside").join("..")).expect("so is this");
+        assert_eq!(plain, roundabout);
+        assert_eq!(place_of(&folder.join("not-there")), None);
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
