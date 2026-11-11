@@ -23,7 +23,14 @@ else
     cargo build --release --manifest-path "$here/Cargo.toml"
 fi
 
+# Cargo writes a version that is not finished with a hyphen, 0.1.0-beta.1,
+# and to dpkg a hyphen is where the packager's own revision starts: it would
+# read that as 0.1.0 packaged a second time, and so as *newer* than 0.1.0.
+# Whoever installed the beta would then never be offered the release. A
+# tilde is the one character dpkg sorts before the end of the string, so
+# the first hyphen becomes one, here and nowhere else.
 version=$(grep -m1 '^version' "$here/Cargo.toml" | cut -d'"' -f2)
+version=${version/-/\~}
 arch=$(dpkg-architecture -qDEB_HOST_ARCH)
 root=$here/target/deb
 out=$here/target/gitrust_${version}_${arch}.deb

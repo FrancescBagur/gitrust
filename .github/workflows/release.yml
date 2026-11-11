@@ -1,7 +1,8 @@
 # Builds something to download, for each of the three systems.
 #
 # Pushing a tag like v0.1.0 builds everything and publishes a release with
-# the files attached. Running it by hand builds the same files and leaves
+# the files attached; one like v0.1.0-beta.1 does the same and is published
+# as a prerelease. Running it by hand builds the same files and leaves
 # them as artifacts of the run, so the packaging can be changed and checked
 # without naming a version that then exists forever.
 #
@@ -197,6 +198,20 @@ jobs:
     runs-on: ubuntu-latest  # nothing is built here, only moved and signed for
     steps:
       - uses: actions/checkout@v4
+
+      # The files are named after the version in Cargo.toml and the release
+      # after the tag, and nothing else makes the two say the same thing. A
+      # tag pushed without the version beside it would publish v0.1.0-beta.1
+      # full of files called 0.1.0, by a program that answers 0.1.0 when
+      # asked -- and a release cannot be taken back once somebody has it.
+      - name: The tag and the version agree
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [[ $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "the tag is $GITHUB_REF_NAME and Cargo.toml says $version"
+            exit 1
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           path: files
@@ -242,5 +257,13 @@ jobs:
           was built. It says nothing about who built it, and it cannot: that
           is what signing is for, and there is none yet.
           NOTES
+          # A version with a hyphen in it says of itself that it is not
+          # finished, and GitHub is told the same. What that costs is known:
+          # releases/latest steps over a prerelease, which is why the README
+          # points at the list and not at that address.
+          kind=
+          if [[ $GITHUB_REF_NAME == *-* ]]; then
+            kind=--prerelease
+          fi
           gh release create "$GITHUB_REF_NAME" out/* \
-            --title "$GITHUB_REF_NAME" --notes-file notes.md
+            --title "$GITHUB_REF_NAME" --notes-file notes.md $kind
