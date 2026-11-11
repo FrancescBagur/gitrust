@@ -41,6 +41,18 @@ impl RemoteDescriptor {
         );
         Ok(Self { login, path })
     }
+
+    /// Where this checkout is, as one line: `ssh://user@host:port/path`.
+    ///
+    /// What a profile files a remote checkout under, the way it files a
+    /// local one under its folder. The port is always written, 22 included,
+    /// so that the same checkout is the same line however it was typed.
+    pub fn place(&self) -> String {
+        format!(
+            "ssh://{}@{}:{}{}",
+            self.login.user, self.login.host, self.login.port, self.path
+        )
+    }
 }
 
 impl Login {
@@ -61,17 +73,30 @@ impl Session {
     /// Connect using the supplied password, or the SSH agent when it is blank.
     /// The caller owns the password and can clear it as soon as this returns.
     pub fn connect(login: Login, password: Option<&str>, trust_new_host: bool) -> Result<Self> {
-        Self::connect_inner(login, password, None, trust_new_host, None)
+        Self::connect_inner(login, password, None, false, trust_new_host, None)
+    }
+
+    /// Connect the way a profile would: with its key first, and the SSH
+    /// agent after it.
+    ///
+    /// A password that was typed still wins, because somebody typed it. With
+    /// no key this is `connect` and nothing else. With one, the agent is
+    /// still asked when the key is refused: a profile's key is the first
+    /// answer and not the only one, exactly as it is for a fetch or a push,
+    /// and a server that does not know this client's key is very often one
+    /// that knows the key already in the agent.
+    pub fn connect_as(login: Login, password: Option<&str>, key: Option<&Path>, trust_new_host: bool) -> Result<Self> {
+        Self::connect_inner(login, password, key, true, trust_new_host, None)
     }
 
     /// Connect with an explicit private key and known-hosts file. This is
     /// useful for isolated transport tests without borrowing the user's SSH
     /// agent or their `known_hosts` file.
     pub fn connect_with_key(login: Login, private_key: &Path, known_hosts: &Path, trust_new_host: bool) -> Result<Self> {
-        Self::connect_inner(login, None, Some(private_key), trust_new_host, Some(known_hosts))
+        Self::connect_inner(login, None, Some(private_key), false, trust_new_host, Some(known_hosts))
     }
 
-    fn connect_inner(login: Login, password: Option<&str>, private_key: Option<&Path>, trust_new_host: bool, known_hosts: Option<&Path>) -> Result<Self> {
+    fn connect_inner(login: Login, password: Option<&str>, private_key: Option<&Path>, then_agent: bool, trust_new_host: bool, known_hosts: Option<&Path>) -> Result<Self> {
         let tcp = TcpStream::connect((login.host.as_str(), login.port))
             .with_context(|| format!("could not reach {}:{}", login.host, login.port))?;
         tcp.set_read_timeout(Some(Duration::from_secs(15)))
@@ -87,9 +112,22 @@ impl Session {
             (Some(password), _) => raw
                 .userauth_password(&login.user, password)
                 .context("the SSH password was refused")?,
-            (None, Some(private_key)) => raw
-                .userauth_pubkey_file(&login.user, None, private_key, None)
-                .context("the SSH key was refused")?,
+            (None, Some(private_key)) => {
+                let keyed = raw.userauth_pubkey_file(&login.user, None, private_key, None);
+                match (keyed, then_agent) {
+                    (Ok(()), _) => {}
+                    (Err(err), false) => return Err(err).context("the SSH key was refused"),
+                    // Both are named when both fail: "the agent refused"
+                    // alone would send somebody to look at the agent, when
+                    // the thing they set up and expected to work was the key.
+                    (Err(key), true) => raw.userauth_agent(&login.user).with_context(|| {
+                        format!(
+                            "{} was refused ({key}), and so was the SSH agent",
+                            private_key.display()
+                        )
+                    })?,
+                }
+            }
             (None, None) => raw
                 .userauth_agent(&login.user)
                 .context("could not authenticate with the SSH agent")?,
@@ -328,6 +366,13 @@ mod tests {
     fn login_needs_a_host_and_user() {
         assert!(Login::new("".into(), "jane".into(), 22).is_err());
         assert!(Login::new("host".into(), "".into(), 22).is_err());
+    }
+
+    #[test]
+    fn a_remote_checkout_is_one_line_with_its_port_in_it() {
+        let login = Login::new("git.acme.example".to_string(), "jane".to_string(), 22).unwrap();
+        let remote = RemoteDescriptor::new(login, "/srv/site".to_string()).unwrap();
+        assert_eq!(remote.place(), "ssh://jane@git.acme.example:22/srv/site");
     }
 
     #[test]

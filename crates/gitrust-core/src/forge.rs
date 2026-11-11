@@ -4,14 +4,24 @@
 //! a branch somebody is reviewing look exactly alike from here, so the only
 //! way to tell them apart is to go and ask.
 //!
-//! The asking goes through `gh`, GitHub's command line tool, because it
-//! already holds the credentials and already knows which repository this is.
-//! Shelling out to a tool the user has configured is what gitrust does for
-//! credential helpers too: there is no second copy of their settings to keep
-//! in step.
+//! The asking goes through the forge's own command line tool -- `gh` for
+//! GitHub, `glab` for GitLab -- because it already holds the credentials and
+//! already knows which repository this is. Shelling out to a tool the user
+//! has configured is what gitrust does for credential helpers too: there is
+//! no second copy of their settings to keep in step.
 //!
-//! Nothing here is required. With no `gh`, no login, or a remote that is not
-//! GitHub, this fails with a sentence and the board goes back to reading the
+//! Which of the two, and as whom, comes from the profile in use: the account
+//! whose host matches the remote's decides it. With no profile, or none that
+//! names this host, the host's own name decides -- and anything that is not
+//! plainly GitLab is asked of `gh`, which is what every repository here was
+//! asked before there were profiles.
+//!
+//! A merge request is a pull request under another name, and the type below
+//! is called after GitHub's because that is the one the board was written
+//! for. Everything a column needs is the same in both.
+//!
+//! Nothing here is required. With no tool, no login, or a remote on neither
+//! forge, this fails with a sentence and the board goes back to reading the
 //! graph on its own. What it must never do is guess: a pull request that is
 //! invented is worse than one that is missing.
 
@@ -20,6 +30,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use crate::profile::{host_of, Forge};
 use crate::repo::Repo;
 
 /// Where a pull request stands.
@@ -66,7 +77,93 @@ pub type PullRequests = HashMap<String, PullRequest>;
 /// are the ones whose branches have long since been deleted.
 const LIMIT: &str = "400";
 
+/// The same, for GitLab, which counts in pages and will not hand out more
+/// than a hundred in one.
+const PAGE: &str = "100";
+
+/// Which tool answers for a repository, where it is, and with what.
+///
+/// It is worked out once per asking rather than stored: a profile can be
+/// switched between one press and the next, and an answer cached from the
+/// last client is the wrong answer given confidently.
+struct Asking {
+    forge: Forge,
+    /// The host the remote is on, which is what tells a company's own GitLab
+    /// from gitlab.com. Empty when the repository has no remote at all.
+    host: String,
+    /// The account's token, if it has one. Empty leaves the tool to use
+    /// whatever it is logged in as, which is what it did before profiles.
+    token: String,
+}
+
+impl Asking {
+    /// The tool, with the account's host and token in its environment.
+    ///
+    /// Environment rather than configuration: the tools both read these, and
+    /// passing them this way means gitrust never writes into a file that
+    /// belongs to another program.
+    fn command(&self) -> Command {
+        let mut command = Command::new(self.forge.tool());
+        let (host_var, token_var) = match self.forge {
+            Forge::GitHub => ("GH_HOST", "GH_TOKEN"),
+            Forge::GitLab => ("GITLAB_HOST", "GITLAB_TOKEN"),
+        };
+        if !self.host.is_empty() {
+            command.env(host_var, &self.host);
+        }
+        if !self.token.is_empty() {
+            command.env(token_var, &self.token);
+        }
+        if self.forge == Forge::GitLab {
+            // Nobody is at the other end of a prompt here: a question would
+            // be a thread sitting for ever on an answer that never comes.
+            command.env("GLAB_NO_PROMPT", "1");
+        }
+        command
+    }
+}
+
 impl Repo {
+    /// The address of the remote this repository is read against.
+    ///
+    /// "origin" when there is one, and otherwise the first remote there is:
+    /// a repository with a single remote called something else is somebody's
+    /// deliberate setup, not a repository with no forge.
+    fn remote_url(&self) -> Option<String> {
+        let remotes = self.inner.remotes().ok()?;
+        let names: Vec<&str> = remotes.iter().flatten().collect();
+        let name = names
+            .iter()
+            .find(|name| **name == "origin")
+            .or_else(|| names.first())?;
+        self.inner.find_remote(name).ok()?.url().map(str::to_string)
+    }
+
+    /// Which forge to ask about this repository, and as whom.
+    fn asking(&self) -> Asking {
+        let url = self.remote_url().unwrap_or_default();
+        let host = host_of(&url).unwrap_or_default();
+
+        // An account for this host settles it outright: that is the whole
+        // point of writing one down.
+        if let Some(account) = self.profile.as_ref().and_then(|profile| profile.account_on(&host)) {
+            return Asking {
+                forge: account.forge,
+                host: account.host.clone(),
+                token: account.token.clone(),
+            };
+        }
+
+        // Failing that, the host's own name. GitHub is what is left, because
+        // every repository that got here before there were profiles was
+        // asked of `gh` and a guess that changes that is a regression.
+        let forge = match host.starts_with("gitlab.") {
+            true => Forge::GitLab,
+            false => Forge::GitHub,
+        };
+        Asking { forge, host, token: String::new() }
+    }
+
     /// Asks the forge which pull requests this repository has.
     ///
     /// It goes out to the network, so it belongs on a thread of its own. It is
@@ -75,8 +172,15 @@ impl Repo {
     /// [`Repo::board`]: the board is drawn without waiting for it, and redrawn
     /// when the answer arrives.
     pub fn pull_requests(&self) -> Result<PullRequests> {
-        let output = Command::new("gh")
-            .args([
+        let asking = self.asking();
+        let tool = asking.forge.tool();
+
+        // The two tools are asked the same question and told to answer in
+        // the same shape: one line per request, tab separated, in the order
+        // `parse` below reads them. Both carry a jq of their own, so the
+        // shaping costs no second program and no JSON reader in here.
+        let args: Vec<&str> = match asking.forge {
+            Forge::GitHub => vec![
                 "pr",
                 "list",
                 "--state",
@@ -87,10 +191,26 @@ impl Repo {
                 "number,state,isDraft,headRefName,url",
                 "--jq",
                 ".[] | [.number, .state, .isDraft, .headRefName, .url] | @tsv",
-            ])
+            ],
+            Forge::GitLab => vec![
+                "mr",
+                "list",
+                "--all",
+                "--per-page",
+                PAGE,
+                "--output",
+                "json",
+                "--jq",
+                ".[] | [.iid, .state, .draft, .source_branch, .web_url] | @tsv",
+            ],
+        };
+
+        let output = asking
+            .command()
+            .args(args)
             .current_dir(self.workdir())
             .output()
-            .context("gh is not installed, so pull requests cannot be read")?;
+            .with_context(|| format!("{tool} is not installed, so {}s cannot be read", asking.forge.request()))?;
 
         anyhow::ensure!(output.status.success(), "{}", complaint(&output.stderr));
 
@@ -124,11 +244,23 @@ impl Repo {
     pub fn open_pull_request(&self, branch: &str) -> Result<String> {
         self.push_branch(branch)?;
 
-        let output = Command::new("gh")
-            .args(["pr", "create", "--fill", "--head", branch])
+        let asking = self.asking();
+        let tool = asking.forge.tool();
+        let what = asking.forge.request();
+
+        let args: Vec<&str> = match asking.forge {
+            Forge::GitHub => vec!["pr", "create", "--fill", "--head", branch],
+            // `--yes` and `--fill` between them are what stops it asking a
+            // question into a window that is not listening.
+            Forge::GitLab => vec!["mr", "create", "--fill", "--yes", "--source-branch", branch],
+        };
+
+        let output = asking
+            .command()
+            .args(args)
             .current_dir(self.workdir())
             .output()
-            .context("gh is not installed, so no pull request can be opened")?;
+            .with_context(|| format!("{tool} is not installed, so no {what} can be opened"))?;
 
         anyhow::ensure!(output.status.success(), "{}", complaint(&output.stderr));
 
@@ -142,8 +274,8 @@ impl Repo {
             .to_string();
 
         Ok(match url.is_empty() {
-            true => format!("pull request opened for {branch}"),
-            false => format!("pull request opened: {url}"),
+            true => format!("{what} opened for {branch}"),
+            false => format!("{what} opened: {url}"),
         })
     }
 }
@@ -155,10 +287,13 @@ impl Repo {
 fn parse(line: &str) -> Option<(String, PullRequest)> {
     let mut fields = line.split('\t');
     let number = fields.next()?.parse().ok()?;
-    let state = match fields.next()? {
-        "OPEN" => PullRequestState::Open,
+    // GitHub shouts and GitLab murmurs, and GitLab has a fourth word --
+    // "locked" -- for a request nobody can add to. Locked is closed as far
+    // as a column is concerned.
+    let state = match fields.next()?.to_ascii_uppercase().as_str() {
+        "OPEN" | "OPENED" => PullRequestState::Open,
         "MERGED" => PullRequestState::Merged,
-        "CLOSED" => PullRequestState::Closed,
+        "CLOSED" | "LOCKED" => PullRequestState::Closed,
         _ => return None,
     };
     let draft = fields.next()? == "true";
@@ -180,16 +315,16 @@ fn parse(line: &str) -> Option<(String, PullRequest)> {
     ))
 }
 
-/// What `gh` complained about, in one line.
+/// What the tool complained about, in one line.
 ///
-/// It writes several, and the first is the one that says what to do: "no git
-/// remotes found", "gh auth login required". The rest is usage text.
+/// Both write several, and the first is the one that says what to do: "no
+/// git remotes found", "gh auth login required". The rest is usage text.
 fn complaint(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr)
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("gh could not read the pull requests")
+        .unwrap_or("the forge could not be read")
         .to_string()
 }
 
@@ -216,6 +351,20 @@ mod tests {
     fn a_draft_says_so() {
         let (_, request) = parse(&line("OPEN", true, "feat/login")).unwrap();
         assert!(request.draft);
+    }
+
+    #[test]
+    fn gitlabs_words_for_the_three_states_count_too() {
+        for (word, state) in [
+            ("opened", PullRequestState::Open),
+            ("merged", PullRequestState::Merged),
+            ("closed", PullRequestState::Closed),
+            // Locked is closed as far as a column can tell.
+            ("locked", PullRequestState::Closed),
+        ] {
+            let (_, request) = parse(&line(word, false, "feat/login")).expect(word);
+            assert_eq!(request.state, state, "{word}");
+        }
     }
 
     #[test]
@@ -255,9 +404,9 @@ mod tests {
     }
 
     #[test]
-    fn ghs_first_complaint_is_the_one_that_says_what_to_do() {
+    fn the_tools_first_complaint_is_the_one_that_says_what_to_do() {
         let stderr = b"\nno git remotes found\n\nUsage: gh pr list [flags]\n";
         assert_eq!(complaint(stderr), "no git remotes found");
-        assert_eq!(complaint(b""), "gh could not read the pull requests");
+        assert_eq!(complaint(b""), "the forge could not be read");
     }
 }

@@ -23,8 +23,51 @@ So the ones that matter are:
 - **Running something the user did not ask for.** gitrust shells out to `gh`
   for pull requests; anything that turns repository contents into a command
   is a hole.
-- **Writing outside the repository and `~/.local`**, which are the only two
-  places anything is ever written.
+- **Writing outside the repository, `~/.local` and `~/.config/gitrust`**,
+  which are the only places anything is ever written.
+
+## Where the tokens are
+
+A profile can hold a personal access token for GitHub or GitLab, and that
+token sits in `~/.config/gitrust/profiles` **in plain text**. The file is
+written `rw-------` before it is moved into place, so no other account on the
+machine can read it, and that is the whole of the protection: there is no
+keyring here, and encrypting it would only move the question to where the key
+to it is kept. It is the same bargain `~/.netrc` and `gh`'s own `hosts.yml`
+make, and it is written down here rather than left to be discovered. On
+Windows there is no mode to set and the file is protected by the permissions
+of the folder it is in and by nothing this program does.
+
+Leaving the token empty is a supported answer and not a half-configured one:
+then `gh` and `glab` are run as they are logged in, and an HTTPS remote gets
+its password from the credential helper, exactly as before profiles existed.
+
+An SSH key is never copied into that file -- only the path to it. A key with
+a passphrase cannot be opened from here at all, because there is nowhere to
+ask for the passphrase and nowhere safe to keep it; that key belongs in the
+SSH agent, which is what gitrust falls back to.
+
+A profile also lists the repositories filed under it: folders on this disk,
+and checkouts on other machines as `ssh://user@host:port/path`. Those lines
+are addresses and nothing else -- no password is ever among them -- but they
+do say which servers you work on and as whom, and they are in the same
+`rw-------` file as the tokens for that reason too.
+
+When a profile is used on a checkout on another machine, two things leave
+this one and two do not. Its name and address go along on the command line of
+each Git command run there. Its private key is used to sign the SSH
+authentication and never leaves; its tokens are not used at all.
+
+A key made from the profiles screen is made by `ssh-keygen`, as ed25519, and
+**with no passphrase** -- said plainly because it is the one thing about it
+worth knowing. It is not a shortcut: a key with a passphrase has to be
+unlocked by something, and the only thing here that could is the agent, which
+this program does not drive. So the key is as safe as the file it is in, which
+is `rw-------` in `~/.ssh`, and no safer. A key that should have a passphrase
+should be made with `ssh-keygen` by hand and pointed at with Browse. Nothing
+here ever writes over a key that already exists: being asked twice gets a
+refusal, not a new pair, because the public half of the old one is on a server
+somewhere and overwriting it locks you out of it.
 
 ## What does not
 

@@ -23,6 +23,7 @@ mod diff_view;
 mod file_view;
 mod graph_view;
 mod picker;
+mod profiles_view;
 mod refs_view;
 mod rewrite_view;
 mod ripple;
@@ -34,8 +35,8 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, Appearance, Backlog, Board, CommitDetail, FileDiff, Graph, HunkId,
-    Join, Move, Oid, PullMode, PullRequests, Reader, RefEntry, RefKind, RemoteRepo, Repo, Settings,
-    StashEntry, Tracking, WorkingState, Worktree, Writer,
+    Join, Move, Oid, Profile, Profiles, PullMode, PullRequests, Reader, RefEntry, RefKind, RemoteRepo, Repo,
+    Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
 
 /// How wide the repository menu is, measured inside its frame.
@@ -45,6 +46,11 @@ use gitrust_core::{
 /// little differently every frame, and the answers drift. Wide enough for a
 /// path you can read and for the folders listed under it.
 const REPO_MENU: f32 = 520.0;
+
+/// How wide the menu behind the profile in the tab strip is. Told, not asked
+/// for, for the reason the repository menu above is: a menu that works its
+/// own width out drifts a notch wider every time it is opened.
+const PROFILE_MENU: f32 = 240.0;
 
 /// How wide the menu a drop opens is.
 ///
@@ -267,16 +273,69 @@ struct App {
     glance: std::collections::HashMap<std::path::PathBuf, String>,
     /// A clone on its way down, when one is.
     cloning: Option<Cloning>,
-    /// A folder being chosen in the desktop's own dialog, and which box the
-    /// answer belongs in.
-    browsing: Option<(
-        bool,
-        std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>>>,
-    )>,
+    /// Something being chosen in the desktop's own dialog, and what it was
+    /// opened for.
+    browsing: Option<(Browsing, std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>>>)>,
+    /// Who this machine works as, and who it is working as right now. It is
+    /// held here for the reason the settings are: it is about the machine
+    /// and not about a repository, and every tab works under the same one.
+    profiles: Profiles,
+    /// The screen for the profiles, while it is up.
+    managing: Option<profiles_view::Managing>,
+    /// What one of the screens that is not a repository has to say. A tab's
+    /// own bottom bar cannot say it: the tab is not on screen.
+    note: Option<Note>,
     /// What somebody has said they prefer. It is about this computer, not
     /// about a repository, so it is held here and lent to whichever tab is
     /// on top rather than being a copy per tab that would drift apart.
     settings: Settings,
+}
+
+/// Whether two profiles are the same person, whatever is filed under them.
+fn same_person(one: Option<&Profile>, other: Option<&Profile>) -> bool {
+    match (one, other) {
+        (None, None) => true,
+        (Some(one), Some(other)) => {
+            one.name == other.name
+                && one.author == other.author
+                && one.email == other.email
+                && one.key == other.key
+                && one.accounts == other.accounts
+        }
+        _ => false,
+    }
+}
+
+/// The key a profile would open a connection with, when it has one that is
+/// really there. A path to a file that has gone is no key, and handing it
+/// over would turn "the agent would have worked" into a failure.
+fn profile_key(profile: Option<&Profile>) -> Option<std::path::PathBuf> {
+    profile
+        .and_then(Profile::key_file)
+        .filter(|key| key.exists())
+}
+
+/// A line for a screen that has no bottom bar of its own.
+///
+/// Two kinds, because they are read differently: a complaint is something to
+/// act on and is red, and a word about something that worked is grey and is
+/// only there because the thing that worked left nothing on screen to show
+/// for it -- a key written into a file, a line put on the clipboard.
+#[derive(Clone)]
+enum Note {
+    Said(String),
+    Wrong(String),
+}
+
+/// What the desktop's dialog was opened for, so that the answer knows where
+/// to go when it comes back minutes later.
+#[derive(Clone, Copy)]
+enum Browsing {
+    /// A folder for the repository screen. `beside` picks which box: the one
+    /// a clone lands in, or the one above it.
+    Folder { beside: bool },
+    /// A private key for a profile.
+    Key { which: usize },
 }
 
 /// A repository being brought down, and where it is going.
@@ -299,8 +358,12 @@ impl App {
             cloning: None,
             browsing: None,
             settings,
+            profiles: Profiles::load(),
+            managing: None,
+            note: None,
         };
         app.remember(0);
+        app.file_under_profile();
         app
     }
 
@@ -329,6 +392,7 @@ impl App {
         self.at = self.open.len() - 1;
         self.picking = None;
         self.remember(self.at);
+        self.file_under_profile();
     }
 
     fn add_remote(&mut self, session: gitrust_core::ssh::Session, path: String) {
@@ -340,6 +404,7 @@ impl App {
                 self.opened += 1;
                 self.at = self.open.len() - 1;
                 self.picking = None;
+                self.file_under_profile();
                 if let Err(err) = saved {
                     self.complain(err);
                 }
@@ -416,7 +481,7 @@ impl App {
                 self.known = gitrust_core::known::all();
             }
             picker::Act::Close => self.picking = None,
-            picker::Act::Browse { beside } => self.browse(beside),
+            picker::Act::Browse { beside } => self.browse(Browsing::Folder { beside }),
         }
     }
 
@@ -429,28 +494,43 @@ impl App {
         self.picking.as_ref().is_some_and(|state| state.starting())
     }
 
-    fn browse(&mut self, beside: bool) {
+    fn browse(&mut self, what: Browsing) {
         if self.browsing.is_some() {
             return;
         }
         let (send, done) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = send.send(chooser::folder("Choose a repository folder"));
+            let _ = send.send(match what {
+                Browsing::Folder { .. } => chooser::folder("Choose a repository folder"),
+                Browsing::Key { .. } => chooser::file(
+                    "Choose a private key",
+                    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".ssh")),
+                ),
+            });
         });
-        self.browsing = Some((beside, done));
+        self.browsing = Some((what, done));
     }
 
     fn poll_browse(&mut self, ctx: &egui::Context) {
-        let Some((beside, done)) = &self.browsing else {
+        let Some((what, done)) = &self.browsing else {
             return;
         };
-        let beside = *beside;
+        let what = *what;
         match done.try_recv() {
             Ok(found) => {
                 self.browsing = None;
                 match found {
                     // Cancelled. An ordinary answer, and nothing to say about it.
                     Ok(None) => {}
+                    // A key is the one answer that is not about a repository:
+                    // it goes straight into the profile that asked for it.
+                    Ok(Some(path)) if matches!(what, Browsing::Key { .. }) => {
+                        let Browsing::Key { which } = what else { return };
+                        if let Some(profile) = self.profiles.list.get_mut(which) {
+                            profile.key = path.display().to_string();
+                            self.keep_profiles();
+                        }
+                    }
                     // Choosing a folder in a dialog called "choose a
                     // repository folder" is the decision. Putting it in a box
                     // and waiting for a second Open was a step that asked
@@ -460,11 +540,11 @@ impl App {
                     // instead: a clone still needs its address, and starting
                     // an empty repository usually means a folder inside the
                     // one that was picked, with a name yet to be typed.
-                    Ok(Some(path)) => match (beside, self.starting()) {
+                    Ok(Some(path)) => match (matches!(what, Browsing::Folder { beside: true }), self.starting()) {
                         (false, false) => self.act_on_pick(picker::Act::Open(path)),
                         _ => {
                             if let Some(state) = &mut self.picking {
-                                let box_ = match beside {
+                                let box_ = match matches!(what, Browsing::Folder { beside: true }) {
                                     true => &mut state.beside,
                                     false => &mut state.draft,
                                 };
@@ -621,6 +701,14 @@ impl App {
                     }
 
                     self.plus(ui);
+
+                    // The profile sits at the far end of the strip, where it
+                    // is out of the way of the tabs and still on every
+                    // screen -- including the one with no repository open,
+                    // which is exactly where somebody changes client.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.chip(ui);
+                    });
                 });
                 ui.add_space(4.0);
             });
@@ -655,6 +743,408 @@ impl App {
         }
     }
 
+    /// Who the window is working as, and the menu for being somebody else.
+    ///
+    /// It is in the strip rather than in a repository's own bar because it is
+    /// not about a repository: one profile is in use across every tab at
+    /// once, and the moment somebody wants to change it is usually the moment
+    /// before they open the next client's repository.
+    fn chip(&mut self, ui: &mut egui::Ui) {
+        let using = self.profiles.active();
+        let name = match using {
+            Some(profile) if !profile.name.trim().is_empty() => profile.name.clone(),
+            Some(_) => "(no name)".to_string(),
+            None => "Profiles".to_string(),
+        };
+        let hint = match using {
+            Some(profile) => {
+                let who = profile
+                    .who()
+                    .map(|(name, email)| format!("{name} <{email}>"))
+                    .unwrap_or_else(|| "the name in your Git configuration".to_string());
+                let key = match profile.key.trim().is_empty() {
+                    true => "the SSH agent".to_string(),
+                    false => profile.key.trim().to_string(),
+                };
+                format!("Working as {who}\nKey: {key}")
+            }
+            None => "No profile: Git's own settings, the SSH agent, and the forge \
+                     as its tool is logged in"
+                .to_string(),
+        };
+
+        let button = ui.add(
+            egui::Button::new(
+                egui::RichText::new(format!("{name}     "))
+                    .font(match using.is_some() {
+                        true => theme::medium(12.0),
+                        false => theme::body(12.0),
+                    })
+                    .color(match using.is_some() {
+                        true => theme::text(),
+                        false => theme::muted(),
+                    }),
+            )
+            .frame(false),
+        );
+        theme::caret(ui, &button);
+        let button = button.on_hover_text(hint);
+        let id = ui.make_persistent_id("menu-profiles");
+        if button.clicked() {
+            ui.memory_mut(|memory| memory.toggle_popup(id));
+        }
+
+        let mut act = None;
+        egui::popup::popup_below_widget(
+            ui,
+            id,
+            &button,
+            egui::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.set_width(PROFILE_MENU);
+
+                if ui
+                    .selectable_label(
+                        self.profiles.at().is_none(),
+                        egui::RichText::new("Git's own settings")
+                            .font(theme::body(12.0))
+                            .color(theme::text()),
+                    )
+                    .clicked()
+                {
+                    act = Some(profiles_view::Act::Use(None));
+                }
+
+                for (which, profile) in self.profiles.list.iter().enumerate() {
+                    let name = match profile.name.trim().is_empty() {
+                        true => "(no name)",
+                        false => profile.name.trim(),
+                    };
+                    if ui
+                        .selectable_label(
+                            self.profiles.at() == Some(which),
+                            egui::RichText::new(name).font(theme::body(12.0)).color(theme::text()),
+                        )
+                        .clicked()
+                    {
+                        act = Some(profiles_view::Act::Use(Some(which)));
+                    }
+                }
+
+                theme::rule(ui);
+                // Making one is here and not only on the screen behind
+                // "Manage", because the first thing anybody wants from this
+                // menu the first time they open it is a profile, and this is
+                // where they are already looking.
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("+  Add a profile")
+                            .font(theme::body(12.0))
+                            .color(theme::text()),
+                    ))
+                    .clicked()
+                {
+                    act = Some(profiles_view::Act::Add);
+                }
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("Manage profiles\u{2026}")
+                            .font(theme::body(12.0))
+                            .color(theme::muted()),
+                    ))
+                    .clicked()
+                {
+                    act = Some(profiles_view::Act::Manage);
+                }
+            },
+        );
+
+        if let Some(act) = act {
+            let ctx = ui.ctx().clone();
+            self.act_on_profiles(&ctx, act);
+        }
+    }
+
+    /// The profiles screen, drawn over everything instead of a repository.
+    fn profiles(&mut self, ctx: &egui::Context) {
+        let Some(state) = &mut self.managing else {
+            return;
+        };
+
+        let mut act = None;
+        let mut hush = false;
+
+        // Along the bottom, and in a panel of its own, because the screen
+        // above it fills whatever room there is: a line added after it is a
+        // line below the edge of the window, which is a line nobody reads.
+        // A profile that could not be written down is a profile that will
+        // not be there tomorrow, and finding that out tomorrow is worse.
+        if let Some(note) = self.note.clone() {
+            let (text, colour) = match &note {
+                Note::Said(text) => (text, theme::muted()),
+                Note::Wrong(text) => (text, theme::removed()),
+            };
+            egui::TopBottomPanel::bottom("profiles-note")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::raised())
+                        .inner_margin(egui::Margin::symmetric(18, 7)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(text).font(theme::body(11.5)).color(colour));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{00d7}")
+                                            .font(theme::body(13.0))
+                                            .color(theme::faint()),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                hush = true;
+                            }
+                        });
+                    });
+                });
+        }
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::canvas())
+                    .inner_margin(egui::Margin::symmetric(14, 0)),
+            )
+            .show(ctx, |ui| {
+                act = profiles_view::show(ui, state, &mut self.profiles);
+            });
+
+        if let Some(act) = act {
+            self.act_on_profiles(ctx, act);
+        } else if hush {
+            self.note = None;
+        }
+    }
+
+    /// Acts on what the screen, or the menu, asked for.
+    fn act_on_profiles(&mut self, ctx: &egui::Context, act: profiles_view::Act) {
+        match act {
+            profiles_view::Act::Changed => self.keep_profiles(),
+            // Choosing a profile with a repository in front is saying whose
+            // that repository is, and it is written down as that: the next
+            // time it is opened it is opened as this one, whatever was in
+            // use a moment before. Choosing nobody takes it back off.
+            profiles_view::Act::Use(which) => {
+                self.profiles.use_at(which);
+                if let Some(place) = self.in_front() {
+                    self.profiles.claim(which, &place);
+                }
+                self.keep_profiles();
+            }
+            // Adding is asked for from the menu as well as from the screen,
+            // and from the menu there is no screen yet. A profile made and
+            // left somewhere the person who asked for it cannot see is a
+            // profile they will make again, so the screen comes up on it.
+            profiles_view::Act::Add => {
+                let at = self.profiles.add(Profile::new("New profile"));
+                self.open_profiles_at(at);
+                self.keep_profiles();
+            }
+            profiles_view::Act::Duplicate(which) => {
+                if let Some(at) = self.profiles.duplicate(which) {
+                    self.open_profiles_at(at);
+                }
+                self.keep_profiles();
+            }
+            profiles_view::Act::Remove(which) => {
+                self.profiles.remove(which);
+                // Which one the screen was open on is now a number about a
+                // profile that has gone; it picks another for itself.
+                if let Some(state) = &mut self.managing {
+                    state.at = None;
+                    state.settled();
+                }
+                self.keep_profiles();
+            }
+            profiles_view::Act::Browse(which) => self.browse(Browsing::Key { which }),
+            profiles_view::Act::MakeKey(which) => self.make_key(which),
+            profiles_view::Act::CopyKey(which) => self.copy_key(ctx, which),
+            profiles_view::Act::Manage => {
+                self.managing = Some(profiles_view::Managing::default());
+                self.note = None;
+            }
+            profiles_view::Act::Close => {
+                self.managing = None;
+                self.note = None;
+            }
+        }
+    }
+
+    /// Brings the profiles screen up on one profile in particular.
+    fn open_profiles_at(&mut self, at: usize) {
+        self.managing
+            .get_or_insert_with(profiles_view::Managing::default)
+            .open(at);
+        self.note = None;
+    }
+
+    /// Makes a profile a key of its own and writes the path into it.
+    ///
+    /// On the thread that paints, which is a thing this program does not do
+    /// with work that can be slow. This one is not: an ed25519 pair is a few
+    /// milliseconds of arithmetic, and the alternative -- a thread, a
+    /// channel and a state for "a key is being made" -- would be more
+    /// machinery than the wait it saves.
+    fn make_key(&mut self, which: usize) {
+        let Some(profile) = self.profiles.list.get(which) else {
+            return;
+        };
+        let Some(at) = profile.key_place() else {
+            self.note = Some(Note::Wrong(
+                "there is no home folder to put a key in".to_string(),
+            ));
+            return;
+        };
+        // The comment is what the forge shows beside the key in its list, so
+        // it should say who this is, and the address says that best.
+        let comment = match profile.email.trim().is_empty() {
+            false => profile.email.trim(),
+            true => match profile.name.trim().is_empty() {
+                false => profile.name.trim(),
+                true => "gitrust",
+            },
+        };
+
+        match gitrust_core::make_key(&at, comment) {
+            Ok(_) => {
+                let written = gitrust_core::shorten(&at);
+                self.profiles.list[which].key = written.clone();
+                self.keep_profiles();
+                if self.note.is_none() {
+                    self.note = Some(Note::Said(format!(
+                        "{written} made. Its public half goes in the client's forge: \
+                         Copy the public key, then paste it there"
+                    )));
+                }
+            }
+            Err(err) => self.note = Some(Note::Wrong(format!("{err:#}"))),
+        }
+    }
+
+    /// Puts the public half of a profile's key on the clipboard.
+    fn copy_key(&mut self, ctx: &egui::Context, which: usize) {
+        let Some(path) = self
+            .profiles
+            .list
+            .get(which)
+            .and_then(gitrust_core::Profile::public_key)
+        else {
+            return;
+        };
+        self.note = match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                ctx.copy_text(text.trim().to_string());
+                Some(Note::Said(format!(
+                    "{} is on the clipboard",
+                    gitrust_core::shorten(&path)
+                )))
+            }
+            Err(err) => Some(Note::Wrong(format!("could not read {}: {err}", path.display()))),
+        };
+    }
+
+    /// Writes the profiles down, and says so if it could not.
+    fn keep_profiles(&mut self) {
+        self.note = match self.profiles.save() {
+            Ok(()) => None,
+            Err(err) => Some(Note::Wrong(format!(
+                "could not write the profiles down: {err:#}"
+            ))),
+        };
+    }
+
+    /// The repository being looked at, as a profile would file it.
+    ///
+    /// Nothing while the repository screen is up: what is in front then is a
+    /// list to choose from, and a profile picked over it is picked for
+    /// whatever is about to be opened, not for the tab left behind it.
+    fn in_front(&self) -> Option<String> {
+        if self.picking.is_some() {
+            return None;
+        }
+        self.open.get(self.at).and_then(|open| open.place.clone())
+    }
+
+    /// Files a repository that has just been opened under the profile in
+    /// use, if it is not filed under one already.
+    ///
+    /// Only on opening, never on merely coming back to a tab: a repository
+    /// is opened as somebody on purpose, and it is looked at on the way past
+    /// by accident.
+    fn file_under_profile(&mut self) {
+        let Some(place) = self.open.get(self.at).and_then(|open| open.place.clone()) else {
+            return;
+        };
+        if self.profiles.owner_of(&place).is_some() {
+            return;
+        }
+        if let Some(using) = self.profiles.at() {
+            self.profiles.claim(Some(using), &place);
+            self.keep_profiles();
+        }
+    }
+
+    /// Puts the profile of the repository in front in use.
+    ///
+    /// This is what stops a commit to one client's repository going out
+    /// under another client's name: which profile is in use is no longer
+    /// whichever was chosen last, it is whose repository this is. One that
+    /// is nobody's works as nobody -- Git's own settings -- rather than as
+    /// the last profile that happened to be on screen.
+    fn follow_front(&mut self) {
+        let Some(place) = self.in_front() else {
+            return;
+        };
+        let owner = self.profiles.owner_of(&place);
+        if self.profiles.at() != owner {
+            self.profiles.use_at(owner);
+            self.keep_profiles();
+        }
+    }
+
+    /// Hands every tab its profile: the one its repository is filed under.
+    ///
+    /// Compared before it is handed over, because handing it over is a
+    /// handful of copied strings on every frame -- and because the
+    /// comparison is also what tells a tab that its person has changed,
+    /// which is the moment what the forge said stops being true.
+    fn adopt_profile(&mut self) {
+        for open in &mut self.open {
+            let mine = match &open.place {
+                Some(place) => self
+                    .profiles
+                    .owner_of(place)
+                    .and_then(|at| self.profiles.list.get(at)),
+                // A tab onto nothing in particular has nothing to be filed
+                // under, and works as whoever is in use.
+                None => self.profiles.active(),
+            };
+            if same_person(open.profile.as_ref(), mine) {
+                continue;
+            }
+            // Without the list of repositories: a tab has no use for it, and
+            // carrying it would make every tab of a profile think its person
+            // had changed each time another repository was filed under them.
+            open.adopt(mine.map(|profile| Profile {
+                repos: Vec::new(),
+                ..profile.clone()
+            }));
+        }
+    }
+
     /// Brings a repository down, off to one side.
     ///
     /// The only thing in this window that can take minutes, and the only one
@@ -665,8 +1155,11 @@ impl App {
     fn start_clone(&mut self, url: String, into: std::path::PathBuf) {
         let (send, done) = std::sync::mpsc::channel();
         let where_to = into.clone();
+        // The profile goes with it: a client's private repository is exactly
+        // the kind that cannot be cloned without their key.
+        let profile = self.profiles.active().cloned();
         std::thread::spawn(move || {
-            let _ = send.send(gitrust_core::start::clone(&url, &where_to));
+            let _ = send.send(gitrust_core::start::clone(&url, &where_to, profile));
         });
         self.cloning = Some(Cloning { into, done });
     }
@@ -724,6 +1217,7 @@ impl App {
                     &glance,
                     &open_now,
                     &self.settings.remotes,
+                    &self.profiles,
                 );
 
                 if let Some(cloning) = &self.cloning {
@@ -751,6 +1245,8 @@ impl eframe::App for App {
         // running in another one has to finish whether or not you are looking
         // at it; otherwise coming back to it would find it still saying
         // "pushing…" with the push long since done.
+        self.follow_front();
+        self.adopt_profile();
         for open in &mut self.open {
             open.poll(ctx);
             open.poll_forge(ctx);
@@ -765,11 +1261,12 @@ impl eframe::App for App {
         self.poll_browse(ctx);
         self.poll_dropped(ctx);
 
-        // One or the other, never both: the screen is not a dialog over a
-        // repository, it is what is there when you have not picked one.
-        match self.picking.is_some() {
-            true => self.picker(ctx),
-            false => {
+        // One of the three, never two: a screen here is not a dialog over a
+        // repository, it is what is there instead of one.
+        match (self.managing.is_some(), self.picking.is_some()) {
+            (true, _) => self.profiles(ctx),
+            (_, true) => self.picker(ctx),
+            _ => {
                 let mut elsewhere = None;
                 if let Some(open) = self.open.get_mut(self.at) {
                     open.draw(ctx, &mut self.settings);
@@ -854,6 +1351,17 @@ struct Open {
     forge_note: Option<String>,
     /// The fetch button's position: it repeats the last thing asked for.
     pull_mode: PullMode,
+    /// Who this tab is working as: the profile its repository is filed
+    /// under. Copied in rather than borrowed, because every repository this
+    /// tab opens is opened on a thread that outlives the frame that started
+    /// it.
+    profile: Option<Profile>,
+    /// Where this tab's repository is, as the line a profile files it under:
+    /// a folder, or `ssh://...` for a checkout on another machine. Worked
+    /// out once, here, because the frame asks for it sixty times a second
+    /// and the answer is a walk through every link in a path. `None` is a
+    /// tab onto something that is not a repository, which is nobody's.
+    place: Option<String>,
 
     // The action bar and what it needs to know.
     tracking: Option<Tracking>,
@@ -1053,9 +1561,16 @@ impl Open {
 
     fn with_backend(path: String, salt: u64, remote: Option<RemoteRepo>) -> Self {
         let remote_descriptor = remote.as_ref().map(RemoteRepo::descriptor);
+        let place = match &remote_descriptor {
+            Some(remote) => Some(remote.place()),
+            None => Repo::open(&path)
+                .ok()
+                .and_then(|_| gitrust_core::place_of(std::path::Path::new(&path))),
+        };
         let mut app = Self {
             salt,
             path,
+            place,
             remote,
             remote_descriptor,
             remote_disconnected: None,
@@ -1084,6 +1599,7 @@ impl Open {
             laying: None,
             forge_note: None,
             pull_mode: PullMode::Merge,
+            profile: None,
             tracking: None,
             stashes: Vec::new(),
             draft: action_bar::Draft::default(),
@@ -1166,7 +1682,34 @@ impl Open {
     }
 
     fn repo(&self) -> Result<Repo> {
-        Repo::open(&self.path)
+        Ok(Repo::open(&self.path)?.using(self.profile.clone()))
+    }
+
+    /// Takes on a profile: the one its repository is filed under.
+    ///
+    /// What the forge last said is thrown away with it: it answered as
+    /// somebody else, and a column that says "in review" because another
+    /// account has a pull request open is a column that is lying.
+    fn adopt(&mut self, profile: Option<Profile>) {
+        if self.profile == profile {
+            return;
+        }
+        self.profile = profile;
+        self.name_the_remote();
+        self.pulls = None;
+        self.forge_note = None;
+    }
+
+    /// Tells a checkout on another machine whose name to write.
+    ///
+    /// Asked for apart from `adopt` because a reconnection makes a new
+    /// connection that has been told nothing, under a profile that has not
+    /// changed -- which is exactly the case `adopt` returns early on.
+    fn name_the_remote(&mut self) {
+        let who = self.profile.as_ref().and_then(Profile::who);
+        if let Some(remote) = &mut self.remote {
+            remote.working_as(who);
+        }
     }
 
     /// Reloads everything: history, references and the working tree's state.
@@ -1918,18 +2461,21 @@ impl Open {
         }
     }
 
-    /// Re-authenticates deliberately through the SSH agent.  The descriptor
-    /// has no password, so a password-only server asks the user to reopen it
-    /// from the picker instead of retaining a secret for later.
+    /// Re-authenticates deliberately, with the profile's key when it has
+    /// one and through the SSH agent after it.  The descriptor has no
+    /// password, so a password-only server asks the user to reopen it from
+    /// the picker instead of retaining a secret for later.
     fn reconnect_remote(&mut self) {
         let Some(descriptor) = self.remote_descriptor.clone() else {
             return self.note_error("this tab has no remote connection details".to_string());
         };
-        match gitrust_core::ssh::Session::connect(descriptor.login.clone(), None, false)
+        let key = profile_key(self.profile.as_ref());
+        match gitrust_core::ssh::Session::connect_as(descriptor.login.clone(), None, key.as_deref(), false)
             .and_then(|session| RemoteRepo::new(session, descriptor.path.clone()))
         {
             Ok(repo) => {
                 self.remote = Some(repo);
+                self.name_the_remote();
                 self.remote_disconnected = None;
                 self.load();
                 self.said("remote checkout reconnected".to_string());
@@ -1950,9 +2496,14 @@ impl Open {
     ) {
         let (send, done) = std::sync::mpsc::channel();
         let path = self.path.clone();
+        let profile = self.profile.clone();
 
         std::thread::spawn(move || {
-            let _ = send.send(Repo::open(&path).and_then(|mut repo| work(&mut repo)));
+            let _ = send.send(
+                Repo::open(&path)
+                    .map(|repo| repo.using(profile))
+                    .and_then(|mut repo| work(&mut repo)),
+            );
         });
 
         self.status = format!("{doing}…");
@@ -2068,9 +2619,14 @@ impl Open {
 
         let (send, done) = std::sync::mpsc::channel();
         let path = self.path.clone();
+        let profile = self.profile.clone();
 
         std::thread::spawn(move || {
-            let _ = send.send(Repo::open(&path).and_then(|repo| repo.pull_requests()));
+            let _ = send.send(
+                Repo::open(&path)
+                    .map(|repo| repo.using(profile))
+                    .and_then(|repo| repo.pull_requests()),
+            );
         });
 
         self.forge = Some(Forge { done });
@@ -2160,11 +2716,15 @@ impl Open {
         let base = self.trail.last().cloned().unwrap_or_default();
         let path = self.path.clone();
         let pulls = self.pulls.clone();
+        let profile = self.profile.clone();
         let (send, done) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
-            let _ = send
-                .send(Repo::open(&path).and_then(|repo| repo.board_against(&base, pulls.as_ref())));
+            let _ = send.send(
+                Repo::open(&path)
+                    .map(|repo| repo.using(profile))
+                    .and_then(|repo| repo.board_against(&base, pulls.as_ref())),
+            );
         });
 
         self.laying = Some(Laying { done });

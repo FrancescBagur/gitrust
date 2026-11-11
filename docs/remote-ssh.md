@@ -14,6 +14,21 @@ which only fetches and pushes objects.
 The server does not need gitrust installed. Its own Git remotes and Git
 credentials remain responsible for fetch, pull and push from that checkout.
 
+## Who the commits are by
+
+With no profile, whoever the server's Git configuration says, as before. With
+a profile that has a name and an address, that name: it goes along on the
+command line of every Git command run there (`git -c user.name=... -c
+user.email=...`), so it covers a merge, a rebase, a cherry-pick, a stash and an
+annotated tag as well as a commit. Nothing is written into a configuration
+file on the server, and the next person to log in finds it as they left it.
+The name and address are visible in that server's process list for as long as
+the command runs, which is true of any Git command given `-c`.
+
+The profile's token and private key are never sent. The key proves who you
+are to the SSH server and stays on this machine; pushing from that checkout
+uses whatever the server itself is set up with.
+
 ## Connecting
 
 Choose **Open remote checkout** in the repository picker, then select an SSH
@@ -24,6 +39,12 @@ aliases from `~/.ssh/config`; on Windows it reads
 SSH-agent authentication is used when available. A password can be entered for
 servers that permit it, but it is cleared immediately after connecting and is
 never stored in settings, known repositories, descriptors, logs or errors.
+
+When a profile is in use and has a key, that key is tried first and the SSH
+agent after it; a password that was typed still goes before both. The line
+under the Connect button says which profile is about to connect and with what.
+A saved checkout that is already filed under a profile connects as that
+profile, whichever one is in use, and so does a tab that reconnects.
 
 The first connection to a host requires checking its host key. A new or changed
 key is rejected unless it is explicitly confirmed for that connection attempt.

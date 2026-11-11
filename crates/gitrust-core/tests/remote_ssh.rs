@@ -13,7 +13,7 @@ use std::{
 
 use gitrust_core::{
     ssh::{Login, Session},
-    Half, PullMode, Reader, RemoteRepo,
+    Half, PullMode, Reader, RemoteRepo, Writer,
 };
 
 fn command(program: &str, arguments: &[&str]) {
@@ -150,7 +150,7 @@ fn resolves_continues_and_aborts_a_remote_merge() {
         .output()
         .unwrap();
     assert!(!merge.status.success(), "the fixture must clash");
-    let remote = RemoteRepo::new(sshd.connect(), checkout.display().to_string()).unwrap();
+    let mut remote = RemoteRepo::new(sshd.connect(), checkout.display().to_string()).unwrap();
     assert_eq!(remote.half_done(), Half::Merge);
     let clashes = remote.clashes().unwrap();
     assert_eq!(clashes.len(), 1);
@@ -159,6 +159,45 @@ fn resolves_continues_and_aborts_a_remote_merge() {
     assert!(remote.clashes().unwrap().is_empty());
     remote.continue_operation().unwrap();
     assert_eq!(remote.half_done(), Half::None);
+
+    // A profile's name goes along on the command line of the commit, so the
+    // commit is the profile's and the server's own configuration is exactly
+    // what it was -- which is the half of this that matters to the next
+    // person who logs in there. It is in this test and not one of its own
+    // because the isolated sshd is one per process.
+    let last = |format: &str| {
+        let output = Command::new("git")
+            .args(["-C", checkout.to_str().unwrap(), "log", "-1", format])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    remote.working_as(Some(("Someone At Acme", "someone@acme.example")));
+    fs::write(checkout.join("profile.txt"), "written under a profile\n").unwrap();
+    remote.stage("profile.txt").unwrap();
+    remote.commit("as the profile").unwrap();
+    assert_eq!(
+        last("--format=%an <%ae> / %cn <%ce>"),
+        "Someone At Acme <someone@acme.example> / Someone At Acme <someone@acme.example>"
+    );
+    let configured = Command::new("git")
+        .args(["-C", checkout.to_str().unwrap(), "config", "user.name"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(configured.stdout).unwrap().trim(),
+        "gitrust ssh test",
+        "nothing is written into the server's configuration"
+    );
+    // And with no profile it is the server's name again, as it always was.
+    remote.working_as(None);
+    fs::write(checkout.join("profile.txt"), "written as the server says\n").unwrap();
+    remote.stage("profile.txt").unwrap();
+    remote.commit("as the server").unwrap();
+    assert_eq!(last("--format=%an <%ae>"), "gitrust ssh test <ssh@example.invalid>");
+    // Both commits are taken back off, so the merge is the tip again: the
+    // fixtures below count back from it.
+    git(&checkout, &["reset", "--hard", "HEAD~2"]);
 
     // Branch, upstream, tag, push/fetch and stash all execute from the
     // checkout at the other end of SSH.  The upstream is a local bare

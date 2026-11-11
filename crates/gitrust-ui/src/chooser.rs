@@ -47,3 +47,17 @@ pub fn folder(title: &str) -> Result<Option<PathBuf>> {
     // window and nothing else.
     Ok(rfd::FileDialog::new().set_title(title).pick_folder())
 }
+
+/// The same for a single file, which is what an SSH key is.
+///
+/// It opens where the keys are when there is such a folder, because a
+/// chooser that starts in the home folder is a chooser that cannot see
+/// `.ssh` at all: it is hidden, and nobody should have to know the shortcut
+/// for showing hidden files to pick their own key.
+pub fn file(title: &str, from: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if let Some(from) = from.filter(|from| from.is_dir()) {
+        dialog = dialog.set_directory(from);
+    }
+    Ok(dialog.pick_file())
+}
