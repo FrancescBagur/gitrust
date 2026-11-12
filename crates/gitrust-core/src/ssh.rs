@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -31,6 +31,15 @@ pub struct Login {
 pub struct RemoteDescriptor {
     pub login: Login,
     pub path: String,
+    /// The private key this checkout was opened with, when one was named
+    /// for it: a path, as it was typed, and never the key itself.
+    ///
+    /// It is what a server hands out as a `.pem` and expects back on every
+    /// connection. Kept beside the address so that reconnecting, and the
+    /// terminal, knock with the same key the first connection did -- a
+    /// server reached with a named key is very often one the agent has
+    /// never heard of. `None` is the profile's key and then the agent.
+    pub key: Option<String>,
 }
 
 impl RemoteDescriptor {
@@ -39,7 +48,21 @@ impl RemoteDescriptor {
             path.starts_with('/'),
             "the repository path must be absolute"
         );
-        Ok(Self { login, path })
+        Ok(Self { login, path, key: None })
+    }
+
+    /// The same checkout, reached with that key. A blank is no key.
+    pub fn keyed(mut self, key: Option<&str>) -> Self {
+        self.key = key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string);
+        self
+    }
+
+    /// Where that key is on this disk, with a leading `~/` undone.
+    pub fn key_file(&self) -> Option<PathBuf> {
+        key_file(self.key.as_deref()?)
     }
 
     /// Where this checkout is, as one line: `ssh://user@host:port/path`.
@@ -63,6 +86,32 @@ impl Login {
     }
 }
 
+/// A key path as somebody writes one, made into a path on this disk: a
+/// leading `~/` is the home folder, as it is for a profile's key.
+pub fn key_file(written: &str) -> Option<PathBuf> {
+    let written = written.trim();
+    if written.is_empty() {
+        return None;
+    }
+    match written.strip_prefix("~/") {
+        Some(rest) => Some(crate::home::folder()?.join(rest)),
+        None => Some(PathBuf::from(written)),
+    }
+}
+
+/// What a connection proves itself with.
+enum How<'a> {
+    Password(&'a str),
+    /// A private key file. `then_agent` is whether the agent is asked when
+    /// the key is refused.
+    Key {
+        file: &'a Path,
+        passphrase: Option<&'a str>,
+        then_agent: bool,
+    },
+    Agent,
+}
+
 /// An open, authenticated connection. It holds its TCP socket until dropped.
 pub struct Session {
     login: Login,
@@ -73,7 +122,11 @@ impl Session {
     /// Connect using the supplied password, or the SSH agent when it is blank.
     /// The caller owns the password and can clear it as soon as this returns.
     pub fn connect(login: Login, password: Option<&str>, trust_new_host: bool) -> Result<Self> {
-        Self::connect_inner(login, password, None, false, trust_new_host, None)
+        let how = match password.filter(|password| !password.is_empty()) {
+            Some(password) => How::Password(password),
+            None => How::Agent,
+        };
+        Self::connect_inner(login, how, trust_new_host, None)
     }
 
     /// Connect the way a profile would: with its key first, and the SSH
@@ -86,17 +139,45 @@ impl Session {
     /// and a server that does not know this client's key is very often one
     /// that knows the key already in the agent.
     pub fn connect_as(login: Login, password: Option<&str>, key: Option<&Path>, trust_new_host: bool) -> Result<Self> {
-        Self::connect_inner(login, password, key, true, trust_new_host, None)
+        let how = match (password.filter(|password| !password.is_empty()), key) {
+            (Some(password), _) => How::Password(password),
+            (None, Some(file)) => How::Key { file, passphrase: None, then_agent: true },
+            (None, None) => How::Agent,
+        };
+        Self::connect_inner(login, how, trust_new_host, None)
+    }
+
+    /// Connect with the key somebody named for this connection: the `.pem`
+    /// a server handed out, or any other private key file.
+    ///
+    /// That key and nothing after it. A profile's key falls back to the
+    /// agent because nobody chose it for this server; this one was chosen,
+    /// and a connection that quietly got in some other way would leave a
+    /// key written down beside the checkout that does not open it.
+    ///
+    /// The passphrase is for a key that has one, and like a password it is
+    /// the caller's to clear: it is used once, here, and kept nowhere.
+    pub fn connect_keyed(login: Login, key: &Path, passphrase: Option<&str>, trust_new_host: bool) -> Result<Self> {
+        let passphrase = passphrase.filter(|passphrase| !passphrase.is_empty());
+        Self::connect_inner(login, How::Key { file: key, passphrase, then_agent: false }, trust_new_host, None)
     }
 
     /// Connect with an explicit private key and known-hosts file. This is
     /// useful for isolated transport tests without borrowing the user's SSH
     /// agent or their `known_hosts` file.
-    pub fn connect_with_key(login: Login, private_key: &Path, known_hosts: &Path, trust_new_host: bool) -> Result<Self> {
-        Self::connect_inner(login, None, Some(private_key), false, trust_new_host, Some(known_hosts))
+    pub fn connect_with_key(login: Login, private_key: &Path, passphrase: Option<&str>, known_hosts: &Path, trust_new_host: bool) -> Result<Self> {
+        Self::connect_inner(login, How::Key { file: private_key, passphrase, then_agent: false }, trust_new_host, Some(known_hosts))
     }
 
-    fn connect_inner(login: Login, password: Option<&str>, private_key: Option<&Path>, then_agent: bool, trust_new_host: bool, known_hosts: Option<&Path>) -> Result<Self> {
+    fn connect_inner(login: Login, how: How, trust_new_host: bool, known_hosts: Option<&Path>) -> Result<Self> {
+        // Said before anything is asked of the network: libssh2 answers a
+        // file that is not there with a line about the format of keys, and
+        // only once the server has been reached. Only for a key that was
+        // named -- a profile's has the agent after it, and that is the
+        // answer to its being gone.
+        if let How::Key { file, then_agent: false, .. } = &how {
+            anyhow::ensure!(file.is_file(), "there is no key at {}", file.display());
+        }
         let tcp = TcpStream::connect((login.host.as_str(), login.port))
             .with_context(|| format!("could not reach {}:{}", login.host, login.port))?;
         tcp.set_read_timeout(Some(Duration::from_secs(15)))
@@ -108,27 +189,32 @@ impl Session {
         raw.handshake().context("the SSH handshake failed")?;
         verify_host(&raw, &login, trust_new_host, known_hosts)?;
 
-        match (password.filter(|password| !password.is_empty()), private_key) {
-            (Some(password), _) => raw
+        match how {
+            How::Password(password) => raw
                 .userauth_password(&login.user, password)
                 .context("the SSH password was refused")?,
-            (None, Some(private_key)) => {
-                let keyed = raw.userauth_pubkey_file(&login.user, None, private_key, None);
+            How::Key { file, passphrase, then_agent } => {
+                let keyed = raw.userauth_pubkey_file(&login.user, None, file, passphrase);
                 match (keyed, then_agent) {
                     (Ok(()), _) => {}
-                    (Err(err), false) => return Err(err).context("the SSH key was refused"),
+                    (Err(err), false) => {
+                        return Err(err).with_context(|| match passphrase {
+                            Some(_) => format!("{} was refused, or that is not its passphrase", file.display()),
+                            None => format!("{} was refused, or it has a passphrase and none was given", file.display()),
+                        })
+                    }
                     // Both are named when both fail: "the agent refused"
                     // alone would send somebody to look at the agent, when
                     // the thing they set up and expected to work was the key.
                     (Err(key), true) => raw.userauth_agent(&login.user).with_context(|| {
                         format!(
                             "{} was refused ({key}), and so was the SSH agent",
-                            private_key.display()
+                            file.display()
                         )
                     })?,
                 }
             }
-            (None, None) => raw
+            How::Agent => raw
                 .userauth_agent(&login.user)
                 .context("could not authenticate with the SSH agent")?,
         }

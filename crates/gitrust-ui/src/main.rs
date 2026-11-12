@@ -379,6 +379,8 @@ enum Browsing {
     Folder { beside: bool },
     /// A private key for a profile.
     Key { which: usize },
+    /// A private key for the remote checkout being connected to.
+    RemoteKey,
 }
 
 /// A repository being brought down, and where it is going.
@@ -579,9 +581,10 @@ impl App {
         self.file_under_profile();
     }
 
-    fn add_remote(&mut self, session: gitrust_core::ssh::Session, path: String) {
+    fn add_remote(&mut self, session: gitrust_core::ssh::Session, path: String, key: Option<String>) {
         match RemoteRepo::new(session, path) {
-            Ok(repo) => {
+            Ok(mut repo) => {
+                repo.keyed(key);
                 self.settings.remember_remote(repo.descriptor());
                 let saved = self.settings.save();
                 self.open.push(Open::new_remote(repo, self.opened, &self.settings.general));
@@ -648,7 +651,7 @@ impl App {
     fn act_on_pick(&mut self, act: picker::Act) {
         match act {
             picker::Act::Open(path) => self.open_tab(path),
-            picker::Act::OpenRemote { session, path } => self.add_remote(session, path),
+            picker::Act::OpenRemote { session, path, key } => self.add_remote(session, path, key),
             picker::Act::Start(path) => match gitrust_core::start::init(
                 &path,
                 Some(&self.settings.general.default_branch),
@@ -670,6 +673,7 @@ impl App {
             }
             picker::Act::Close => self.picking = None,
             picker::Act::Browse { beside } => self.browse(Browsing::Folder { beside }),
+            picker::Act::BrowseKey => self.browse(Browsing::RemoteKey),
         }
     }
 
@@ -690,7 +694,7 @@ impl App {
         std::thread::spawn(move || {
             let _ = send.send(match what {
                 Browsing::Folder { .. } => chooser::folder("Choose a repository folder"),
-                Browsing::Key { .. } => chooser::file(
+                Browsing::Key { .. } | Browsing::RemoteKey => chooser::file(
                     "Choose a private key",
                     gitrust_core::home::folder().map(|home| home.join(".ssh")),
                 ),
@@ -717,6 +721,13 @@ impl App {
                         if let Some(profile) = self.profiles.list.get_mut(which) {
                             profile.key = path.display().to_string();
                             self.keep_profiles();
+                        }
+                    }
+                    // And the other key goes into the box that asked: the
+                    // connection is still to be made, by pressing Connect.
+                    Ok(Some(path)) if matches!(what, Browsing::RemoteKey) => {
+                        if let Some(state) = &mut self.picking {
+                            state.take_key(&path);
                         }
                     }
                     // Choosing a folder in a dialog called "choose a
@@ -3254,19 +3265,27 @@ impl Open {
         }
     }
 
-    /// Re-authenticates deliberately, with the profile's key when it has
-    /// one and through the SSH agent after it.  The descriptor has no
-    /// password, so a password-only server asks the user to reopen it from
-    /// the picker instead of retaining a secret for later.
+    /// Re-authenticates deliberately: with the key that was named for this
+    /// checkout when one was, and otherwise with the profile's key when it
+    /// has one and through the SSH agent after it.  The descriptor has no
+    /// password and no passphrase, so a server that wants one asks the
+    /// user to reopen it from the picker instead of retaining a secret for
+    /// later.
     fn reconnect_remote(&mut self) {
         let Some(descriptor) = self.remote_descriptor.clone() else {
             return self.note_error("this tab has no remote connection details".to_string());
         };
-        let key = profile_key(self.profile.as_ref());
-        match gitrust_core::ssh::Session::connect_as(descriptor.login.clone(), None, key.as_deref(), false)
-            .and_then(|session| RemoteRepo::new(session, descriptor.path.clone()))
-        {
+        let login = descriptor.login.clone();
+        let session = match descriptor.key_file() {
+            Some(named) => gitrust_core::ssh::Session::connect_keyed(login, &named, None, false),
+            None => {
+                let key = profile_key(self.profile.as_ref());
+                gitrust_core::ssh::Session::connect_as(login, None, key.as_deref(), false)
+            }
+        };
+        match session.and_then(|session| RemoteRepo::new(session, descriptor.path.clone())) {
             Ok(mut repo) => {
+                repo.keyed(descriptor.key.clone());
                 repo.pruning(self.general.auto_prune);
                 self.remote = Some(repo);
                 self.name_the_remote();
@@ -5003,7 +5022,13 @@ impl Open {
     /// that folder, reached with `ssh`.
     fn start_terminal(&self, ctx: &egui::Context) -> std::io::Result<terminal::Session> {
         let who = self.profile.as_ref().and_then(Profile::who);
-        let key = profile_key(self.profile.as_ref());
+        // The key that was named for a checkout on another machine goes
+        // before the profile's, as it does when the checkout is opened.
+        let key = self
+            .remote_descriptor
+            .as_ref()
+            .and_then(gitrust_core::ssh::RemoteDescriptor::key_file)
+            .or_else(|| profile_key(self.profile.as_ref()));
         let caret = self.general.terminal_caret;
         let start = match &self.remote_descriptor {
             Some(remote) => terminal::Start {

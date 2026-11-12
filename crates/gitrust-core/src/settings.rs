@@ -368,7 +368,8 @@ pub struct Settings {
     /// The application's light, dark, or system appearance.
     pub appearance: Appearance,
     /// Remote checkouts previously selected by the user.  This is strictly
-    /// connection metadata; authentication remains with SSH agent/password.
+    /// connection metadata: where each is and, when a key was named for
+    /// it, the path of that key. Passwords and passphrases are not here.
     pub remotes: Vec<RemoteDescriptor>,
     /// What the preferences screen changes.
     pub general: General,
@@ -419,8 +420,10 @@ impl Settings {
                     }
                 }
                 Some(("remote", value)) => {
+                    // Four fields, or five when a key was named for it. A
+                    // line written before there was a fifth still reads.
                     let fields: Vec<_> = value.split('\t').collect();
-                    if let [host, user, port, path] = fields.as_slice() {
+                    if let [host, user, port, path, key @ ..] = fields.as_slice() {
                         if let Ok(port) = port.parse() {
                             if let Ok(login) =
                                 Login::new((*host).to_string(), (*user).to_string(), port)
@@ -428,7 +431,7 @@ impl Settings {
                                 if let Ok(remote) =
                                     RemoteDescriptor::new(login, (*path).to_string())
                                 {
-                                    settings.remotes.push(remote);
+                                    settings.remotes.push(remote.keyed(key.first().copied()));
                                 }
                             }
                         }
@@ -473,9 +476,13 @@ impl Settings {
         }, self.appearance.as_str());
         for remote in &self.remotes {
             text.push_str(&format!(
-                "remote {}\t{}\t{}\t{}\n",
+                "remote {}\t{}\t{}\t{}",
                 remote.login.host, remote.login.user, remote.login.port, remote.path
             ));
+            if let Some(key) = &remote.key {
+                text.push_str(&format!("\t{key}"));
+            }
+            text.push('\n');
         }
         text.push_str(&self.general.render());
         for tab in &self.tabs {
@@ -509,9 +516,11 @@ impl Settings {
         true
     }
 
-    /// Keeps a checkout descriptor once, replacing an older identical entry.
+    /// Keeps a checkout once, by where it is: opened again with another
+    /// key, or with none, it is the same checkout and the newer way in.
     pub fn remember_remote(&mut self, remote: RemoteDescriptor) {
-        self.remotes.retain(|known| known != &remote);
+        let place = remote.place();
+        self.remotes.retain(|known| known.place() != place);
         self.remotes.insert(0, remote);
     }
 
@@ -704,5 +713,31 @@ mod tests {
         assert!(text.contains("remote host.example\tdev\t2222\t/srv/project"));
         assert!(!text.contains("password"));
         assert_eq!(Settings::parse(&text).remotes, vec![remote]);
+    }
+
+    #[test]
+    fn a_remote_checkout_remembers_the_key_it_was_opened_with() {
+        let plain = RemoteDescriptor::new(
+            Login::new("host.example".to_string(), "dev".to_string(), 2222).unwrap(),
+            "/srv/project".to_string(),
+        )
+        .unwrap();
+        let keyed = plain.clone().keyed(Some(" ~/keys/acme.pem "));
+        assert_eq!(keyed.key.as_deref(), Some("~/keys/acme.pem"));
+        // The key is how it is reached and not where it is.
+        assert_eq!(keyed.place(), plain.place());
+        assert_eq!(plain.clone().keyed(Some("  ")).key, None);
+
+        let mut settings = Settings::default();
+        settings.remember_remote(plain.clone());
+        settings.remember_remote(keyed.clone());
+        assert_eq!(settings.remotes, vec![keyed.clone()]);
+        let text = settings.render();
+        assert!(text.contains("remote host.example\tdev\t2222\t/srv/project\t~/keys/acme.pem\n"));
+        assert_eq!(Settings::parse(&text).remotes, vec![keyed]);
+
+        // Opened again with no key, it stops naming one.
+        settings.remember_remote(plain.clone());
+        assert_eq!(settings.remotes, vec![plain]);
     }
 }
