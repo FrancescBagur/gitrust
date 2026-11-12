@@ -550,3 +550,56 @@ fn discarding_a_hunk_of_a_new_file_says_to_discard_it_whole() {
         .to_string();
     assert!(err.contains("discard it whole"), "{err}");
 }
+
+/// What the window compares to know it is out of date: it moves when the
+/// repository does, in the half that moved, and not otherwise.
+#[test]
+fn the_pulse_moves_with_the_repository_and_only_then() {
+    let temp = TempRepo::new("pulse");
+    temp.write("a.txt", "one\n");
+    let repo = temp.open();
+    repo.stage("a.txt").unwrap();
+    repo.commit("first").unwrap();
+
+    let clean = repo.pulse().unwrap();
+    // Looking changes nothing, and neither does another program's look.
+    assert_eq!(repo.pulse().unwrap(), clean);
+    assert_eq!(temp.open().pulse().unwrap(), clean);
+    let (state, read_at) = repo.status_and_pulse().unwrap();
+    assert!(state.is_clean());
+    assert_eq!(read_at, clean);
+
+    // A file saved by something else: the working tree's half and no other.
+    temp.write("a.txt", "one\ntwo\n");
+    let edited = temp.open().pulse().unwrap();
+    assert_eq!(edited.git, clean.git);
+    assert_ne!(edited.tree, clean.tree);
+
+    // Saved again: the same line in the list of changes, another diff
+    // behind it, and the pulse knows the difference.
+    temp.write("a.txt", "one\ntwo\nthree\n");
+    let again = repo.pulse().unwrap();
+    assert_eq!(repo.status().unwrap().unstaged.len(), 1);
+    assert_ne!(again.tree, edited.tree);
+
+    // Staged: still the working tree's half.
+    repo.stage("a.txt").unwrap();
+    let staged = repo.pulse().unwrap();
+    assert_eq!(staged.git, clean.git);
+    assert_ne!(staged.tree, again.tree);
+
+    // Committed from somewhere else: Git's half, and the tree is as clean
+    // as it was to begin with.
+    temp.open().commit("second").unwrap();
+    let committed = repo.pulse().unwrap();
+    assert_ne!(committed.git, clean.git);
+    assert_eq!(committed.tree, clean.tree);
+
+    // A branch made by another program is a reference that was not there.
+    let other = git2::Repository::open(temp.path()).unwrap();
+    let head = other.head().unwrap().peel_to_commit().unwrap();
+    other.branch("topic", &head, false).unwrap();
+    let branched = repo.pulse().unwrap();
+    assert_ne!(branched.git, committed.git);
+    assert_eq!(branched.tree, committed.tree);
+}

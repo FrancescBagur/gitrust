@@ -49,6 +49,26 @@ impl WorkingState {
     }
 }
 
+/// Two numbers that stay the same for as long as a repository does.
+///
+/// Nothing here is told when a file changes, so the window finds out by
+/// looking, and what it compares is this: a number for what Git keeps and
+/// a number for the working tree. They mean nothing in themselves and are
+/// not kept from one run to the next -- two of them are only ever asked
+/// whether they are equal.
+///
+/// Two, because they are answered differently. A branch that has moved is
+/// the history read again. A file that was saved is the list of changes
+/// read again and nothing else, and somebody halfway through a commit
+/// message should not lose their place for having saved a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pulse {
+    /// HEAD, the references, the stashes and what is half-done.
+    pub git: u64,
+    /// What has changed in the working tree and the index, and when.
+    pub tree: u64,
+}
+
 /// A change recorded in the index against HEAD.
 pub(crate) fn staged_kind(status: Status) -> Option<ChangeKind> {
     if status.contains(Status::INDEX_NEW) {

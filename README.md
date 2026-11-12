@@ -132,6 +132,8 @@ cherry-pick and an undo all stop here instead of being thrown away.
 - [x] A terminal under the graph: a shell per tab, in the repository's
       folder and as the profile in use, and the graph keeps up with what
       is typed into it
+- [x] The window keeps up by itself with what an editor, a terminal or an
+      agent does to the repository in front, with no button to press
 - [ ] Three-way editor with line-by-line picking
 - [ ] A screen for the submodules themselves, bisect, LFS, signing
 
@@ -178,6 +180,7 @@ crates/
     prefs_view.rs   the preferences: one column of rows, and no Save button
     terminal.rs     a shell per tab: the pseudo-terminal, the keys, the colours
     terminal_view.rs the grid painted, the mouse heard, and the bar above it
+    watch.rs        looking at the repository in front, off the painting thread
     chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
@@ -387,8 +390,8 @@ goes out with are the profile's, read when the shell starts, because a
 commit that went out under another client's name for having been typed
 instead of clicked is the mistake profiles exist to stop. On a checkout on
 another machine the shell is on that machine, reached with `ssh` and the
-key the checkout was opened with. **The graph keeps up.** Nothing here watches the disk, so the
-window looks when the shell goes quiet: at the branches and HEAD every
+key the checkout was opened with. **The graph keeps up** sooner than the rest of the window does: it
+looks when the shell goes quiet, without waiting for the next look: at the branches and HEAD every
 time, at the working tree after a line has been sent in, and it reads
 everything again only when one of them has actually moved -- `git commit`
 in the panel puts a commit in the graph, and `ls` does not take away the
@@ -404,6 +407,31 @@ and letters Fira Mono and its fallbacks do not have, Chinese and Japanese
 among them, which come out as boxes here as they do in a commit message.
 Run on Linux, the shell on another machine against a server in a
 container; read out of the code and not seen on macOS or Windows.
+
+**Keeping up:** a repository is not only changed from here. An editor
+saves a file, a terminal makes a commit, an agent does both for an hour,
+and a window still showing what was true when it last read has to be told
+to look by somebody who knows it is stale. GitKraken is told by the
+system: it has every folder of the working tree watched, waits two seconds
+for the events to stop, and reads again the part they were about -- which
+comes with its three messages for when the watcher would not start, ran
+out of watches or heard nothing. This looks instead. A thread that is not
+the one that paints walks the repository in front the way `git status`
+does, every two seconds while the window is the one in use and every five
+while it is not, and at once when the window or a tab is come back to; a
+walk that takes long is made less often, so that looking is never more
+than a twentieth of the time. What it finds is two numbers, one for what
+Git keeps and one for the working tree, and the window reads again only
+the half that is not the one it is showing: a saved file is the list of
+changes and nothing else, so the message being written stays where it is,
+and a branch that moved is the whole history. A look that finds nothing
+costs the window nothing, and what the window has just done itself is not
+news to it. No dependency, no limit to run out of, and the same on all
+three systems -- against two seconds' wait where a watcher would have
+waited two seconds anyway. Only the repository in front; the others are
+looked at when they are brought forward. Not a checkout on another
+machine, where every look is a round trip on a connection the window is
+using: its reload button is where it was. Run on Linux.
 
 **The emulator:** the second dependency that was not part of the plan,
 and the one there was never going to be a way round. What a shell writes

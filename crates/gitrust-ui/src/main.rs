@@ -33,13 +33,14 @@ mod terminal;
 mod terminal_view;
 mod theme;
 mod toast;
+mod watch;
 
 use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, likely_target, Appearance, Backlog, Board, CommitDetail, FileDiff,
     Foreseen, General, Graph, HunkId, Join, Move, Oid, Panel, Profile, Profiles, PullMode, PullRequests, Reader,
-    RefEntry, RefKind, RemoteRepo, Repo, Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
+    Pulse, RefEntry, RefKind, RemoteRepo, Repo, Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
 
 /// How wide the repository menu is, measured inside its frame.
@@ -303,6 +304,10 @@ struct App {
     /// the moment it opened would be a window that asks for a passphrase
     /// before it has drawn anything.
     fetched: std::time::Instant,
+    /// What looks at the repository in front while nobody is pressing
+    /// anything. Started with the first frame, which is the first time
+    /// there is a window to wake.
+    watch: Option<watch::Watch>,
     /// What one of the screens that is not a repository has to say. A tab's
     /// own bottom bar cannot say it: the tab is not on screen.
     note: Option<Note>,
@@ -407,6 +412,7 @@ impl App {
             managing: None,
             preferring: None,
             fetched: std::time::Instant::now(),
+            watch: None,
             note: None,
         };
         app.come_back(asked);
@@ -537,6 +543,39 @@ impl App {
             open.fetch_quietly();
         }
         ctx.request_repaint_after(every);
+    }
+
+    /// Keeps the repository in front up to date with what other programs
+    /// do to it: an editor, a terminal, an agent.
+    ///
+    /// The looking is done off this thread, by [`watch::Watch`], which
+    /// says so when the repository is not as it last found it. What it
+    /// says goes to the tab the folder belongs to, and the tab decides
+    /// whether that is news.
+    ///
+    /// Only the one in front, like the fetch nobody asked for and for the
+    /// same reason. The others are looked at the moment they are brought
+    /// forward, which is the moment being out of date starts to matter.
+    /// Not a checkout on another machine, and not a window that has been
+    /// put away, which has nobody to be up to date for.
+    fn keep_up(&mut self, ctx: &egui::Context) {
+        let (near, away) = ctx.input(|input| (input.focused, input.viewport().minimized == Some(true)));
+        let front = self
+            .open
+            .get(self.at)
+            .filter(|open| !open.is_remote() && !away)
+            .map(|open| std::path::PathBuf::from(&open.path));
+        let watch = self.watch.get_or_insert_with(|| watch::Watch::start(ctx.clone()));
+        watch.look_at(front.as_deref(), near);
+        for (folder, seen) in watch.heard() {
+            let found = self
+                .open
+                .iter_mut()
+                .find(|open| !open.is_remote() && std::path::Path::new(&open.path) == folder);
+            if let Some(open) = found {
+                open.heard(seen);
+            }
+        }
     }
 
     /// Hands every tab the preferences, once the screen for them is away.
@@ -1580,6 +1619,7 @@ impl eframe::App for App {
             let _ = self.settings.save();
         }
         self.note_tabs();
+        self.keep_up(ctx);
 
         // Always, even with one repository open: the plus lives in it, and a
         // strip that appears only once you have two tabs is a way of opening
@@ -1721,6 +1761,11 @@ struct Open {
 
     // The working tree.
     work: WorkingState,
+    /// The repository's pulse as of what is on screen: read in the same
+    /// walk as `work`, every time `work` is. What a look from outside is
+    /// compared with, to know whether it found anything this tab has not
+    /// already shown.
+    pulse: Option<Pulse>,
     selected: Option<(String, bool)>,
     diff: Option<FileDiff>,
     subject: String,
@@ -2003,6 +2048,7 @@ impl Open {
             detail_file: None,
             detail_diff: None,
             work: WorkingState::default(),
+            pulse: None,
             selected: None,
             diff: None,
             subject: String::new(),
@@ -2785,8 +2831,11 @@ impl Open {
     }
 
     fn read_work(&mut self, repo: &Repo) {
-        match repo.status() {
-            Ok(work) => self.work = work,
+        match repo.status_and_pulse() {
+            Ok((work, pulse)) => {
+                self.work = work;
+                self.pulse = Some(pulse);
+            }
             Err(err) => return self.note_error(format!("could not read the status: {err}")),
         }
 
@@ -5085,10 +5134,12 @@ impl Open {
     ///
     /// What is typed into a terminal changes the repository behind the
     /// window's back, and a graph that still shows the commit `git reset`
-    /// has just taken away is worse than no graph. Nothing watches the
-    /// disk here, so the window looks when the shell goes quiet: at the
-    /// branches and HEAD every time, which is cheap, and at the working
-    /// tree only after a line was sent in, which is a walk through it.
+    /// has just taken away is worse than no graph. The window would find
+    /// out by itself within a couple of seconds, from the thread that
+    /// looks; this is so that it does not take a couple of seconds. It
+    /// looks when the shell goes quiet: at the branches and HEAD every
+    /// time, which is cheap, and at the working tree only after a line
+    /// was sent in, which is a walk through it.
     ///
     /// Everything is read again only when a branch, HEAD, the stashes or
     /// what is half-done has actually changed. A reload puts away a commit
@@ -5124,6 +5175,39 @@ impl Open {
             (false, _) => self.load(),
             (true, true) => self.refresh(),
             (true, false) => {}
+        }
+    }
+
+    /// Is told what the repository looked like a moment ago, by the thread
+    /// that looks while nobody is pressing anything.
+    ///
+    /// The same as what is on screen is the usual answer, and nothing
+    /// happens: that is every look that found nothing, and every look that
+    /// found what this tab has just done itself.
+    ///
+    /// Otherwise something else has been at the repository. What is read
+    /// again is decided here and now and not by what was seen: a look is
+    /// a moment old by the time it arrives, and a commit made from this
+    /// window in that moment would otherwise look like one made behind its
+    /// back. So Git's half is asked again, which is cheap. When it has
+    /// moved, everything is read, as the reload button would; when it has
+    /// not, only the working tree is, and a commit message being written
+    /// stays where it is.
+    ///
+    /// Not while something slow is running, which reads everything itself
+    /// when it ends, and not for a checkout on another machine.
+    fn heard(&mut self, seen: Pulse) {
+        if self.is_remote() || self.job.is_some() || self.pulse == Some(seen) {
+            return;
+        }
+        let Ok(repo) = self.repo() else {
+            return;
+        };
+        let moved = self.pulse.map(|shown| shown.git) != Some(repo.git_pulse());
+        drop(repo);
+        match moved {
+            true => self.load(),
+            false => self.refresh(),
         }
     }
 
