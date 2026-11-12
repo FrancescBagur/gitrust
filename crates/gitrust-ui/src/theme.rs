@@ -81,6 +81,76 @@ pub fn lane(index: usize) -> Color32 {
     LANES[index % LANES.len()]
 }
 
+// ── The terminal ───────────────────────────────────────────────────────────
+// The one place in the window that does not choose its own colours. A
+// program says "red" by number and expects red, so there have to be sixteen
+// answers, and eight of them have to be the eight a terminal has always
+// had. They are the lanes: the same coral, jade, amber and azure the graph
+// is drawn in, so that `git status` in the panel and the changes list
+// beside it are the same red and the same green. The bright eight are the
+// same eight a step lighter, which is all "bright" has meant since it
+// stopped meaning "bold".
+//
+// On white the lanes are too pale to read as text, so the light table is
+// the light theme's own darker set, and "white" there is a grey: a program
+// that writes in white is asking to be read, not to be invisible.
+
+/// What is behind the letters in the terminal: the deepest surface there
+/// is, so that the panel reads as a place set into the window.
+pub fn terminal_ground() -> Color32 {
+    choose(sunken(), rgb(0xFF, 0xFF, 0xFF))
+}
+
+/// The sixteen colours a program in the terminal can ask for by name:
+/// black, red, green, yellow, blue, magenta, cyan and white, and then the
+/// same eight again, bright.
+pub fn terminal() -> [Color32; 16] {
+    if is_light() {
+        return [
+            rgb(0x1E, 0x1E, 0x1E),
+            rgb(0xB5, 0x35, 0x2B),
+            rgb(0x28, 0x7A, 0x45),
+            rgb(0xA4, 0x63, 0x00),
+            rgb(0x0B, 0x63, 0xC5),
+            rgb(0x7B, 0x3F, 0xF2),
+            rgb(0x00, 0x7C, 0x85),
+            rgb(0x5A, 0x5F, 0x66),
+            rgb(0x6F, 0x6F, 0x6F),
+            rgb(0xD8, 0x45, 0x3A),
+            rgb(0x2F, 0x96, 0x54),
+            rgb(0xC2, 0x7A, 0x0A),
+            rgb(0x2B, 0x7F, 0xE0),
+            rgb(0x95, 0x62, 0xF7),
+            rgb(0x00, 0x97, 0xA2),
+            rgb(0x8A, 0x8F, 0x98),
+        ];
+    }
+    let lighter = |color: Color32| {
+        let lift = |channel: u8| channel + ((255 - channel) as f32 * 0.28) as u8;
+        rgb(lift(color.r()), lift(color.g()), lift(color.b()))
+    };
+    let dull = [
+        rgb(0x1B, 0x23, 0x26),
+        LANES[5],
+        LANES[1],
+        LANES[2],
+        LANES[0],
+        LANES[6],
+        LANES[4],
+        rgb(0xC3, 0xCD, 0xD0),
+    ];
+    let mut all = [Color32::BLACK; 16];
+    for (index, color) in dull.into_iter().enumerate() {
+        all[index] = color;
+        all[index + 8] = lighter(color);
+    }
+    // Bright black is the one that is not black a step lighter: it is what
+    // programs write their asides in, and has to be readable on the ground.
+    all[8] = rgb(0x5F, 0x70, 0x76);
+    all[15] = rgb(0xF2, 0xF6, 0xF7);
+    all
+}
+
 /// The same color let down to a background, for the branch chips.
 pub fn tint(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)

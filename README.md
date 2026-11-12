@@ -129,6 +129,9 @@ cherry-pick and an undo all stop here instead of being thrown away.
       history the graph reads and whether it reads on, the tabs that come
       back, submodules kept at their recorded commit, conflicts seen coming,
       and a log of what happened
+- [x] A terminal under the graph: a shell per tab, in the repository's
+      folder and as the profile in use, and the graph keeps up with what
+      is typed into it
 - [ ] Three-way editor with line-by-line picking
 - [ ] A screen for the submodules themselves, bisect, LFS, signing
 
@@ -173,6 +176,8 @@ crates/
     picker.rs       choosing a repository, cloning one, starting one
     profiles_view.rs the profiles, and which one is in use
     prefs_view.rs   the preferences: one column of rows, and no Save button
+    terminal.rs     a shell per tab: the pseudo-terminal, the keys, the colours
+    terminal_view.rs the grid painted, the mouse heard, and the bar above it
     chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
@@ -363,7 +368,52 @@ happened, opens **a log** of the things before it -- with what the window
 did by itself among them when the preferences ask for that. The screen has
 a row for forgetting every token the profiles hold, which asks first.
 
-**The folder dialog:** the one dependency that was not part of the plan.
+**The terminal:** a panel under the graph, between the branches and the
+commit, opened from the end of the actions or with Control and the
+backtick. **A shell per tab**, in that tab's repository, started the first
+time the panel is opened on it; the panel itself -- open, folded to its
+bar or put away, and how tall -- is one answer for the whole window and
+comes back the way it was left. Putting it away leaves the shell running;
+the bin ends it, and so does `exit`. **It works as the profile in use**:
+the name on a commit typed there and the key a `git push` typed there
+goes out with are the profile's, read when the shell starts, because a
+commit that went out under another client's name for having been typed
+instead of clicked is the mistake profiles exist to stop. On a checkout on
+another machine the shell is on that machine, reached with `ssh` and the
+same key. **The graph keeps up.** Nothing here watches the disk, so the
+window looks when the shell goes quiet: at the branches and HEAD every
+time, at the working tree after a line has been sent in, and it reads
+everything again only when one of them has actually moved -- `git commit`
+in the panel puts a commit in the graph, and `ls` does not take away the
+message you were amending. Not on a remote checkout, where looking is a
+round trip on the thread that paints. Control and C copies when something
+is selected and interrupts when nothing is; pasting is Control, Shift and
+V, since Control and V alone is the shell's. An address is a link. The
+letters programs draw frames with are drawn, not set in the font, so a
+frame is a frame at any line height. What is not there: the suggestions
+GitKraken pops up as you type, which are a product of their own; a choice
+of typeface, because this program ships the one it was designed around;
+and letters Fira Mono and its fallbacks do not have, Chinese and Japanese
+among them, which come out as boxes here as they do in a commit message.
+Run on Linux; read out of the code and not seen on macOS or Windows, and
+the shell on another machine has not been opened against one.
+
+**The emulator:** the second dependency that was not part of the plan,
+and the one there was never going to be a way round. What a shell writes
+is forty years of escape sequences -- the second screen `vim` draws on,
+scroll regions, eleven ways of naming a colour -- and a reader of them that
+is nearly right is a terminal where `git log` works and `git rebase -i`
+does not. The syntax colouring here is hand-made because being wrong about
+a comment costs a few grey letters; being wrong about a cursor movement
+costs the screen. So it is `alacritty_terminal`, the inside of Alacritty:
+the reader, the grid with its history and selection, and the
+pseudo-terminal itself on all three systems, which on Windows is a
+subsystem of its own. Eleven crates. The painting, the keys and the mouse
+are still this program's, in the fonts and the colours it already had:
+red in the panel is the coral of the graph.
+
+**The folder dialog:** the one dependency that was not part of the plan
+until the terminal made it the first of two.
 Opening a repository meant typing its path, and the obvious fix was to run
 `gdbus` and ask `xdg-desktop-portal`, the way `gh` is run to ask GitHub. It
 does not work, and the reason is not a bug anybody can fix: the portal's

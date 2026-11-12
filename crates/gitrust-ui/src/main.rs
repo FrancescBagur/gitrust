@@ -29,6 +29,8 @@ mod refs_view;
 mod rewrite_view;
 mod ripple;
 mod syntax;
+mod terminal;
+mod terminal_view;
 mod theme;
 mod toast;
 
@@ -36,7 +38,7 @@ use anyhow::Result;
 use eframe::egui;
 use gitrust_core::{
     compose, layout, layout_with_working, likely_target, Appearance, Backlog, Board, CommitDetail, FileDiff,
-    Foreseen, General, Graph, HunkId, Join, Move, Oid, Profile, Profiles, PullMode, PullRequests, Reader,
+    Foreseen, General, Graph, HunkId, Join, Move, Oid, Panel, Profile, Profiles, PullMode, PullRequests, Reader,
     RefEntry, RefKind, RemoteRepo, Repo, Settings, StashEntry, Tracking, WorkingState, Worktree, Writer,
 };
 
@@ -1548,12 +1550,23 @@ impl eframe::App for App {
         self.adopt_profile();
         self.hand_preferences();
         self.auto_fetch(ctx);
-        for open in &mut self.open {
+        let mut ended = false;
+        for (which, open) in self.open.iter_mut().enumerate() {
             open.poll(ctx);
             open.poll_forge(ctx);
             open.poll_board(ctx);
             open.poll_fetch(ctx);
             open.poll_foresee(ctx);
+            ended |= open.poll_terminal(ctx) && which == self.at;
+        }
+        // A shell that has exited takes its panel with it: an open panel
+        // with nothing in it would only start another, and whoever typed
+        // `exit` did not ask for one. Only for the tab in front -- the panel
+        // is the window's, and another tab's shell ending is not a reason
+        // to take it from this one.
+        if ended && self.settings.terminal == Panel::Expanded {
+            self.settings.terminal = Panel::Hidden;
+            let _ = self.settings.save();
         }
         self.note_tabs();
 
@@ -1745,6 +1758,10 @@ struct Open {
     /// The commit the submodules were last brought up to date at, so that a
     /// submodule that will not update is tried once and not on every reload.
     subs_tried: Option<Oid>,
+    /// The shell in this tab's terminal, once its panel has been opened.
+    /// It outlives the panel being put away, and goes when it is killed,
+    /// when it exits, or when the tab does.
+    terminal: Option<terminal::Session>,
 }
 
 /// One line of the activity log.
@@ -1997,6 +2014,7 @@ impl Open {
             head_at: None,
             looked: false,
             subs_tried: None,
+            terminal: None,
         };
         app.load();
         if let Ok(shot) = std::env::var("GITRUST_SHOT") {
@@ -4546,6 +4564,11 @@ impl Open {
         // is seen through or thrown away.
         self.half_bar(ctx);
 
+        // Under whatever has the middle of the window, and between the two
+        // side panels rather than across them: it is the graph that gives
+        // up room to it, and the branches and the commit stay whole.
+        self.terminal_panel(ctx, settings);
+
         if self.deciding.is_some() {
             let mut act = None;
             egui::CentralPanel::default()
@@ -4922,6 +4945,261 @@ impl Open {
     }
 }
 
+/// The terminal: a shell in this tab's folder, in a panel under the graph.
+///
+/// The shell is the tab's and the panel is the window's. Each repository
+/// has its own shell, started the first time the panel is opened on it and
+/// left running when the panel is put away; whether the panel is open, and
+/// how tall, is one answer for every tab, because it is about where
+/// somebody likes their terminal and not about a repository.
+impl Open {
+    /// The button for it, at the end of the actions. Says whether it was
+    /// pressed.
+    fn terminal_button(ui: &mut egui::Ui, settings: &Settings) -> bool {
+        theme::vrule(ui);
+        terminal_view::toggle(ui, settings.terminal == Panel::Expanded)
+            .on_hover_text("Show/Hide Terminal (Ctrl+`)")
+            .clicked()
+    }
+
+    /// Opens the panel, or puts it away when it is open. Folded counts as
+    /// not open: pressing the button on a folded panel unfolds it.
+    fn toggle_terminal(&mut self, settings: &mut Settings) {
+        self.set_terminal(
+            settings,
+            match settings.terminal {
+                Panel::Expanded => Panel::Hidden,
+                _ => Panel::Expanded,
+            },
+        );
+    }
+
+    /// Shows that much of the panel, and writes it down.
+    fn set_terminal(&mut self, settings: &mut Settings, panel: Panel) {
+        if panel == Panel::Expanded {
+            // Opened to be typed into, so the keyboard goes with it.
+            if let Some(session) = &mut self.terminal {
+                session.view.wants_focus = true;
+            }
+        }
+        if settings.terminal != panel {
+            settings.terminal = panel;
+            if let Err(err) = settings.save() {
+                self.note_error(format!("could not remember that: {err:#}"));
+            }
+        }
+    }
+
+    /// Starts this tab's shell.
+    ///
+    /// In the repository's folder, as whoever this tab is working as: the
+    /// profile's name on what is committed from it and the profile's key
+    /// on what is fetched and pushed, for the reason the buttons use them.
+    /// Both are read when the shell starts. A profile changed afterwards
+    /// is taken on by the next shell, not by one already running, whose
+    /// environment is its own.
+    ///
+    /// For a checkout on another machine the shell is on that machine, in
+    /// that folder, reached with `ssh`.
+    fn start_terminal(&self, ctx: &egui::Context) -> std::io::Result<terminal::Session> {
+        let who = self.profile.as_ref().and_then(Profile::who);
+        let key = profile_key(self.profile.as_ref());
+        let caret = self.general.terminal_caret;
+        let start = match &self.remote_descriptor {
+            Some(remote) => terminal::Start {
+                program: Some(terminal::remote_shell(
+                    &remote.login.host,
+                    &remote.login.user,
+                    remote.login.port,
+                    &remote.path,
+                    key.as_deref(),
+                    who,
+                )),
+                folder: None,
+                env: Vec::new(),
+                caret,
+            },
+            None => {
+                let shell = self.general.terminal_shell.trim();
+                terminal::Start {
+                    program: (!shell.is_empty()).then(|| (shell.to_string(), Vec::new())),
+                    folder: Some(std::path::PathBuf::from(&self.path)),
+                    env: terminal::profile_env(who, key.as_deref()),
+                    caret,
+                }
+            }
+        };
+        terminal::Session::start(ctx, start)
+    }
+
+    /// Hears the shell out, whether or not its panel is on screen. Says
+    /// whether the shell has just ended.
+    ///
+    /// Every tab's, every frame, like the rest of the polling: a program
+    /// in a terminal asks its terminal questions and waits for the answers,
+    /// and it does not stop asking because somebody is looking at another
+    /// tab.
+    fn poll_terminal(&mut self, ctx: &egui::Context) -> bool {
+        let Some(session) = &mut self.terminal else {
+            return false;
+        };
+        session.pump(ctx);
+        if session.is_over() {
+            self.terminal = None;
+            return true;
+        }
+        match session.quiet() {
+            terminal::Quiet::Nothing => {}
+            terminal::Quiet::Wait(wait) => ctx.request_repaint_after(wait),
+            terminal::Quiet::Now { asked } => self.after_terminal(asked),
+        }
+        false
+    }
+
+    /// Looks at the repository after the shell has had something to say.
+    ///
+    /// What is typed into a terminal changes the repository behind the
+    /// window's back, and a graph that still shows the commit `git reset`
+    /// has just taken away is worse than no graph. Nothing watches the
+    /// disk here, so the window looks when the shell goes quiet: at the
+    /// branches and HEAD every time, which is cheap, and at the working
+    /// tree only after a line was sent in, which is a walk through it.
+    ///
+    /// Everything is read again only when a branch, HEAD, the stashes or
+    /// what is half-done has actually changed. A reload puts away a commit
+    /// message being amended and moves what is selected, and `ls` is not a
+    /// reason for either.
+    ///
+    /// Not for a checkout on another machine: looking there is a round
+    /// trip on the thread that paints, and one after every command would
+    /// be a window that stutters while somebody types. The reload button
+    /// is still where it was.
+    fn after_terminal(&mut self, asked: bool) {
+        if self.is_remote() || self.job.is_some() {
+            return;
+        }
+        let Ok(mut repo) = self.repo() else {
+            return;
+        };
+        let refs = repo.references().unwrap_or_default();
+        let same = refs.len() == self.refs.len()
+            && refs.iter().zip(&self.refs).all(|(now, then)| {
+                now.name == then.name
+                    && now.kind == then.kind
+                    && now.target == then.target
+                    && now.is_head == then.is_head
+            })
+            && repo.head_name() == self.head
+            && (!self.looked || repo.head_id() == self.head_at)
+            && repo.half_done() == self.half
+            && repo.stashes().map(|stashes| stashes.len()).unwrap_or(0) == self.stashes.len();
+        drop(repo);
+
+        match (same, asked) {
+            (false, _) => self.load(),
+            (true, true) => self.refresh(),
+            (true, false) => {}
+        }
+    }
+
+    /// The panel itself: its bar, and under it the grid.
+    fn terminal_panel(&mut self, ctx: &egui::Context, settings: &mut Settings) {
+        // The key GitKraken and most editors answer to, wherever the
+        // keyboard is -- including in the terminal, which is where it is
+        // when somebody wants the panel out of the way.
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Backtick)) {
+            self.toggle_terminal(settings);
+        }
+
+        let title = self
+            .terminal
+            .as_ref()
+            .and_then(|session| session.title())
+            .map(str::to_string);
+        let mut act = None;
+
+        match settings.terminal {
+            Panel::Hidden => return,
+            Panel::Minimized => {
+                egui::TopBottomPanel::bottom("terminal-folded")
+                    .exact_height(terminal_view::BAR)
+                    .frame(egui::Frame::NONE.fill(theme::raised()))
+                    .show(ctx, |ui| {
+                        act = terminal_view::bar(ui, true, title.as_deref());
+                    });
+            }
+            Panel::Expanded => {
+                if self.terminal.is_none() {
+                    match self.start_terminal(ctx) {
+                        Ok(mut session) => {
+                            session.view.wants_focus = true;
+                            self.terminal = Some(session);
+                        }
+                        // Put away as well as said: an open panel asks for
+                        // a shell on every frame, and this one has just
+                        // been refused.
+                        Err(err) => {
+                            self.note_error(format!("Failed to start shell process: {err}"));
+                            settings.terminal = Panel::Hidden;
+                            let _ = settings.save();
+                            return;
+                        }
+                    }
+                }
+
+                // Never so tall that what it is under cannot be seen.
+                let shortest = gitrust_core::SHORTEST_TERMINAL as f32;
+                let tallest = (ctx.screen_rect().height() * 0.75).max(shortest + 1.0);
+                // One name for every tab, and not a tab's own: the height
+                // is the window's, like whether the panel is open at all.
+                let shown = egui::TopBottomPanel::bottom("terminal")
+                    .resizable(true)
+                    .default_height((settings.terminal_height as f32).clamp(shortest, tallest))
+                    .height_range(shortest..=tallest)
+                    .frame(egui::Frame::NONE.fill(theme::terminal_ground()))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let band = egui::Rect::from_min_size(
+                            ui.max_rect().min,
+                            egui::vec2(ui.max_rect().width(), terminal_view::BAR),
+                        );
+                        ui.painter().rect_filled(band, 0, theme::raised());
+                        act = terminal_view::bar(ui, false, title.as_deref());
+                        ui.push_id(self.salt, |ui| {
+                            if let Some(session) = &mut self.terminal {
+                                if let Some(asked) = terminal_view::show(ui, session, &self.general) {
+                                    act = Some(asked);
+                                }
+                            }
+                        });
+                    });
+
+                // Written down once the dragging is over, and not sixty
+                // times a second while it is going on.
+                let height = shown.response.rect.height().round() as u32;
+                let dragging = ctx.input(|input| input.pointer.any_down());
+                if height != settings.terminal_height && !dragging {
+                    settings.terminal_height = height;
+                    let _ = settings.save();
+                }
+            }
+        }
+
+        match act {
+            Some(terminal_view::Act::Minimize) => self.set_terminal(settings, Panel::Minimized),
+            Some(terminal_view::Act::Expand) => self.set_terminal(settings, Panel::Expanded),
+            Some(terminal_view::Act::Hide) => self.set_terminal(settings, Panel::Hidden),
+            // The shell is told to go by being let go of.
+            Some(terminal_view::Act::Kill) => {
+                self.terminal = None;
+                self.set_terminal(settings, Panel::Hidden);
+            }
+            Some(terminal_view::Act::Open(address)) => self.open_in_browser(&address),
+            None => {}
+        }
+    }
+}
+
 impl Open {
     fn top_bar(&mut self, ctx: &egui::Context, settings: &mut Settings) {
         if self.is_remote() {
@@ -4963,6 +5241,7 @@ impl Open {
                         self.job.is_some(),
                         &mut self.draft,
                     );
+                    let terminal = Self::terminal_button(ui, settings);
 
                     let mut reload = false;
                     // Taken out and put back rather than lent to the closure:
@@ -4996,6 +5275,8 @@ impl Open {
                         self.act(action);
                     } else if reload {
                         self.load();
+                    } else if terminal {
+                        self.toggle_terminal(settings);
                     }
                 });
             });
@@ -5047,6 +5328,7 @@ impl Open {
                         self.job.is_some(),
                         &mut self.draft,
                     );
+                    let terminal = Self::terminal_button(ui, settings);
                     let mut appearance_changed = false;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -5066,6 +5348,8 @@ impl Open {
                     }
                     if let Some(action) = action {
                         self.act(action);
+                    } else if terminal {
+                        self.toggle_terminal(settings);
                     }
                 })
             });

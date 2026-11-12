@@ -19,7 +19,10 @@
 //! Like every other view here it touches nothing but what it is handed.
 
 use eframe::egui::{self, RichText};
-use gitrust_core::{start, General, FEWEST_COMMITS, LONGEST_FETCH_WAIT};
+use gitrust_core::{
+    start, Caret, General, FEWEST_COMMITS, LARGEST_TERMINAL_FONT, LONGEST_FETCH_WAIT,
+    LOOSEST_TERMINAL_LINE, SMALLEST_TERMINAL_FONT, TIGHTEST_TERMINAL_LINE,
+};
 
 use crate::theme;
 
@@ -42,6 +45,9 @@ pub struct Preferring {
     git_branch: String,
     /// Whether forgetting the tokens has been asked for and not confirmed.
     asking: bool,
+    /// The shell this account logs in with, read once when the screen
+    /// opens. It is what the empty box for the terminal's program shows.
+    login_shell: String,
 }
 
 impl Preferring {
@@ -50,6 +56,8 @@ impl Preferring {
             branch: general.default_branch.clone(),
             git_branch: start::git_default_branch(),
             asking: false,
+            login_shell: std::env::var(if cfg!(windows) { "COMSPEC" } else { "SHELL" })
+                .unwrap_or_default(),
         }
     }
 }
@@ -310,6 +318,98 @@ pub fn show(
                     "Tries the merge into the main branch of the remote ahead of time, in \
                      memory, and says in the bar under a repository when it would not go \
                      in cleanly. Nothing is touched to find out.",
+                );
+            });
+
+            ui.add_space(8.0);
+            theme::rule(ui);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(28.0);
+                ui.label(
+                    RichText::new("In-App Terminal").font(theme::strong(15.0)).color(theme::text()),
+                );
+            });
+            ui.add_space(18.0);
+
+            row(ui, "Font Size", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut general.terminal_font)
+                        .range(SMALLEST_TERMINAL_FONT..=LARGEST_TERMINAL_FONT)
+                        .speed(0.1),
+                );
+                help(
+                    ui,
+                    &format!(
+                        "In points, between {SMALLEST_TERMINAL_FONT} and {LARGEST_TERMINAL_FONT}. \
+                         The face is Fira Mono, the one the hashes and the dates are in."
+                    ),
+                );
+            });
+
+            row(ui, "Line Height", |ui| {
+                // Kept as hundredths so that two preferences can be told
+                // apart exactly, and shown as what everybody calls it.
+                let mut height = general.terminal_line as f32 / 100.0;
+                let (tightest, loosest) = (
+                    TIGHTEST_TERMINAL_LINE as f32 / 100.0,
+                    LOOSEST_TERMINAL_LINE as f32 / 100.0,
+                );
+                let dragged = ui.add(
+                    egui::DragValue::new(&mut height)
+                        .range(tightest..=loosest)
+                        .speed(0.01)
+                        .fixed_decimals(2),
+                );
+                if dragged.changed() {
+                    general.terminal_line = (height * 100.0).round() as u32;
+                }
+                help(ui, "How many times a letter's own height each line is given.");
+            });
+
+            row(ui, "Cursor Style", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for caret in Caret::ALL {
+                        ui.selectable_value(&mut general.terminal_caret, caret, caret.label());
+                    }
+                });
+                help(
+                    ui,
+                    "What marks where the next letter goes. A program that asks for a \
+                     caret of its own gets it.",
+                );
+            });
+
+            row(ui, "Dim terminal when unfocused", |ui| {
+                ui.checkbox(&mut general.terminal_dim, "");
+                help(
+                    ui,
+                    "The terminal goes quiet while the keyboard is somewhere else, so it is \
+                     plain where what you type will go.",
+                );
+            });
+
+            row(ui, "Default In-App Terminal", |ui| {
+                let typed = ui.add(
+                    egui::TextEdit::singleline(&mut general.terminal_shell)
+                        .desired_width(320.0)
+                        .margin(egui::vec2(8.0, 5.0))
+                        .font(theme::mono(11.5))
+                        .hint_text(RichText::new(&state.login_shell).color(theme::faint())),
+                );
+                if typed.lost_focus() {
+                    general.terminal_shell = general.terminal_shell.trim().to_string();
+                }
+                help(
+                    ui,
+                    "The program a terminal runs. Empty is the shell this account logs in \
+                     with. A terminal already open keeps the one it started with.",
+                );
+                warning(
+                    ui,
+                    "For a checkout on another machine the terminal is an ssh to that \
+                     machine, and the shell is the one the account has there.",
                 );
             });
 
