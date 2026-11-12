@@ -22,8 +22,10 @@ a board above it that is worked out from the branches rather than kept
 anywhere, so it travels with the repository and asks for no account, no
 server and nothing to sign up for.
 
-**Linux, for now.** It is built on macOS and on Windows by CI and has never
-been *run* on either, and there is no package for them yet. On Linux it is
+**Linux first.** It has been opened and tried by hand on macOS and on
+Windows -- by one person on each, briefly, and not through a month of real
+work -- and the tests run on Linux and nowhere else. There is
+[a download](#installing) for all three. On Linux it is also
 [three commands](#building), or one if you want it on the desktop with its
 icon.
 
@@ -486,8 +488,9 @@ being a network or credentials.
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the long version. The short one: the
-most useful thing anybody can do right now is **run it on a Mac or on
-Windows**, because it is built on both and has never been opened on either.
+most useful thing anybody can do right now is **work in it on a Mac or on
+Windows**, because it has been opened on both and worked in on neither, and
+the tests run only on Linux.
 After that, the three-way conflict editor and the four holes at the bottom
 of the list above.
 

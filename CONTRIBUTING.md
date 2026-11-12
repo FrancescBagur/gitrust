@@ -8,9 +8,11 @@ label. Everything below is the long version of those three.
 
 In the order it would make the most difference:
 
-1. **Running it on a Mac or on Windows.** It is *built* on both by CI and has
-   never been run on either. The first person to open it there and say what
-   is broken is doing the single most valuable thing available.
+1. **Working in it on a Mac or on Windows.** It has been opened and tried by
+   hand on both, by one person each, and the tests run only on Linux. The
+   first look at Windows turned up two files that were never being saved
+   there. There will be more like that, and whoever finds the next one is
+   doing the single most valuable thing available.
 2. **The three-way conflict editor**, which is the one thing the conflict
    screen still cannot do: picking line by line rather than side by side.
 3. **Submodules, bisect, LFS and signing** -- four holes, each of them its

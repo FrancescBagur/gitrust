@@ -58,10 +58,11 @@ jobs:
       - name: Test remote SSH operations
         run: GITRUST_SSHD_INTEGRATION=1 cargo test -p gitrust-core --test remote_ssh -- --ignored
 
-  # Neither of these runs the tests, and neither has ever been tried: the
-  # program has only ever been built on Linux. They are here to find out
-  # whether it builds elsewhere, which is the first thing anybody on another
-  # machine will ask.
+  # Neither of these runs the tests: those run on Linux and nowhere else.
+  # The program has been opened by hand on both systems, which finds what
+  # somebody happened to look at and nothing more. These are here to find
+  # out whether it still builds there, which is the first thing anybody on
+  # another machine will ask.
   elsewhere:
     name: Build on ${{ matrix.os }}
     strategy:

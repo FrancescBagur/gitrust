@@ -1,13 +1,14 @@
 name: It does not work on my Mac or my Windows
-description: The two systems it is built for and has never been run on.
+description: The two systems it is built for and has barely been run on.
 labels: ["bug", "help wanted"]
 body:
   - type: markdown
     attributes:
       value: |
-        gitrust is built on macOS and on Windows by CI and has never been
-        *run* on either. So this is not a complaint, it is the most useful
-        thing anybody can send right now, and it is expected to be a mess.
+        gitrust is built on macOS and on Windows by CI and has been opened
+        on each by one person, briefly. The tests run only on Linux. So this
+        is not a complaint, it is the most useful thing anybody can send
+        right now, and it is expected to be a mess.
         Partial reports are welcome: "it opens and the fonts are wrong" is a
         report.
 
