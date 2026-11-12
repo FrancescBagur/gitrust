@@ -72,7 +72,18 @@ jobs:
           tar -czf "$out.tar.gz" "$out"
 
           mkdir -p out
-          mv "$out.tar.gz" target/gitrust_*.deb out/
+          mv "$out.tar.gz" out/
+
+          # The .deb goes out under the version as Cargo writes it, hyphen
+          # and all, and not under the one inside it. dpkg wants a tilde in
+          # the version of a beta and GitHub will not have one in the name
+          # of a release file: gitrust_0.1.0~beta.1_amd64.deb was published
+          # as gitrust_0.1.0.beta.1_amd64.deb without a word, and the
+          # SHA256SUMS beside it went on naming a file that was not there.
+          # What dpkg reads is the version inside the package, and that is
+          # not touched here.
+          deb=$(ls target/gitrust_*.deb)
+          mv "$deb" "out/gitrust_${version}_${deb##*_}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -216,10 +227,21 @@ jobs:
         with:
           path: files
 
+      # GitHub renames a release file whose name it does not like, quietly,
+      # and the checksums are written before it gets the chance -- so they
+      # would name a file that is no longer called that. A name it might
+      # change stops the release here, while nothing has been published.
       - name: Gather
         run: |
           mkdir -p out
           find files -type f -exec mv {} out/ \;
+          for file in out/*; do
+            name=${file##*/}
+            if [[ ! $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "GitHub would rename $name, and SHA256SUMS would not"
+              exit 1
+            fi
+          done
           ( cd out && sha256sum * > SHA256SUMS )
           ls -l out
 
