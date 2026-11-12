@@ -690,7 +690,7 @@ impl App {
                 Browsing::Folder { .. } => chooser::folder("Choose a repository folder"),
                 Browsing::Key { .. } => chooser::file(
                     "Choose a private key",
-                    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".ssh")),
+                    gitrust_core::home::folder().map(|home| home.join(".ssh")),
                 ),
             });
         });

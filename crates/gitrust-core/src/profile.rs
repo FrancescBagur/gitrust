@@ -257,8 +257,7 @@ impl Profile {
         let Some(rest) = key.strip_prefix("~/") else {
             return Some(PathBuf::from(key));
         };
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join(rest))
+        Some(crate::home::folder()?.join(rest))
     }
 
     /// The public half of that key, beside it on the disk.
@@ -280,9 +279,8 @@ impl Profile {
         if let Some(key) = self.key_file() {
             return Some(key);
         }
-        let home = std::env::var_os("HOME")?;
         Some(
-            PathBuf::from(home)
+            crate::home::folder()?
                 .join(".ssh")
                 .join(format!("{}_ed25519", slug(&self.name))),
         )
@@ -378,11 +376,7 @@ pub struct Profiles {
 
 /// Where the file lives, whether or not it is there yet.
 pub fn file() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
-    };
-    Some(base.join("gitrust").join("profiles"))
+    Some(crate::home::config()?.join("profiles"))
 }
 
 impl Profiles {
@@ -646,10 +640,10 @@ pub fn public_of(key: &Path) -> PathBuf {
 /// afterwards says `~/.ssh/acme_ed25519` and not their home folder spelled
 /// out in full.
 pub fn shorten(path: &Path) -> String {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(home) = crate::home::folder() else {
         return path.display().to_string();
     };
-    match path.strip_prefix(PathBuf::from(home)) {
+    match path.strip_prefix(home) {
         Ok(rest) => format!("~/{}", rest.display()),
         Err(_) => path.display().to_string(),
     }

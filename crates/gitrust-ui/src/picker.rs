@@ -299,7 +299,9 @@ fn buttons(
                     // Somewhere to start from, since a clone needs a folder
                     // to land beside and typing a whole path to say "here" is
                     // a lot of typing.
-                    state.beside = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                    state.beside = gitrust_core::home::folder()
+                        .map(|home| home.display().to_string())
+                        .unwrap_or_else(|| ".".to_string());
                 }
             }
         }

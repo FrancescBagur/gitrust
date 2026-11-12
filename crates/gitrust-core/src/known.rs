@@ -9,10 +9,11 @@
 //!
 //! # Where
 //!
-//! `$XDG_CONFIG_HOME/gitrust/known`, or `$HOME/.config/gitrust/known`. No
-//! crate is used to find it: the rule is two lines of `std::env`, and a
-//! dependency for that would be a sixth in a project that has five on
-//! purpose.
+//! `$XDG_CONFIG_HOME/gitrust/known`, or `$HOME/.config/gitrust/known`, with
+//! `%USERPROFILE%` standing in for a `HOME` that Windows does not set. No
+//! crate is used to find it: the rule is a few lines of `std::env` in
+//! [`crate::home`], and a dependency for that would be a sixth in a project
+//! that has five on purpose.
 //!
 //! # What
 //!
@@ -114,11 +115,7 @@ impl Known {
 
 /// Where the file lives, whether or not it is there yet.
 pub fn file() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
-    };
-    Some(base.join("gitrust").join("known"))
+    Some(crate::home::config()?.join("known"))
 }
 
 /// Every repository the machine knows, favourites first and newest after.

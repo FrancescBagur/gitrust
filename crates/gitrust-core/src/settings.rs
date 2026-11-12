@@ -7,7 +7,8 @@
 //! # Where
 //!
 //! `$XDG_CONFIG_HOME/gitrust/settings`, or `$HOME/.config/gitrust/settings`,
-//! beside the list of known repositories and found the same way.
+//! beside the list of known repositories and found the same way, which is
+//! [`crate::home::config`].
 //!
 //! # What
 //!
@@ -248,14 +249,7 @@ impl Default for Settings {
 
 /// Where the file lives, whether or not it is there yet.
 pub fn file() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(
-            std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?,
-        )
-        .join(".config"),
-    };
-    Some(base.join("gitrust").join("settings"))
+    Some(crate::home::config()?.join("settings"))
 }
 
 impl Settings {
