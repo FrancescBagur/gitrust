@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "gitrust-core"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "git2",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "gitrust-ui"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
