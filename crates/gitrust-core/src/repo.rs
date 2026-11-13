@@ -1,6 +1,8 @@
 //! Opening the repository, reading commits, and working on the index.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,7 +14,7 @@ use git2::{
 use crate::detail::{CommitDetail, CommitFile, RefEntry};
 use crate::diff::{DiffLine, FileDiff, Hunk, HunkId};
 use crate::model::{Commit, RefKind, RefLabel};
-use crate::status::{staged_kind, unstaged_kind, ChangeKind, FileChange, WorkingState};
+use crate::status::{staged_kind, unstaged_kind, ChangeKind, FileChange, Pulse, WorkingState};
 
 pub struct Repo {
     pub(crate) inner: Repository,
@@ -194,6 +196,36 @@ impl Repo {
     /// The changed files, split between index and working tree. One file can
     /// show up on both sides if it is half staged.
     pub fn status(&self) -> Result<WorkingState> {
+        Ok(self.work()?.0)
+    }
+
+    /// The changed files, and the pulse they were read at.
+    ///
+    /// For whoever shows them: the pulse kept beside the list is what a
+    /// later look is compared with, and it has to be of this reading and
+    /// not of one made a moment afterwards.
+    pub fn status_and_pulse(&self) -> Result<(WorkingState, Pulse)> {
+        let (state, tree) = self.work()?;
+        Ok((state, Pulse { git: self.git_pulse(), tree }))
+    }
+
+    /// Two numbers that stay the same for as long as the repository does.
+    ///
+    /// What a window is compared with to know whether it is out of date,
+    /// without reading the history to find out. See [`Pulse`].
+    pub fn pulse(&self) -> Result<Pulse> {
+        Ok(self.status_and_pulse()?.1)
+    }
+
+    /// One walk through the working tree for both: the list, and a number
+    /// made out of it.
+    ///
+    /// The number is more than the list. A file that was modified and is
+    /// modified again is the same line in the list and a different diff
+    /// behind it, so what goes in beside each path is when the file was
+    /// last written and how long it is, and for the index's side which
+    /// blob is staged.
+    fn work(&self) -> Result<(WorkingState, u64)> {
         let mut options = StatusOptions::new();
         options
             .include_untracked(true)
@@ -204,24 +236,82 @@ impl Repo {
 
         let statuses = self.inner.statuses(Some(&mut options))?;
         let mut state = WorkingState::default();
+        let mut pulse = DefaultHasher::new();
+        let folder = self.inner.workdir();
 
         for entry in statuses.iter() {
             let Some(path) = entry.path() else {
                 continue;
             };
             let status = entry.status();
+            path.hash(&mut pulse);
+            status.bits().hash(&mut pulse);
 
             if let Some(kind) = staged_kind(status) {
                 state.staged.push(FileChange { path: path.to_string(), kind, staged: true });
+                if let Some(staged) = entry.head_to_index() {
+                    staged.new_file().id().as_bytes().hash(&mut pulse);
+                }
             }
             if let Some(kind) = unstaged_kind(status) {
                 state.unstaged.push(FileChange { path: path.to_string(), kind, staged: false });
+                // A file that cannot be asked -- it has just gone -- says
+                // nothing, and the next look says the rest.
+                if let Some(about) = folder.and_then(|folder| std::fs::symlink_metadata(folder.join(path)).ok()) {
+                    about.len().hash(&mut pulse);
+                    about.modified().ok().hash(&mut pulse);
+                }
             }
         }
 
         state.staged.sort_by(|a, b| a.path.cmp(&b.path));
         state.unstaged.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(state)
+        Ok((state, pulse.finish()))
+    }
+
+    /// A number made of everything Git itself keeps: where HEAD is, every
+    /// reference and what it points at, the stashes, and what is half-done.
+    ///
+    /// The references are put in order first. `git pack-refs` moves them
+    /// from one file to another and changes nothing, and it should not look
+    /// like something happened.
+    ///
+    /// Cheap beside the other half, which walks the working tree, and so
+    /// it can be asked for on its own by whoever only needs to know
+    /// whether the history has to be read again.
+    pub fn git_pulse(&self) -> u64 {
+        let mut pulse = DefaultHasher::new();
+        self.head_name().hash(&mut pulse);
+        self.head_id().map(|oid| oid.as_bytes().to_vec()).hash(&mut pulse);
+        (self.inner.state() as u32).hash(&mut pulse);
+
+        let mut references: Vec<(Vec<u8>, Vec<u8>)> = self
+            .inner
+            .references()
+            .map(|references| {
+                references
+                    .flatten()
+                    .map(|reference| {
+                        let target = match reference.target() {
+                            Some(oid) => oid.as_bytes().to_vec(),
+                            None => reference.symbolic_target_bytes().unwrap_or_default().to_vec(),
+                        };
+                        (reference.name_bytes().to_vec(), target)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        references.sort();
+        references.hash(&mut pulse);
+
+        // Dropping a stash from the middle leaves `refs/stash` where it
+        // was. How many there are is in its log.
+        self.inner
+            .reflog("refs/stash")
+            .map(|log| log.len())
+            .unwrap_or(0)
+            .hash(&mut pulse);
+        pulse.finish()
     }
 
     /// A file's diff. With `staged` it compares HEAD against the index; without

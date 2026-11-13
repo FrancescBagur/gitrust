@@ -66,6 +66,6 @@ pub use settings::{
 };
 pub use stash::StashEntry;
 pub use submodule::Sub;
-pub use status::{ChangeKind, FileChange, WorkingState};
+pub use status::{ChangeKind, FileChange, Pulse, WorkingState};
 pub use worktree::Worktree;
 pub use writer::Writer;
