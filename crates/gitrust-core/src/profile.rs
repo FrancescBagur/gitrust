@@ -250,14 +250,7 @@ impl Profile {
     /// A leading `~` is expanded here rather than left to libgit2, which does
     /// not expand it and would go looking for a folder called `~`.
     pub fn key_file(&self) -> Option<PathBuf> {
-        let key = self.key.trim();
-        if key.is_empty() {
-            return None;
-        }
-        let Some(rest) = key.strip_prefix("~/") else {
-            return Some(PathBuf::from(key));
-        };
-        Some(crate::home::folder()?.join(rest))
+        crate::ssh::key_file(&self.key)
     }
 
     /// The public half of that key, beside it on the disk.

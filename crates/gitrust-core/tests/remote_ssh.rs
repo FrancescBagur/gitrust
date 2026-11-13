@@ -43,7 +43,14 @@ struct IsolatedSshd {
 
 impl IsolatedSshd {
     fn start() -> Self {
-        let root = std::env::temp_dir().join(format!("gitrust-sshd-{}", std::process::id()));
+        // One folder per daemon and not per process: the tests in this
+        // file run side by side, in threads of the one process.
+        static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "gitrust-sshd-{}-{}",
+            std::process::id(),
+            STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let key = root.join("client-key");
@@ -107,10 +114,21 @@ impl IsolatedSshd {
         Session::connect_with_key(
             Login::new("127.0.0.1".to_string(), user, self.port).unwrap(),
             &self.key,
+            None,
             &self.known_hosts,
             true,
         )
         .unwrap()
+    }
+}
+
+impl IsolatedSshd {
+    fn login(&self) -> Login {
+        let user = String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        Login::new("127.0.0.1".to_string(), user, self.port).unwrap()
     }
 }
 
@@ -295,4 +313,43 @@ fn resolves_continues_and_aborts_a_remote_merge() {
     // And a checkout with no `.gitmodules` has no submodules to be asked
     // about, which is what keeps a command off the server after every pull.
     assert!(!remote.has_submodules());
+}
+
+/// The key a server hands out: an RSA key in the old PEM envelope, which is
+/// what a `.pem` from a cloud console is, here with a passphrase on it so
+/// that both halves of naming a key for a connection are tried at once.
+#[test]
+#[ignore = "starts an isolated sshd; run with GITRUST_SSHD_INTEGRATION=1"]
+fn a_pem_key_with_a_passphrase_opens_the_connection() {
+    if std::env::var_os("GITRUST_SSHD_INTEGRATION").is_none() {
+        return;
+    }
+    let sshd = IsolatedSshd::start();
+    let pem = sshd.root.join("handed-out.pem");
+    command(
+        "ssh-keygen",
+        &["-q", "-t", "rsa", "-b", "3072", "-m", "PEM", "-N", "open sesame", "-f", pem.to_str().unwrap()],
+    );
+    let text = fs::read_to_string(&pem).unwrap();
+    assert!(text.starts_with("-----BEGIN RSA PRIVATE KEY-----"), "not the PEM envelope: {text:.40}");
+    // The daemon reads this file on every connection, so a key added after
+    // it started is a key it knows.
+    let mut allowed = fs::read_to_string(sshd.root.join("authorized_keys")).unwrap();
+    allowed.push_str(&fs::read_to_string(pem.with_extension("pem.pub")).unwrap());
+    fs::write(sshd.root.join("authorized_keys"), allowed).unwrap();
+
+    let session = Session::connect_with_key(sshd.login(), &pem, Some("open sesame"), &sshd.known_hosts, true).unwrap();
+    assert!(session.folders("/").unwrap().iter().any(|folder| folder == "/tmp"));
+    drop(session);
+
+    // The host is known by now, so these fail on the key and nothing else.
+    let wrong = Session::connect_with_key(sshd.login(), &pem, Some("open barley"), &sshd.known_hosts, false);
+    assert!(wrong.is_err(), "a wrong passphrase got in");
+    let none = Session::connect_with_key(sshd.login(), &pem, None, &sshd.known_hosts, false);
+    let said = format!("{:#}", none.err().expect("no passphrase got in"));
+    assert!(said.contains("has a passphrase and none was given"), "{said}");
+
+    // And a key that is not there is said to be not there.
+    let gone = Session::connect_with_key(sshd.login(), &sshd.root.join("nothing.pem"), None, &sshd.known_hosts, false);
+    assert!(format!("{:#}", gone.err().unwrap()).contains("there is no key at"));
 }

@@ -331,7 +331,14 @@ taken back off. A checkout on another machine gets the same three things as
 far as they can honestly reach: the profile's key opens the connection, with
 the agent after it, and the profile's name goes along on the command line of
 each Git command there, so the commit is yours and the server's own
-configuration is left exactly as it was. What does not cross is the token
+configuration is left exactly as it was. A key can be named for the one
+connection instead -- the `.pem` a server hands out, with its passphrase
+if it has one -- and then it is that key and nothing after it. Where the
+key is gets remembered beside the checkout, so reconnecting and the
+terminal knock with it too; the passphrase is remembered nowhere, so a key
+that has one is reopened from the screen it was opened from. Tried against
+an OpenSSH server in a container, with a passphrase and without. What does
+not cross is the token
 and the key: what that checkout fetches and pushes with stays the server's
 business. It writes nothing into
 `.gitconfig` or `~/.ssh/config`: a program that rewrites the files other
@@ -380,7 +387,7 @@ goes out with are the profile's, read when the shell starts, because a
 commit that went out under another client's name for having been typed
 instead of clicked is the mistake profiles exist to stop. On a checkout on
 another machine the shell is on that machine, reached with `ssh` and the
-same key. **The graph keeps up.** Nothing here watches the disk, so the
+key the checkout was opened with. **The graph keeps up.** Nothing here watches the disk, so the
 window looks when the shell goes quiet: at the branches and HEAD every
 time, at the working tree after a line has been sent in, and it reads
 everything again only when one of them has actually moved -- `git commit`
@@ -395,8 +402,8 @@ GitKraken pops up as you type, which are a product of their own; a choice
 of typeface, because this program ships the one it was designed around;
 and letters Fira Mono and its fallbacks do not have, Chinese and Japanese
 among them, which come out as boxes here as they do in a commit message.
-Run on Linux; read out of the code and not seen on macOS or Windows, and
-the shell on another machine has not been opened against one.
+Run on Linux, the shell on another machine against a server in a
+container; read out of the code and not seen on macOS or Windows.
 
 **The emulator:** the second dependency that was not part of the plan,
 and the one there was never going to be a way round. What a shell writes

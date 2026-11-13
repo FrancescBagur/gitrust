@@ -21,6 +21,10 @@ pub struct RemoteRepo {
     ///
     /// [`Repo::pruning`]: crate::Repo::pruning
     pub(crate) prune: bool,
+    /// The key that was named for this connection, as it was typed. Only
+    /// remembered here, for [`RemoteRepo::descriptor`] to hand on: the
+    /// session is already open and has no further use for it.
+    key: Option<String>,
 }
 
 impl Writer for RemoteRepo {
@@ -109,7 +113,13 @@ impl RemoteRepo {
 impl RemoteRepo {
     pub fn new(session: Session, path: String) -> Result<Self> {
         session.verify_checkout(&path)?;
-        Ok(Self { session, path, who: None, prune: false })
+        Ok(Self { session, path, who: None, prune: false, key: None })
+    }
+
+    /// Notes which key this connection was made with, when one was named,
+    /// so that the next connection to the same checkout can use it too.
+    pub fn keyed(&mut self, key: Option<String>) {
+        self.key = key.filter(|key| !key.trim().is_empty());
     }
 
     /// Writes from here on as this person, or as whoever the server says.
@@ -134,11 +144,13 @@ impl RemoteRepo {
     }
 
     /// Enough to reconnect later, with no password retained in memory or on
-    /// disk beyond the lifetime of the original authentication dialog.
+    /// disk beyond the lifetime of the original authentication dialog. The
+    /// path of a key that was named is not a secret, and is part of it.
     pub fn descriptor(&self) -> RemoteDescriptor {
         RemoteDescriptor {
             login: self.session.login().clone(),
             path: self.path.clone(),
+            key: self.key.clone(),
         }
     }
 

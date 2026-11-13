@@ -22,7 +22,10 @@ pub enum Act {
     Open(PathBuf),
     /// Open the authenticated checkout without ever putting its path on this
     /// computer's known-repository list.
-    OpenRemote { session: ssh::Session, path: String },
+    ///
+    /// `key` is the private key that was named for the connection, as it
+    /// was typed, so the checkout can be reached with it again.
+    OpenRemote { session: ssh::Session, path: String, key: Option<String> },
     /// Bring one down from an address into a folder.
     Clone { url: String, into: PathBuf },
     /// Make an empty one there.
@@ -36,6 +39,8 @@ pub enum Act {
     /// Ask the desktop for a folder, and put what comes back in a box.
     /// `beside` picks which: the one a clone lands in, or the one above it.
     Browse { beside: bool },
+    /// Ask the desktop for a private key file, for the remote box.
+    BrowseKey,
 }
 
 /// Which box is open, when one is.
@@ -83,6 +88,11 @@ struct Remote {
     host: String,
     user: String,
     port: String,
+    /// A private key file to connect with -- the `.pem` a server hands
+    /// out -- or blank for the profile's key and the agent.
+    key: String,
+    /// The password, or with a key named, that key's passphrase. Taken
+    /// out of here the moment Connect is pressed.
     password: String,
     path: String,
     folders: Vec<String>,
@@ -103,6 +113,7 @@ impl Default for Picker {
                 host: String::new(),
                 user: String::new(),
                 port: "22".to_string(),
+                key: String::new(),
                 password: String::new(),
                 path: "/".to_string(),
                 folders: Vec::new(),
@@ -122,6 +133,14 @@ impl Picker {
     /// the new one usually goes inside the one that was picked.
     pub fn starting(&self) -> bool {
         self.asking == Some(Asking::Start)
+    }
+
+    /// Puts the key the desktop's dialog came back with into the remote
+    /// box. Whatever was connected is let go of: it got in some other way.
+    pub fn take_key(&mut self, key: &Path) {
+        self.remote.key = key.display().to_string();
+        self.remote.session = None;
+        self.remote.note = None;
     }
 
     /// Where a clone typed in right now would go.
@@ -417,6 +436,7 @@ fn remote_picker(
     let mut open = None;
     let whom = connecting_as(profiles, remote);
     let key = crate::profile_key(whom);
+    let mut browse = false;
     ui.add_space(8.0);
     egui::Frame::NONE
         .fill(theme::raised())
@@ -434,8 +454,12 @@ fn remote_picker(
                             remote.user = saved.login.user.clone();
                             remote.port = saved.login.port.to_string();
                             remote.path = saved.path.clone();
+                            remote.key = saved.key.clone().unwrap_or_default();
                             remote.session = None;
-                            remote.note = Some(("Press Connect to authenticate again; no password was saved.".to_string(), false));
+                            remote.note = Some((match saved.key {
+                                Some(_) => "Press Connect to authenticate again. Its key was remembered; a passphrase is not.",
+                                None => "Press Connect to authenticate again; no password was saved.",
+                            }.to_string(), false));
                         }
                     }
                 });
@@ -465,6 +489,7 @@ fn remote_picker(
                                     .unwrap_or_else(|| saved.alias.clone());
                                 remote.user = saved.user.clone().unwrap_or_default();
                                 remote.port = saved.port.unwrap_or(22).to_string();
+                                remote.key.clear();
                                 remote.session = None;
                                 remote.note = None;
                             }
@@ -476,16 +501,44 @@ fn remote_picker(
                 ui.add(egui::TextEdit::singleline(&mut remote.user).hint_text("user").desired_width(120.0));
                 ui.add(egui::TextEdit::singleline(&mut remote.host).hint_text("host").desired_width(190.0));
                 ui.add(egui::TextEdit::singleline(&mut remote.port).hint_text("port").desired_width(62.0));
-                ui.add(egui::TextEdit::singleline(&mut remote.password).password(true).hint_text("password").desired_width(150.0));
+            });
+            ui.add_space(4.0);
+            // How to get in, on a line of its own: a key file, a password,
+            // or neither. With a key named the secret beside it is that
+            // key's, so the box says which of the two it is asking for.
+            let named = ssh::key_file(&remote.key);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut remote.key)
+                        .hint_text("private key file (.pem), if it has one")
+                        .font(theme::mono(11.5))
+                        .desired_width(290.0),
+                );
+                if ui
+                    .small_button("\u{2026}")
+                    .on_hover_text("Pick the key file")
+                    .clicked()
+                {
+                    browse = true;
+                }
+                let secret = match named {
+                    Some(_) => "key passphrase, if any",
+                    None => "password",
+                };
+                ui.add(egui::TextEdit::singleline(&mut remote.password).password(true).hint_text(secret).desired_width(150.0));
                 let ready = !remote.user.trim().is_empty() && !remote.host.trim().is_empty();
                 if ui.add_enabled(ready, egui::Button::new("Connect").fill(theme::chosen())).clicked() {
                     let port = remote.port.trim().parse().unwrap_or(22);
                     let password = std::mem::take(&mut remote.password);
+                    let secret = (!password.is_empty()).then_some(password.as_str());
                     // Trust is a confirmation for this one connection attempt, never
                     // a broad setting that could accept a later, unrelated host.
                     let trust_new_host = std::mem::replace(&mut remote.trust_new_host, false);
                     match ssh::Login::new(remote.host.trim().to_string(), remote.user.trim().to_string(), port)
-                        .and_then(|login| ssh::Session::connect_as(login, (!password.is_empty()).then_some(password.as_str()), key.as_deref(), trust_new_host)) {
+                        .and_then(|login| match &named {
+                            Some(file) => ssh::Session::connect_keyed(login, file, secret, trust_new_host),
+                            None => ssh::Session::connect_as(login, secret, key.as_deref(), trust_new_host),
+                        }) {
                         Ok(session) => match session.folders("/") {
                             Ok(folders) => {
                                 remote.session = Some(session);
@@ -501,24 +554,52 @@ fn remote_picker(
             // Who is about to knock, said before the knocking: a connection
             // refused is easier to understand next to the key it was tried
             // with than next to nothing.
-            if let Some(profile) = whom {
-                let name = match profile.name.trim().is_empty() {
-                    true => "(no name)",
-                    false => profile.name.trim(),
-                };
-                let line = match (&key, profile.key.trim().is_empty()) {
-                    (Some(_), _) => format!(
-                        "As {name}: {} first, then the SSH agent. A password typed here goes before both.",
-                        profile.key.trim()
-                    ),
-                    (None, true) => format!("As {name}, which has no key of its own: the SSH agent."),
-                    (None, false) => format!(
-                        "As {name}, whose key {} is not there: the SSH agent.",
-                        profile.key.trim()
-                    ),
-                };
+            // The key is named the way it was typed: that is the line
+            // somebody is checking against, and the short one.
+            let mut warning = None;
+            let line = match (&named, whom) {
+                (Some(file), _) => {
+                    // The connection made here does not mind, and the
+                    // terminal's will: `ssh` refuses a key that other
+                    // people on this machine can read, which is how a
+                    // downloaded .pem arrives.
+                    if open_to_others(file) {
+                        warning = Some(format!(
+                            "Others on this machine can read that file. It opens the checkout as it is, \
+                             but ssh will refuse it in the terminal until: chmod 600 {}",
+                            remote.key.trim()
+                        ));
+                    }
+                    Some(format!(
+                        "With {}, and nothing after it: not the profile's key, not the SSH agent.",
+                        remote.key.trim()
+                    ))
+                }
+                (None, Some(profile)) => {
+                    let name = match profile.name.trim().is_empty() {
+                        true => "(no name)",
+                        false => profile.name.trim(),
+                    };
+                    Some(match (&key, profile.key.trim().is_empty()) {
+                        (Some(_), _) => format!(
+                            "As {name}: {} first, then the SSH agent. A password typed here goes before both.",
+                            profile.key.trim()
+                        ),
+                        (None, true) => format!("As {name}, which has no key of its own: the SSH agent."),
+                        (None, false) => format!(
+                            "As {name}, whose key {} is not there: the SSH agent.",
+                            profile.key.trim()
+                        ),
+                    })
+                }
+                (None, None) => None,
+            };
+            if let Some(line) = line {
                 ui.add_space(3.0);
                 ui.label(RichText::new(line).font(theme::body(11.0)).color(theme::faint()));
+            }
+            if let Some(warning) = warning {
+                ui.label(RichText::new(warning).font(theme::body(11.0)).color(theme::muted()));
             }
             ui.checkbox(&mut remote.trust_new_host, "I verified this host key; trust and save it for this attempt");
             if let Some((note, bad)) = &remote.note {
@@ -526,6 +607,9 @@ fn remote_picker(
                 ui.label(RichText::new(note).font(theme::body(11.5)).color(if *bad { theme::removed() } else { theme::muted() }));
             }
         });
+    if browse {
+        return Some(Act::BrowseKey);
+    }
     let Some(session) = remote.session.as_ref() else {
         return None;
     };
@@ -584,9 +668,11 @@ fn remote_picker(
         });
     if use_folder {
         let session = remote.session.take().expect("session checked above");
+        let key = remote.key.trim();
         open = Some(Act::OpenRemote {
             session,
             path: remote.path.clone(),
+            key: (!key.is_empty()).then(|| key.to_string()),
         });
     }
     open
@@ -607,6 +693,24 @@ fn connecting_as<'a>(profiles: &'a Profiles, remote: &Remote) -> Option<&'a Prof
         .and_then(|checkout| profiles.owner_of(&checkout.place()))
         .and_then(|at| profiles.list.get(at))
         .or(profiles.active())
+}
+
+/// Whether anybody but its owner can read that file.
+///
+/// Only asked on Unix, where it is what `ssh` asks before it will use a
+/// key. A file that cannot be looked at is not complained about here: the
+/// connection will say what is wrong with it.
+fn open_to_others(file: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(file).is_ok_and(|about| about.permissions().mode() & 0o077 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        false
+    }
 }
 
 fn remote_list_row(ui: &mut egui::Ui, _kind: &str, label: &str, selected: bool) -> egui::Response {
