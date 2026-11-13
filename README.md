@@ -134,6 +134,8 @@ cherry-pick and an undo all stop here instead of being thrown away.
       is typed into it
 - [x] The window keeps up by itself with what an editor, a terminal or an
       agent does to the repository in front, with no button to press
+- [x] It says when there is a newer version, and brings the file for this
+      system down, checked -- and leaves installing it to you
 - [ ] Three-way editor with line-by-line picking
 - [ ] A screen for the submodules themselves, bisect, LFS, signing
 
@@ -147,6 +149,7 @@ crates/
     merge.rs        joining two branches or rebasing one, and stopping where it clashes
     conflict.rs     getting out of a merge or rebase that clashed
     tag.rs          lightweight and annotated tags
+    update.rs       whether there is a newer version, and its file, checked
     remote.rs       fetching, pushing, and the distance to the remote branch
     stash.rs        the pile of changes set aside
     graph.rs        the lane algorithm, and the uncommitted-changes row
@@ -181,6 +184,7 @@ crates/
     terminal.rs     a shell per tab: the pseudo-terminal, the keys, the colours
     terminal_view.rs the grid painted, the mouse heard, and the bar above it
     watch.rs        looking at the repository in front, off the painting thread
+    updates.rs      the word for a newer version, and the menu under it
     chooser.rs      asking the desktop for its own folder dialog
     graph_view.rs   painting the graph and the references column
     board_view.rs   the branches laid out in columns
@@ -433,6 +437,35 @@ looked at when they are brought forward. Not a checkout on another
 machine, where every look is a round trip on a connection the window is
 using: its reload button is where it was. Run on Linux.
 
+**A newer version:** a program installed once that never says another
+word is one still on its first beta a year later. So it looks -- a little
+after the window opens and once a day -- and when there is something newer
+a word appears at the end of the tab strip. Nothing else: no dialog, and
+nothing brought down until the word is pressed. Then it offers the file
+for this system, the `.deb` to whoever took the `.deb` and the folder to
+whoever did not, puts it where downloads go, and checks it against the
+`SHA256SUMS` published beside it. There it stops. Each system installs a
+different way, one wants a password, another will not let a running program
+be written over, and none of the files is signed: a program that replaced
+itself with something it could not vouch for would be worse than one that
+leaves the last step to you. Looking costs no dependency -- a version is a
+tag, and listing a repository's tags is the one thing this program could
+always do; there is no API in it, no account and nothing sent that a clone
+does not send. A tag is not a release, though: the files take a while to
+be built from it, and a tag pushed by mistake never gets any. So a newer
+tag is only mentioned once the sums published with its files can be read,
+and one without them is passed over for the one before. Bringing the file down is `curl`, which Linux nearly always
+has and macOS and Windows ship, instead of a library for HTTPS and the
+forty crates behind it for one request a month; with no `curl` it says so
+and the release's page is a click away. The SHA-256 is written out, sixty
+lines held to the published answers. A beta is offered to whoever asks for
+betas and to whoever is running one. It can be turned off, and a version
+can be told not to be mentioned again. Tried on Linux against the releases
+there are, by a build told it was older than it is: the look, the file,
+the check, and the two refusals. The buttons that hand the file to the
+desktop use a different program on each system, and only Linux's has been
+run.
+
 **The emulator:** the second dependency that was not part of the plan,
 and the one there was never going to be a way round. What a shell writes
 is forty years of escape sequences -- the second screen `vim` draws on,
@@ -513,7 +546,9 @@ gets wrong is wanted as an issue. Take one:
 | macOS, Apple or Intel | the `.zip`: drag `Gitrust.app` to Applications |
 | Windows | the `.zip`: there is no installer, the `.exe` runs from wherever you put it |
 
-Whichever you took, `gitrust --version` says which one it is.
+Whichever you took, `gitrust --version` says which one it is, and from then
+on the window says when there is a newer one and will bring its file down
+for you. It will not install it: that is the same step as the first time.
 
 **None of it is signed.** There is no paid certificate behind these files,
 so macOS will say the developer cannot be verified -- right-click, Open,

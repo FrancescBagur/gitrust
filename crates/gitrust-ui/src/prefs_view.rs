@@ -31,8 +31,21 @@ pub enum Act {
     /// Take the token out of every account of every profile. Sent only
     /// after the second click.
     Forget,
+    /// Ask now whether there is a newer version.
+    Look,
     /// Put the screen away.
     Close,
+}
+
+/// What the screen is told about newer versions, to show under its last
+/// heading. It decides nothing about them.
+pub struct Newer<'a> {
+    /// The version this is.
+    pub running: String,
+    /// Whether the question is being asked at this moment.
+    pub looking: bool,
+    /// What the last asking found, and whether that was a failure.
+    pub answer: Option<(&'a str, bool)>,
 }
 
 /// What the screen remembers between frames.
@@ -83,6 +96,7 @@ pub fn show(
     state: &mut Preferring,
     general: &mut General,
     tokens: usize,
+    newer: Newer,
 ) -> (bool, Option<Act>) {
     let mut act = None;
     let before = general.clone();
@@ -411,6 +425,58 @@ pub fn show(
                     "For a checkout on another machine the terminal is an ssh to that \
                      machine, and the shell is the one the account has there.",
                 );
+            });
+
+            ui.add_space(8.0);
+            theme::rule(ui);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(28.0);
+                ui.label(RichText::new("Updates").font(theme::strong(15.0)).color(theme::text()));
+            });
+            ui.add_space(14.0);
+
+            row(ui, "Look for newer versions", |ui| {
+                ui.checkbox(&mut general.updates, "");
+                help(
+                    ui,
+                    "Asks the project's repository which versions there are, a little after \
+                     the window opens and once a day. A newer one is a word at the end of \
+                     the tab strip, with the file for this system behind it. Nothing is \
+                     brought down until you ask and nothing is ever installed for you.",
+                );
+                warning(
+                    ui,
+                    "It is a connection to github.com that nobody asked for. What is sent \
+                     is what cloning a public repository sends, and nothing about you.",
+                );
+            });
+
+            row(ui, "Include betas", |ui| {
+                ui.checkbox(&mut general.update_betas, "");
+                help(
+                    ui,
+                    "A beta counts as newer. Whoever is running a beta is told about the \
+                     next one whatever this says.",
+                );
+            });
+
+            row(ui, "This version", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&newer.running).font(theme::mono(12.0)).color(theme::text()));
+                    ui.add_space(8.0);
+                    if ui.add_enabled(!newer.looking, egui::Button::new("Look now")).clicked() {
+                        act = Some(Act::Look);
+                    }
+                    if newer.looking {
+                        ui.spinner();
+                    }
+                });
+                match newer.answer {
+                    Some((text, true)) => complaint(ui, text),
+                    Some((text, false)) => help(ui, text),
+                    None => {}
+                }
             });
 
             ui.add_space(24.0);

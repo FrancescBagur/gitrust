@@ -34,6 +34,7 @@ pub mod start;
 pub mod status;
 pub mod submodule;
 pub mod tag;
+pub mod update;
 pub mod worktree;
 pub mod writer;
 

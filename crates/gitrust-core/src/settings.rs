@@ -225,6 +225,17 @@ pub struct General {
     /// The program the terminal runs. Empty is the shell this account logs
     /// in with.
     pub terminal_shell: String,
+    /// Whether the window asks, now and then, if there is a newer version.
+    ///
+    /// On unless somebody says otherwise, like the fetch nobody asked for
+    /// and for the opposite reason: that one is off because it reaches a
+    /// remote with somebody's key, and this one reaches a public
+    /// repository with nothing. A program that never mentions the next
+    /// version is one still on its first a year later.
+    pub updates: bool,
+    /// Whether a beta counts as newer. Whoever is running a beta is told
+    /// about the next one whatever this says.
+    pub update_betas: bool,
 }
 
 impl Default for General {
@@ -248,6 +259,8 @@ impl Default for General {
             terminal_caret: Caret::default(),
             terminal_dim: true,
             terminal_shell: String::new(),
+            updates: true,
+            update_betas: false,
         }
     }
 }
@@ -312,6 +325,8 @@ impl General {
             // The rest of the line and not a word of it, as for a tab: a
             // program can live in a folder with a space in its name.
             "terminal-shell" => self.terminal_shell = value.to_string(),
+            "check-updates" => self.updates = on,
+            "update-betas" => self.update_betas = on,
             _ => return false,
         }
         true
@@ -352,6 +367,11 @@ impl General {
         if !self.terminal_shell.trim().is_empty() {
             text.push_str(&format!("terminal-shell {}\n", self.terminal_shell.trim()));
         }
+        text.push_str(&format!(
+            "check-updates {}\nupdate-betas {}\n",
+            word(self.updates),
+            word(self.update_betas),
+        ));
         text
     }
 }
@@ -384,6 +404,9 @@ pub struct Settings {
     pub terminal: Panel,
     /// How tall it is when all of it is showing, in points.
     pub terminal_height: u32,
+    /// The version somebody said not to mention again, as its tag. The
+    /// one after it is mentioned: this is "not this one", not "never".
+    pub skipped: String,
 }
 
 impl Default for Settings {
@@ -397,6 +420,7 @@ impl Default for Settings {
             front: 0,
             terminal: Panel::default(),
             terminal_height: 280,
+            skipped: String::new(),
         }
     }
 }
@@ -456,6 +480,7 @@ impl Settings {
                             points.clamp(SHORTEST_TERMINAL, TALLEST_TERMINAL);
                     }
                 }
+                Some(("skip-update", value)) => settings.skipped = value.trim().to_string(),
                 Some((name, value)) => {
                     settings.general.take(name, value);
                 }
@@ -496,6 +521,9 @@ impl Settings {
             self.terminal.as_str(),
             self.terminal_height
         ));
+        if !self.skipped.is_empty() {
+            text.push_str(&format!("skip-update {}\n", self.skipped));
+        }
         text
     }
 
@@ -607,8 +635,10 @@ mod tests {
             terminal_caret: Caret::Underline,
             terminal_dim: false,
             terminal_shell: "/opt/my shells/fish".to_string(),
+            updates: false,
+            update_betas: true,
         };
-        let settings = Settings { general, ..Settings::default() };
+        let settings = Settings { general, skipped: "v0.2.0".to_string(), ..Settings::default() };
         assert_eq!(Settings::parse(&settings.render()), settings);
         // And the defaults, which is the case with no branch name to write.
         assert_eq!(Settings::parse(&Settings::default().render()), Settings::default());
