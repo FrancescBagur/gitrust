@@ -22,3 +22,7 @@ eframe = "0.31"
 egui = "0.31"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# The inside of a terminal: the pseudo-terminal on all three systems, the
+# reader of what a shell writes, and the grid that writing describes. The
+# README says why this one is somebody else's.
+alacritty_terminal = "0.26"

@@ -25,7 +25,8 @@
 //! not a preference at all -- they are what was open when the window was
 //! last closed -- but they are kept here for the reason the remote
 //! checkouts are: one file that is about this computer is easier to reason
-//! about, and to delete, than three.
+//! about, and to delete, than three. The `terminal` lines are the same kind
+//! of thing: how much of the terminal panel was showing, and how tall.
 //!
 //! A line it does not understand is skipped and a setting that is not in the
 //! file keeps its default, so a file written by a newer gitrust does not stop
@@ -75,6 +76,101 @@ impl Appearance {
     }
 }
 
+/// What marks the place in the terminal where the next letter goes.
+///
+/// A bar until somebody says otherwise, as in an editor: a block sits on
+/// top of the letter it is on, and in a panel a few lines tall that is one
+/// letter fewer to read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Caret {
+    #[default]
+    Bar,
+    Block,
+    Underline,
+}
+
+impl Caret {
+    /// Every one of them, in the order the preferences list them.
+    pub const ALL: [Self; 3] = [Self::Bar, Self::Block, Self::Underline];
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "bar" => Some(Self::Bar),
+            "block" => Some(Self::Block),
+            "underline" => Some(Self::Underline),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Bar => "bar",
+            Self::Block => "block",
+            Self::Underline => "underline",
+        }
+    }
+
+    /// What it is called where somebody chooses it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bar => "Bar",
+            Self::Block => "Block",
+            Self::Underline => "Underline",
+        }
+    }
+}
+
+/// How much of the terminal panel is on screen.
+///
+/// Three, and the difference between the first two is the point of having
+/// both: put away, the shell goes on running and nothing says it is there;
+/// folded, its title bar stays at the bottom of the window to say so.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Panel {
+    /// Not on screen. Whatever was running in it still is.
+    #[default]
+    Hidden,
+    /// Its title bar and nothing else.
+    Minimized,
+    /// All of it.
+    Expanded,
+}
+
+impl Panel {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "hidden" => Some(Self::Hidden),
+            "minimized" => Some(Self::Minimized),
+            "expanded" => Some(Self::Expanded),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::Minimized => "minimized",
+            Self::Expanded => "expanded",
+        }
+    }
+}
+
+/// The smallest and the largest the letters in the terminal get, in points.
+/// Below the first they are not letters, and above the second a line of
+/// them is four words.
+pub const SMALLEST_TERMINAL_FONT: u32 = 8;
+pub const LARGEST_TERMINAL_FONT: u32 = 72;
+
+/// How close together and how far apart its lines go, in hundredths of the
+/// letter's own height: touching, and five times that.
+pub const TIGHTEST_TERMINAL_LINE: u32 = 100;
+pub const LOOSEST_TERMINAL_LINE: u32 = 500;
+
+/// The shortest and the tallest the terminal panel is remembered as, in
+/// points. The window decides how much of the second it can have.
+pub const SHORTEST_TERMINAL: u32 = 90;
+pub const TALLEST_TERMINAL: u32 = 2_000;
+
 /// The fewest commits the graph will be asked to start with. Below this the
 /// history stops before most people have scrolled once.
 pub const FEWEST_COMMITS: usize = 500;
@@ -116,6 +212,19 @@ pub struct General {
     /// Whether the branch is checked, ahead of time, for conflicts with the
     /// branch it will be merged into.
     pub foresee_conflicts: bool,
+    /// How large the letters in the terminal are, in points.
+    pub terminal_font: u32,
+    /// How far apart its lines are, in hundredths of a letter's height. A
+    /// whole number, because two preferences have to be able to say they
+    /// are the same and 1.2 cannot be trusted to.
+    pub terminal_line: u32,
+    /// What marks where the next letter goes.
+    pub terminal_caret: Caret,
+    /// Whether the terminal goes quiet while the keyboard is somewhere else.
+    pub terminal_dim: bool,
+    /// The program the terminal runs. Empty is the shell this account logs
+    /// in with.
+    pub terminal_shell: String,
 }
 
 impl Default for General {
@@ -134,6 +243,11 @@ impl Default for General {
             remember_tabs: true,
             extended_log: false,
             foresee_conflicts: true,
+            terminal_font: 12,
+            terminal_line: 120,
+            terminal_caret: Caret::default(),
+            terminal_dim: true,
+            terminal_shell: String::new(),
         }
     }
 }
@@ -177,6 +291,27 @@ impl General {
             "remember-tabs" => self.remember_tabs = on,
             "extended-log" => self.extended_log = on,
             "foresee-conflicts" => self.foresee_conflicts = on,
+            "terminal-font" => {
+                if let Ok(points) = value.parse::<u32>() {
+                    self.terminal_font =
+                        points.clamp(SMALLEST_TERMINAL_FONT, LARGEST_TERMINAL_FONT);
+                }
+            }
+            "terminal-line-height" => {
+                if let Ok(hundredths) = value.parse::<u32>() {
+                    self.terminal_line =
+                        hundredths.clamp(TIGHTEST_TERMINAL_LINE, LOOSEST_TERMINAL_LINE);
+                }
+            }
+            "terminal-cursor" => {
+                if let Some(caret) = Caret::parse(value) {
+                    self.terminal_caret = caret;
+                }
+            }
+            "terminal-dim" => self.terminal_dim = on,
+            // The rest of the line and not a word of it, as for a tab: a
+            // program can live in a folder with a space in its name.
+            "terminal-shell" => self.terminal_shell = value.to_string(),
             _ => return false,
         }
         true
@@ -207,6 +342,16 @@ impl General {
             word(self.extended_log),
             word(self.foresee_conflicts),
         ));
+        text.push_str(&format!(
+            "terminal-font {}\nterminal-line-height {}\nterminal-cursor {}\nterminal-dim {}\n",
+            self.terminal_font,
+            self.terminal_line,
+            self.terminal_caret.as_str(),
+            word(self.terminal_dim),
+        ));
+        if !self.terminal_shell.trim().is_empty() {
+            text.push_str(&format!("terminal-shell {}\n", self.terminal_shell.trim()));
+        }
         text
     }
 }
@@ -232,6 +377,12 @@ pub struct Settings {
     pub tabs: Vec<String>,
     /// Which of them was in front.
     pub front: usize,
+    /// How much of the terminal panel is showing. One answer for the whole
+    /// window and not one per tab: it is where somebody likes their
+    /// terminal, not something about a repository.
+    pub terminal: Panel,
+    /// How tall it is when all of it is showing, in points.
+    pub terminal_height: u32,
 }
 
 impl Default for Settings {
@@ -243,6 +394,8 @@ impl Default for Settings {
             general: General::default(),
             tabs: Vec::new(),
             front: 0,
+            terminal: Panel::default(),
+            terminal_height: 280,
         }
     }
 }
@@ -289,6 +442,17 @@ impl Settings {
                 Some(("front", value)) => {
                     settings.front = value.trim().parse().unwrap_or(0);
                 }
+                Some(("terminal", value)) => {
+                    if let Some(panel) = Panel::parse(value) {
+                        settings.terminal = panel;
+                    }
+                }
+                Some(("terminal-height", value)) => {
+                    if let Ok(points) = value.trim().parse::<u32>() {
+                        settings.terminal_height =
+                            points.clamp(SHORTEST_TERMINAL, TALLEST_TERMINAL);
+                    }
+                }
                 Some((name, value)) => {
                     settings.general.take(name, value);
                 }
@@ -320,6 +484,11 @@ impl Settings {
         if !self.tabs.is_empty() {
             text.push_str(&format!("front {}\n", self.front));
         }
+        text.push_str(&format!(
+            "terminal {}\nterminal-height {}\n",
+            self.terminal.as_str(),
+            self.terminal_height
+        ));
         text
     }
 
@@ -424,6 +593,11 @@ mod tests {
             remember_tabs: false,
             extended_log: true,
             foresee_conflicts: false,
+            terminal_font: 15,
+            terminal_line: 140,
+            terminal_caret: Caret::Underline,
+            terminal_dim: false,
+            terminal_shell: "/opt/my shells/fish".to_string(),
         };
         let settings = Settings { general, ..Settings::default() };
         assert_eq!(Settings::parse(&settings.render()), settings);
@@ -439,6 +613,32 @@ mod tests {
         // One that is not a number at all leaves what was there.
         let settings = Settings::parse("auto-fetch often\ninitial-commits lots\n");
         assert_eq!(settings.general, General::default());
+    }
+
+    #[test]
+    fn the_terminal_is_kept_inside_what_can_be_read() {
+        let settings = Settings::parse(
+            "terminal-font 2\nterminal-line-height 9000\nterminal-height 5\n",
+        );
+        assert_eq!(settings.general.terminal_font, SMALLEST_TERMINAL_FONT);
+        assert_eq!(settings.general.terminal_line, LOOSEST_TERMINAL_LINE);
+        assert_eq!(settings.terminal_height, SHORTEST_TERMINAL);
+        // A caret nobody has heard of leaves the one that was there.
+        let settings = Settings::parse("terminal-cursor wedge\n");
+        assert_eq!(settings.general.terminal_caret, Caret::Bar);
+    }
+
+    #[test]
+    fn the_terminal_panel_comes_back_the_way_it_was_left() {
+        // Put away until somebody asks for it: a window that opens a shell
+        // on a machine that never asked for one has started a program.
+        assert_eq!(Settings::default().terminal, Panel::Hidden);
+        for panel in [Panel::Hidden, Panel::Minimized, Panel::Expanded] {
+            let settings = Settings { terminal: panel, terminal_height: 412, ..Settings::default() };
+            let back = Settings::parse(&settings.render());
+            assert_eq!(back.terminal, panel);
+            assert_eq!(back.terminal_height, 412);
+        }
     }
 
     #[test]

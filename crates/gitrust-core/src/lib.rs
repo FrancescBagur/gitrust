@@ -59,7 +59,11 @@ pub use reader::Reader;
 pub use remote_repo::RemoteRepo;
 pub use rewrite::{Plan, Step};
 pub use repo::Repo;
-pub use settings::{Appearance, General, Settings, FEWEST_COMMITS, LONGEST_FETCH_WAIT};
+pub use settings::{
+    Appearance, Caret, General, Panel, Settings, FEWEST_COMMITS, LARGEST_TERMINAL_FONT,
+    LONGEST_FETCH_WAIT, LOOSEST_TERMINAL_LINE, SHORTEST_TERMINAL, SMALLEST_TERMINAL_FONT,
+    TALLEST_TERMINAL, TIGHTEST_TERMINAL_LINE,
+};
 pub use stash::StashEntry;
 pub use submodule::Sub;
 pub use status::{ChangeKind, FileChange, WorkingState};
