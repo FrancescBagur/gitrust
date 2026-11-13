@@ -77,7 +77,7 @@ token is written down nowhere else.
 
 ## What the window does by itself
 
-Three things happen without being asked for, and each can be turned off on
+Four things happen without being asked for, and each can be turned off on
 the preferences screen.
 
 **It fetches**, every minute by default, from every remote of the repository
@@ -102,6 +102,19 @@ submodule is left and named.
 
 **It tries the merge** into the target branch in memory. That reads the
 repository and writes nothing: no file, no index, no reference.
+
+**It asks whether there is a newer version**, a little after the window
+opens and once a day. That is a connection to github.com, to this project's
+own repository, asking for the list of its tags: what a clone of a public
+repository sends, with no credentials and nothing about you or your
+repositories. When a tag is newer, the `SHA256SUMS` published with it is
+asked for too, with `curl`, to know the release is really there. Nothing
+else is brought down by it. A file is fetched only when
+you press the button that says so, with `curl`, over HTTPS and nothing
+else, and is checked against the `SHA256SUMS` the release publishes before
+it is given its name. That check says the file arrived as it was built. It
+does not say who built it: the sums come from the same place as the file,
+and nothing here is signed. gitrust never installs what it brought down.
 
 The tabs that were open are written into `~/.config/gitrust/settings` as
 paths, and remote checkouts as `ssh://user@host:port/path`. No password is

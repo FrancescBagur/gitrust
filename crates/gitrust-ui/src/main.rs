@@ -33,6 +33,7 @@ mod terminal;
 mod terminal_view;
 mod theme;
 mod toast;
+mod updates;
 mod watch;
 
 use anyhow::Result;
@@ -308,6 +309,9 @@ struct App {
     /// anything. Started with the first frame, which is the first time
     /// there is a window to wake.
     watch: Option<watch::Watch>,
+    /// Whether there is a newer version than this one, and the file for
+    /// it if somebody has asked for that.
+    updates: updates::Updates,
     /// What one of the screens that is not a repository has to say. A tab's
     /// own bottom bar cannot say it: the tab is not on screen.
     note: Option<Note>,
@@ -413,6 +417,7 @@ impl App {
             preferring: None,
             fetched: std::time::Instant::now(),
             watch: None,
+            updates: updates::Updates::new(),
             note: None,
         };
         app.come_back(asked);
@@ -543,6 +548,34 @@ impl App {
             open.fetch_quietly();
         }
         ctx.request_repaint_after(every);
+    }
+
+    /// Does what was pressed in the menu under the word for a newer
+    /// version.
+    ///
+    /// Opening is handing something to the desktop, and the one thing
+    /// that can go wrong with it is that there is nothing to hand it to.
+    /// That is said on whichever screen is up.
+    fn act_on_update(&mut self, ctx: &egui::Context, act: updates::Act) {
+        let opened = match act {
+            updates::Act::Fetch => {
+                self.updates.fetch(ctx);
+                return;
+            }
+            updates::Act::Skip(tag) => {
+                self.settings.skipped = tag;
+                if let Err(err) = self.settings.save() {
+                    self.complain(err);
+                }
+                return;
+            }
+            updates::Act::Open(file) => updates::open_outside(file),
+            updates::Act::Folder(folder) => updates::open_outside(folder),
+            updates::Act::Page(address) => updates::open_outside(address),
+        };
+        if let Err(err) = opened {
+            self.complain(anyhow::anyhow!("could not open it: {err}"));
+        }
     }
 
     /// Keeps the repository in front up to date with what other programs
@@ -862,6 +895,7 @@ impl App {
         let mut go = None;
         let mut shut = None;
         let mut toggle_maximized = false;
+        let mut newer = None;
 
         egui::TopBottomPanel::top("tabs")
             .frame(
@@ -948,6 +982,12 @@ impl App {
                         self.chip(ui);
                         ui.add_space(6.0);
                         self.gear(ui);
+                        // A newer version, when there is one, beside the
+                        // other two things that are about the program and
+                        // not about a repository. A word and not a dialog:
+                        // it is there to be noticed, not to be answered.
+                        ui.add_space(6.0);
+                        newer = self.updates.word(ui, &self.settings.skipped);
                     });
                 });
                 ui.add_space(4.0);
@@ -956,6 +996,9 @@ impl App {
         if toggle_maximized {
             let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+        if let Some(act) = newer {
+            self.act_on_update(ctx, act);
         }
 
         if let Some(which) = shut {
@@ -1209,7 +1252,12 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(14, 0)),
             )
             .show(ctx, |ui| {
-                (changed, act) = prefs_view::show(ui, state, &mut self.settings.general, tokens);
+                let newer = prefs_view::Newer {
+                    running: self.updates.running(),
+                    looking: self.updates.looking(),
+                    answer: self.updates.answer(),
+                };
+                (changed, act) = prefs_view::show(ui, state, &mut self.settings.general, tokens, newer);
             });
 
         // Said only when it fails, as the switch for the waves is: a
@@ -1237,6 +1285,13 @@ impl App {
                         n => format!("{n} tokens forgotten"),
                     }));
                 }
+            }
+            Some(prefs_view::Act::Look) => {
+                // Asking is asking about every version: what was said not
+                // to be mentioned is mentioned again.
+                self.settings.skipped.clear();
+                let _ = self.settings.save();
+                self.updates.look_now(ctx, self.settings.general.update_betas);
             }
             Some(prefs_view::Act::Close) => {
                 self.preferring = None;
@@ -1620,6 +1675,7 @@ impl eframe::App for App {
         }
         self.note_tabs();
         self.keep_up(ctx);
+        self.updates.tick(ctx, self.settings.general.updates, self.settings.general.update_betas);
 
         // Always, even with one repository open: the plus lives in it, and a
         // strip that appears only once you have two tabs is a way of opening
@@ -3541,8 +3597,8 @@ impl Open {
     /// second or two to appear and there is nothing to report when it does.
     /// What there is to report is it not being there at all.
     fn open_in_browser(&mut self, url: &str) {
-        match std::process::Command::new("xdg-open").arg(url).spawn() {
-            Ok(_) => {
+        match updates::open_outside(url) {
+            Ok(()) => {
                 self.said(format!("opening {url}"));
             }
             Err(err) => self.note_error(format!("could not open a browser: {err}")),
